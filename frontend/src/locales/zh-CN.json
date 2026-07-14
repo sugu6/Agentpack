@@ -1,7 +1,10 @@
 {
   "nav": {
     "settings": "设置",
-    "market": "市场"
+    "market": "市场",
+    "agents": "Agent",
+    "mcp": "MCP 服务器",
+    "skills": "技能"
   },
   "common": {
     "save": "保存",
@@ -33,7 +36,11 @@
     "error": "错误",
     "unknown": "未知",
     "selectAll": "全选",
-    "toggleAll": "全选/取消"
+    "toggleAll": "全选/取消",
+    "description": "描述",
+    "selected": "已选",
+    "agentCount": "{count} 个 Agent",
+    "operationFailed": "操作失败"
   },
   "settings": {
     "title": "设置",
@@ -137,7 +144,59 @@
     "boundAgents": "绑定 Agent",
     "empty": "暂无 MCP 服务器",
     "emptyDescription": "点击右上角添加自定义服务器。",
-    "scanResult": "扫描结果"
+    "scanResult": "扫描结果",
+    "addServerTitle": "添加 MCP 服务器",
+    "editServerTitle": "编辑 MCP 服务器",
+    "dialogDescription": "配置模型上下文协议服务器。",
+    "deleteConfirmTitle": "确认删除",
+    "deleteConfirmMessage": "确定要删除 MCP 服务器 \"{name}\" 吗？将从所有绑定的 Agent 配置中移除。",
+    "scanning": "扫描中...",
+    "scanFoundNew": "发现 {count} 个新 MCP 服务器",
+    "scanResultDesc": "从各 Agent 配置文件中发现以下 MCP 服务器，选择要纳管的目标 Agent。默认只启用来源 Agent。",
+    "scanRedoDesc": "重新扫描所有 Agent 配置文件，发现已配置的 MCP 服务器。",
+    "allManaged": "所有 MCP 服务器均已管理",
+    "noNewServers": "未发现新的 MCP 服务器配置",
+    "badgeNew": "新发现",
+    "sourceLabel": "来源",
+    "sourceBadge": "来源",
+    "adding": "添加中...",
+    "addToAgentPack": "添加到AgentPack（{count}个）",
+    "formatJson": "格式化",
+    "switchToForm": "切换回表单",
+    "parseHint": "解析当前服务器。",
+    "jsonSupportHint": "支持 Claude Code / Cursor / Trae / OpenCode 格式，支持 // 注释，",
+    "descriptionPlaceholder": "此服务器的功能...",
+    "tab": {
+      "form": "表单"
+    },
+    "errors": {
+      "fixErrors": "请修复以下错误：",
+      "jsonInvalid": "JSON 格式错误",
+      "jsonNotObject": "JSON 必须是一个对象",
+      "noServersField": "JSON 中未找到 mcpServers/servers/mcp 字段",
+      "noServers": "JSON 中未定义任何服务器",
+      "serverInvalid": "服务器 \"{name}\" 配置格式无效",
+      "formatJsonFailed": "JSON 格式错误，无法格式化",
+      "nameRequired": "名称不能为空",
+      "commandRequired": "命令不能为空",
+      "urlRequired": "SSE/HTTP 传输模式需要填写 URL",
+      "urlInvalid": "URL 格式不正确",
+      "noAgent": "请至少选择一个 Agent",
+      "operationFailed": "操作失败，请重试"
+    },
+    "toast": {
+      "toggleFailed": "切换失败",
+      "toggleBindingPartialFailed": "部分 Agent 绑定切换失败：{error}",
+      "toggleBindingFailed": "切换 Agent 绑定失败：{error}",
+      "deleted": "已删除 MCP 服务器 {name}",
+      "deleteFailed": "删除失败：{error}",
+      "updated": "已更新 MCP 服务器 {name}",
+      "added": "已添加 MCP 服务器 {name}",
+      "scanFailed": "扫描失败，请重试",
+      "addedBatch": "已添加 {count} 个 MCP 服务器",
+      "batchAddFailed": "{count} 个 MCP 服务器添加失败",
+      "addFailed": "添加失败"
+    }
   },
   "skills": {
     "title": "Skills",
@@ -174,6 +233,9 @@
     "selectTargetAgentsTitle": "选择目标 Agent",
     "selectTargetAgentsDesc": "选择要将此 Skill 安装到哪些 Agent。",
     "uninstallConfirmMessage": "确定要卸载此技能吗？将从 SSOT 及所有绑定的 Agent 目录中移除。",
+    "uninstallConfirmMessageNamed": "确定要卸载技能 \"{name}\" 吗？将从 SSOT 及所有绑定的 Agent 目录中移除。",
+    "viewRepo": "查看仓库 {repo}",
+    "marketInstallTargetDesc": "选择要将 {name} 安装到哪些 Agent。默认未选中任何 Agent。",
     "updatable": "可更新",
     "toast": {
       "scanComplete": "扫描完成",
@@ -189,7 +251,10 @@
       "checkUpdatesFailed": "检查更新失败：{error}",
       "toggleFailed": "切换失败",
       "toggleBindingPartialFailed": "部分 Agent 绑定切换失败：{error}",
-      "toggleBindingFailed": "切换 Agent 绑定失败：{error}"
+      "toggleBindingFailed": "切换 Agent 绑定失败：{error}",
+      "installSuccess": "已安装 Skill {name}",
+      "uninstalled": "已卸载 Skill {name}",
+      "uninstallFailed": "Skill 卸载失败：{error}"
     }
   },
   "market": {
@@ -247,6 +312,23 @@
       "finance": "金融",
       "reasoning": "推理",
       "devTools": "开发工具"
+    },
+    "viewDetails": "查看详情",
+    "uninstallConfirmMessage": "确定要卸载 MCP 服务器 \"{name}\" 吗？将从所有绑定的 Agent 配置中移除。",
+    "tags": "标签",
+    "transportLabel": "Transport",
+    "envVarsHint": "环境变量（安装时填写）",
+    "installsCount": "{count} 次安装",
+    "homepage": "主页",
+    "docs": "文档",
+    "installTargetDesc": "选择要将 {name} 安装到哪些 Agent。",
+    "installToAgents": "安装到 {count} 个 Agent",
+    "toast": {
+      "getSmitheryFailed": "获取 Smithery 服务器详情失败：{error}",
+      "installed": "已安装 MCP 服务器 {name}",
+      "uninstalled": "已卸载 MCP 服务器 {name}",
+      "uninstallFailed": "MCP 卸载失败：{error}",
+      "installFailed": "安装失败：{error}"
     }
   },
   "update": {
@@ -271,6 +353,7 @@
     },
     "close": {
       "title": "关闭窗口",
+      "description": "选择关闭窗口时的行为。",
       "minimize": "最小化到托盘",
       "exit": "退出应用"
     }

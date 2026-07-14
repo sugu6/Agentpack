@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { readonly, ref } from 'vue'
+import { i18n } from '@/i18n'
 
 export interface ConfirmOptions {
   title: string
@@ -27,8 +28,8 @@ export const useConfirmStore = defineStore('confirm', () => {
     }
     options.value = {
       ...opts,
-      confirmText: opts.confirmText || '确认',
-      cancelText: opts.cancelText || '取消',
+      confirmText: opts.confirmText || i18n.global.t('common.confirm'),
+      cancelText: opts.cancelText || i18n.global.t('common.cancel'),
       variant: opts.variant || 'default',
     }
     currentId = id

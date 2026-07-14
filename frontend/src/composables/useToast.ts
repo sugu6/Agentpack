@@ -1,4 +1,5 @@
 import { toast } from 'vue-sonner'
+import { useI18n } from 'vue-i18n'
 
 // 统一的 toast 封装：默认文案中文，统一时长与位置
 // - success: 2.5s
@@ -19,6 +20,8 @@ const WARNING_DURATION = 3500
 const INFO_DURATION = 3000
 
 export function useToast() {
+  const { t } = useI18n()
+
   function success(message: string, opts: ToastOptions = {}) {
     toast.success(message, {
       duration: SUCCESS_DURATION,
@@ -48,7 +51,7 @@ export function useToast() {
   }
 
   // 从 unknown 错误中提取可读消息
-  function fromError(e: unknown, fallback = '操作失败'): string {
+  function fromError(e: unknown, fallback = t('common.operationFailed')): string {
     if (e instanceof Error) return e.message || fallback
     if (typeof e === 'string') return e
     return fallback

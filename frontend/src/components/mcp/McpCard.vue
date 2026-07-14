@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useAgentsStore } from '@/stores/agents'
 import { useMcpStore } from '@/stores/mcp'
 import { Card, CardContent, Badge, Button, AlertDialog, AlertDialogTrigger, AlertDialogContent, AlertDialogHeader, AlertDialogTitle, AlertDialogDescription, AlertDialogFooter, AlertDialogCancel, AlertDialogAction } from '@/components/ui'
@@ -16,6 +17,7 @@ const emit = defineEmits<{
   (e: 'update'): void
 }>()
 
+const { t } = useI18n()
 const agents = useAgentsStore()
 const mcp = useMcpStore()
 const toast = useToast()
@@ -30,12 +32,12 @@ async function toggleGroup(group: { ids: string[]; id: string }, enabled: boolea
     )
     const failures = results.filter((r) => r.status === 'rejected')
     if (failures.length > 0) {
-      const msg = failures.map((r) => (r as PromiseRejectedResult).reason?.message || '切换失败').join('; ')
-      toast.warning(`部分 Agent 绑定切换失败：${msg}`)
+      const msg = failures.map((r) => (r as PromiseRejectedResult).reason?.message || t('mcp.toast.toggleFailed')).join('; ')
+      toast.warning(t('mcp.toast.toggleBindingPartialFailed', { error: msg }))
     }
   } catch (e) {
     const apiError = ApiError.from(e)
-    toast.error(`切换 Agent 绑定失败：${apiError.message}`)
+    toast.error(t('mcp.toast.toggleBindingFailed', { error: apiError.message }))
   }
 }
 
@@ -52,11 +54,11 @@ function transportLabel() {
 async function handleRemove() {
   try {
     await mcp.remove(props.server.id)
-    toast.success(`已删除 MCP 服务器 ${props.server.name}`)
+    toast.success(t('mcp.toast.deleted', { name: props.server.name }))
     emit('update')
   } catch (e) {
     const apiError = ApiError.from(e)
-    toast.error(`删除失败：${apiError.message}`)
+    toast.error(t('mcp.toast.deleteFailed', { error: apiError.message }))
   }
 }
 </script>
@@ -103,20 +105,20 @@ async function handleRemove() {
           <McpForm mode="edit" :server="server" @updated="emit('update')" />
           <AlertDialog>
             <AlertDialogTrigger as-child>
-              <Button variant="outline" size="icon" class="border-destructive/40 text-destructive hover:bg-destructive/10" aria-label="删除">
+              <Button variant="outline" size="icon" class="border-destructive/40 text-destructive hover:bg-destructive/10" :aria-label="t('common.delete')">
                 <PhTrash :size="14" class="text-destructive" />
               </Button>
             </AlertDialogTrigger>
             <AlertDialogContent>
               <AlertDialogHeader>
-                <AlertDialogTitle>确认删除</AlertDialogTitle>
+                <AlertDialogTitle>{{ t('mcp.deleteConfirmTitle') }}</AlertDialogTitle>
                 <AlertDialogDescription>
-                  确定要删除 MCP 服务器 "{{ server.name }}" 吗？将从所有绑定的 Agent 配置中移除。
+                  {{ t('mcp.deleteConfirmMessage', { name: server.name }) }}
                 </AlertDialogDescription>
               </AlertDialogHeader>
               <AlertDialogFooter>
-                <AlertDialogCancel>取消</AlertDialogCancel>
-                <AlertDialogAction class="border border-destructive/40 bg-background text-destructive hover:bg-destructive/10" @click="handleRemove">删除</AlertDialogAction>
+                <AlertDialogCancel>{{ t('common.cancel') }}</AlertDialogCancel>
+                <AlertDialogAction class="border border-destructive/40 bg-background text-destructive hover:bg-destructive/10" @click="handleRemove">{{ t('common.delete') }}</AlertDialogAction>
               </AlertDialogFooter>
             </AlertDialogContent>
           </AlertDialog>

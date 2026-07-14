@@ -1,7 +1,10 @@
 {
   "nav": {
     "settings": "Settings",
-    "market": "Market"
+    "market": "Market",
+    "agents": "Agent",
+    "mcp": "MCP servers",
+    "skills": "Skills"
   },
   "common": {
     "save": "Save",
@@ -33,7 +36,11 @@
     "error": "Error",
     "unknown": "Unknown",
     "selectAll": "Select all",
-    "toggleAll": "Select all / None"
+    "toggleAll": "Select all / None",
+    "description": "Description",
+    "selected": "Selected",
+    "agentCount": "{count} agents",
+    "operationFailed": "Operation failed"
   },
   "settings": {
     "title": "Settings",
@@ -137,7 +144,59 @@
     "boundAgents": "Bound agents",
     "empty": "No MCP servers",
     "emptyDescription": "Click the top-right to add a custom server.",
-    "scanResult": "Scan result"
+    "scanResult": "Scan result",
+    "addServerTitle": "Add MCP server",
+    "editServerTitle": "Edit MCP server",
+    "dialogDescription": "Configure a Model Context Protocol server.",
+    "deleteConfirmTitle": "Confirm delete",
+    "deleteConfirmMessage": "Are you sure you want to delete MCP server \"{name}\"? It will be removed from all bound agent configurations.",
+    "scanning": "Scanning...",
+    "scanFoundNew": "Found {count} new MCP servers",
+    "scanResultDesc": "The following MCP servers were discovered in agent config files. Select the agents to manage them. Only the source agent is enabled by default.",
+    "scanRedoDesc": "Rescan all agent config files to discover configured MCP servers.",
+    "allManaged": "All MCP servers are managed",
+    "noNewServers": "No new MCP server configurations found",
+    "badgeNew": "New",
+    "sourceLabel": "Source",
+    "sourceBadge": "Source",
+    "adding": "Adding...",
+    "addToAgentPack": "Add to AgentPack ({count})",
+    "formatJson": "Format",
+    "switchToForm": "Switch back to form",
+    "parseHint": "Parse the current server.",
+    "jsonSupportHint": "Supports Claude Code / Cursor / Trae / OpenCode format, // comments allowed, ",
+    "descriptionPlaceholder": "What this server does...",
+    "tab": {
+      "form": "Form"
+    },
+    "errors": {
+      "fixErrors": "Please fix the following errors:",
+      "jsonInvalid": "Invalid JSON format",
+      "jsonNotObject": "JSON must be an object",
+      "noServersField": "No mcpServers/servers/mcp field found in JSON",
+      "noServers": "No servers defined in JSON",
+      "serverInvalid": "Server \"{name}\" has invalid configuration",
+      "formatJsonFailed": "Invalid JSON, cannot format",
+      "nameRequired": "Name is required",
+      "commandRequired": "Command is required",
+      "urlRequired": "SSE/HTTP transport requires a URL",
+      "urlInvalid": "Invalid URL format",
+      "noAgent": "Select at least one agent",
+      "operationFailed": "Operation failed, please retry"
+    },
+    "toast": {
+      "toggleFailed": "Toggle failed",
+      "toggleBindingPartialFailed": "Some agent binding toggles failed: {error}",
+      "toggleBindingFailed": "Toggle agent binding failed: {error}",
+      "deleted": "Deleted MCP server {name}",
+      "deleteFailed": "Delete failed: {error}",
+      "updated": "Updated MCP server {name}",
+      "added": "Added MCP server {name}",
+      "scanFailed": "Scan failed, please retry",
+      "addedBatch": "Added {count} MCP servers",
+      "batchAddFailed": "{count} MCP servers failed to add",
+      "addFailed": "Add failed"
+    }
   },
   "skills": {
     "title": "Skills",
@@ -174,6 +233,9 @@
     "selectTargetAgentsTitle": "Select target agents",
     "selectTargetAgentsDesc": "Select which agents to install this skill to.",
     "uninstallConfirmMessage": "Are you sure you want to uninstall this skill? It will be removed from the SSOT and all bound agent directories.",
+    "uninstallConfirmMessageNamed": "Are you sure you want to uninstall skill \"{name}\"? It will be removed from the SSOT and all bound agent directories.",
+    "viewRepo": "View repository {repo}",
+    "marketInstallTargetDesc": "Select which agents to install this skill to. No agent is selected by default.",
     "updatable": "Updatable",
     "toast": {
       "scanComplete": "Scan complete",
@@ -189,7 +251,10 @@
       "checkUpdatesFailed": "Check for updates failed: {error}",
       "toggleFailed": "Toggle failed",
       "toggleBindingPartialFailed": "Some agent binding toggles failed: {error}",
-      "toggleBindingFailed": "Toggle agent binding failed: {error}"
+      "toggleBindingFailed": "Toggle agent binding failed: {error}",
+      "installSuccess": "Installed skill {name}",
+      "uninstalled": "Uninstalled skill {name}",
+      "uninstallFailed": "Skill uninstall failed: {error}"
     }
   },
   "market": {
@@ -247,6 +312,23 @@
       "finance": "Finance",
       "reasoning": "Reasoning",
       "devTools": "Dev tools"
+    },
+    "viewDetails": "View details",
+    "uninstallConfirmMessage": "Are you sure you want to uninstall MCP server \"{name}\"? It will be removed from all bound agent configurations.",
+    "tags": "Tags",
+    "transportLabel": "Transport",
+    "envVarsHint": "Environment variables (fill on install)",
+    "installsCount": "{count} installs",
+    "homepage": "Homepage",
+    "docs": "Docs",
+    "installTargetDesc": "Select which agents to install {name} to.",
+    "installToAgents": "Install to {count} agents",
+    "toast": {
+      "getSmitheryFailed": "Failed to fetch Smithery server details: {error}",
+      "installed": "Installed MCP server {name}",
+      "uninstalled": "Uninstalled MCP server {name}",
+      "uninstallFailed": "MCP uninstall failed: {error}",
+      "installFailed": "Install failed: {error}"
     }
   },
   "update": {
@@ -271,6 +353,7 @@
     },
     "close": {
       "title": "Close window",
+      "description": "Choose what happens when closing the window.",
       "minimize": "Minimize to tray",
       "exit": "Exit application"
     }

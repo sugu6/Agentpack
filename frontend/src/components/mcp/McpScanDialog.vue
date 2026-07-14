@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useMcpStore } from '@/stores/mcp'
 import { useAgentsStore } from '@/stores/agents'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, Button, Badge, DialogFooter } from '@/components/ui'
@@ -8,6 +9,7 @@ import { getVariantFromId, variantToBadge } from '@/composables/useAgentHelpers'
 import { PhMagnifyingGlass, PhCheckCircle, PhWarningCircle } from '@phosphor-icons/vue'
 import { useToast } from '@/composables/useToast'
 
+const { t } = useI18n()
 const mcp = useMcpStore()
 const agents = useAgentsStore()
 const toast = useToast()
@@ -61,7 +63,7 @@ async function handleScan() {
     }
     open.value = true
   } catch {
-    scanError.value = '扫描失败，请重试'
+    scanError.value = t('mcp.toast.scanFailed')
     open.value = true
   } finally {
     scanning.value = false
@@ -161,15 +163,15 @@ async function handleAdd() {
     const failures = results.filter(r => r.status === 'rejected')
     const successCount = results.length - failures.length
     if (successCount > 0) {
-      toast.success(`已添加 ${successCount} 个 MCP 服务器`)
+      toast.success(t('mcp.toast.addedBatch', { count: successCount }))
     }
     if (failures.length > 0) {
-      toast.warning(`${failures.length} 个 MCP 服务器添加失败`)
+      toast.warning(t('mcp.toast.batchAddFailed', { count: failures.length }))
     }
     await mcp.fetch()
     open.value = false
   } catch (e: unknown) {
-    toast.error(toast.fromError(e, '添加失败'))
+    toast.error(toast.fromError(e, t('mcp.toast.addFailed')))
   } finally {
     importing.value = false
   }
@@ -180,25 +182,25 @@ async function handleAdd() {
   <Dialog v-model:open="open" @update:open="onOpenChange">
     <Button size="sm" variant="outline" :disabled="scanning" @click="handleScan">
       <PhMagnifyingGlass :size="14" :class="{ 'animate-pulse': scanning }" />
-      <span>{{ scanning ? '扫描中...' : '扫描MCP' }}</span>
+      <span>{{ scanning ? t('mcp.scanning') : t('mcp.scan') }}</span>
     </Button>
 
     <DialogContent class="max-w-2xl flex flex-col max-h-[85vh]">
       <DialogHeader>
         <DialogTitle>
           <template v-if="mcp.scanResult && newItems.length > 0">
-            发现 {{ newItems.length }} 个新 MCP 服务器
+            {{ t('mcp.scanFoundNew', { count: newItems.length }) }}
           </template>
           <template v-else>
-            扫描 MCP 服务器
+            {{ t('mcp.scanResult') }}
           </template>
         </DialogTitle>
         <DialogDescription>
           <template v-if="mcp.scanResult && newItems.length > 0">
-            从各 Agent 配置文件中发现以下 MCP 服务器，选择要纳管的目标 Agent。默认只启用来源 Agent。
+            {{ t('mcp.scanResultDesc') }}
           </template>
           <template v-else>
-            重新扫描所有 Agent 配置文件，发现已配置的 MCP 服务器。
+            {{ t('mcp.scanRedoDesc') }}
           </template>
         </DialogDescription>
       </DialogHeader>
@@ -206,14 +208,14 @@ async function handleAdd() {
       <div v-if="scanError" class="flex flex-col items-center justify-center py-12">
         <PhWarningCircle :size="32" class="text-destructive mb-3" />
         <p class="text-sm text-destructive">{{ scanError }}</p>
-        <Button size="sm" variant="outline" class="mt-3" @click="handleScan">重试</Button>
+        <Button size="sm" variant="outline" class="mt-3" @click="handleScan">{{ t('common.retry') }}</Button>
       </div>
 
       <template v-else-if="mcp.scanResult">
         <div v-if="newItems.length === 0" class="flex flex-col items-center justify-center py-12 text-muted-foreground">
           <PhCheckCircle :size="40" class="text-emerald-500 mb-3" />
-          <p class="text-sm font-medium">所有 MCP 服务器均已管理</p>
-          <p class="text-xs mt-1">未发现新的 MCP 服务器配置</p>
+          <p class="text-sm font-medium">{{ t('mcp.allManaged') }}</p>
+          <p class="text-xs mt-1">{{ t('mcp.noNewServers') }}</p>
         </div>
 
         <template v-else>
@@ -226,9 +228,9 @@ async function handleAdd() {
                 @change="onToggleSelectAll"
                 class="h-3.5 w-3.5"
               />
-              全选
+              {{ t('common.selectAll') }}
             </label>
-            <span class="text-xs text-muted-foreground">{{ selectedNames.length }} / {{ newItems.length }} 已选</span>
+            <span class="text-xs text-muted-foreground">{{ selectedNames.length }} / {{ newItems.length }} {{ t('common.selected') }}</span>
           </div>
 
           <div class="max-h-[55vh] space-y-2 overflow-y-auto py-2 pr-1">
@@ -248,7 +250,7 @@ async function handleAdd() {
                 <div class="min-w-0 flex-1">
                   <div class="flex items-center gap-2">
                     <span class="text-sm font-semibold">{{ item.server.name }}</span>
-                    <Badge variant="outline" class="border-sky-500/40 text-sky-600 text-[10px]">新发现</Badge>
+                    <Badge variant="outline" class="border-sky-500/40 text-sky-600 text-[10px]">{{ t('mcp.badgeNew') }}</Badge>
                     <Badge variant="outline" class="text-[10px] font-mono">{{ item.server.transport }}</Badge>
                   </div>
                   <div v-if="item.server.command" class="mt-0.5 text-[11px] text-muted-foreground/70 font-mono">
@@ -258,7 +260,7 @@ async function handleAdd() {
                     {{ item.server.url }}
                   </div>
                   <p class="mt-0.5 text-[10px] text-muted-foreground/70">
-                    来源: {{ item.agentName }} · {{ item.configPath }}
+                    {{ t('mcp.sourceLabel') }}: {{ item.agentName }} · {{ item.configPath }}
                   </p>
                 </div>
               </div>
@@ -276,16 +278,16 @@ async function handleAdd() {
                     :badge="variantToBadge(getVariantFromId(group.id))"
                     @update:model-value="(v: boolean) => toggleAgent(item.server.name, group.id, v)"
                   />
-                  <Badge v-if="isSourceAgent(item.server.name, group)" variant="secondary" class="text-[9px] px-1 py-0">来源</Badge>
+                  <Badge v-if="isSourceAgent(item.server.name, group)" variant="secondary" class="text-[9px] px-1 py-0">{{ t('mcp.sourceBadge') }}</Badge>
                 </div>
               </div>
             </div>
           </div>
 
           <DialogFooter>
-            <Button variant="ghost" @click="open = false">取消</Button>
+            <Button variant="ghost" @click="open = false">{{ t('common.cancel') }}</Button>
             <Button :disabled="selectedNames.length === 0 || importing" @click="handleAdd">
-              {{ importing ? '添加中...' : `添加到AgentPack (${selectedNames.length}个)` }}
+              {{ importing ? t('mcp.adding') : t('mcp.addToAgentPack', { count: selectedNames.length }) }}
             </Button>
           </DialogFooter>
         </template>

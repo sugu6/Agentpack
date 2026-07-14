@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, watch, nextTick } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useMcpStore } from '@/stores/mcp'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter, DialogTrigger, Button, Input, Label, Tabs, TabsList, TabsTrigger } from '@/components/ui'
 import { PhPlus, PhPencilSimple, PhCode } from '@phosphor-icons/vue'
@@ -16,6 +17,8 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'updated'): void
 }>()
+
+const { t } = useI18n()
 
 function resolveTransport(type: string): 'stdio' | 'sse' | 'http' {
   if (type === 'local') return 'stdio'
@@ -122,11 +125,11 @@ function jsonToForm(text: string): { name: string; server: Record<string, any> }
   try {
     parsed = JSON.parse(stripJsonComments(text))
   } catch {
-    formErrors.value = ['JSON 格式错误']
+    formErrors.value = [t('mcp.errors.jsonInvalid')]
     return null
   }
   if (!parsed || typeof parsed !== 'object') {
-    formErrors.value = ['JSON 必须是一个对象']
+    formErrors.value = [t('mcp.errors.jsonNotObject')]
     return null
   }
   let servers: Record<string, any> | undefined
@@ -144,19 +147,19 @@ function jsonToForm(text: string): { name: string; server: Record<string, any> }
   }
 
   if (!servers) {
-    formErrors.value = ['JSON 中未找到 mcpServers/servers/mcp 字段']
+    formErrors.value = [t('mcp.errors.noServersField')]
     return null
   }
 
   const entries = Object.entries(servers)
   if (entries.length === 0) {
-    formErrors.value = ['JSON 中未定义任何服务器']
+    formErrors.value = [t('mcp.errors.noServers')]
     return null
   }
 
   const [name, srv] = entries[0]
   if (!srv || typeof srv !== 'object') {
-    formErrors.value = [`服务器 "${name}" 配置格式无效`]
+    formErrors.value = [t('mcp.errors.serverInvalid', { name })]
     return null
   }
 
@@ -216,7 +219,7 @@ function formatJson() {
   try {
     jsonRaw.value = JSON.stringify(JSON.parse(stripJsonComments(jsonRaw.value)), null, 2)
   } catch {
-    formErrors.value = ['JSON 格式错误，无法格式化']
+    formErrors.value = [t('mcp.errors.formatJsonFailed')]
   }
 }
 
@@ -298,16 +301,16 @@ async function submit() {
     if (!result) return
     const { name, server: srv } = result
 
-    if (!name) errors.push('服务器名称不能为空')
+    if (!name) errors.push(t('mcp.errors.nameRequired'))
 
     const transport = resolveTransport(srv.type)
 
     const { command, args } = normalizeCommandArgs(srv)
 
-    if (!command && transport === 'stdio') errors.push('命令不能为空')
-    if ((transport === 'sse' || transport === 'http') && !srv.url) errors.push('SSE/HTTP 传输模式需要填写 URL')
+    if (!command && transport === 'stdio') errors.push(t('mcp.errors.commandRequired'))
+    if ((transport === 'sse' || transport === 'http') && !srv.url) errors.push(t('mcp.errors.urlRequired'))
     if (srv.url && transport !== 'stdio') {
-      try { new URL(srv.url) } catch { errors.push('URL 格式不正确') }
+      try { new URL(srv.url) } catch { errors.push(t('mcp.errors.urlInvalid')) }
     }
     if (errors.length > 0) {
       formErrors.value = errors
@@ -317,7 +320,7 @@ async function submit() {
     const env = srv.env || srv.environment || {}
     const targetAgentIds = [...selectedAgentIds.value]
     if (targetAgentIds.length === 0) {
-      formErrors.value = ['请至少选择一个 Agent']
+      formErrors.value = [t('mcp.errors.noAgent')]
       return
     }
 
@@ -340,30 +343,30 @@ async function submit() {
     try {
       if (props.mode === 'edit' && props.server) {
         await mcp.update(props.server.id, server, targetAgentIds)
-        toast.success(`已更新 MCP 服务器 ${server.name}`)
+        toast.success(t('mcp.toast.updated', { name: server.name }))
       } else {
         await mcp.add(server, targetAgentIds)
-        toast.success(`已添加 MCP 服务器 ${server.name}`)
+        toast.success(t('mcp.toast.added', { name: server.name }))
       }
       formErrors.value = []
       emit('updated')
       open.value = false
       if (props.mode === 'add') reset()
     } catch (e) {
-      const msg = toast.fromError(e, '操作失败')
-      formErrors.value = ['操作失败，请重试']
+      const msg = toast.fromError(e, t('common.operationFailed'))
+      formErrors.value = [t('mcp.errors.operationFailed')]
       toast.error(msg)
     }
     return
   }
 
-  if (!form.value.name) errors.push('名称不能为空')
-  if (!form.value.command && form.value.transport === 'stdio') errors.push('命令不能为空')
+  if (!form.value.name) errors.push(t('mcp.errors.nameRequired'))
+  if (!form.value.command && form.value.transport === 'stdio') errors.push(t('mcp.errors.commandRequired'))
   if ((form.value.transport === 'sse' || form.value.transport === 'http') && !form.value.url) {
-    errors.push('SSE/HTTP 传输模式需要填写 URL')
+    errors.push(t('mcp.errors.urlRequired'))
   }
   if (form.value.url && form.value.transport !== 'stdio') {
-    try { new URL(form.value.url) } catch { errors.push('URL 格式不正确') }
+    try { new URL(form.value.url) } catch { errors.push(t('mcp.errors.urlInvalid')) }
   }
   if (errors.length > 0) {
     formErrors.value = errors
@@ -375,7 +378,7 @@ async function submit() {
 
   const targetAgentIds = [...selectedAgentIds.value]
   if (targetAgentIds.length === 0) {
-    formErrors.value = ['请至少选择一个 Agent']
+    formErrors.value = [t('mcp.errors.noAgent')]
     return
   }
 
@@ -398,18 +401,18 @@ async function submit() {
   try {
     if (props.mode === 'edit' && props.server) {
       await mcp.update(props.server.id, server, targetAgentIds)
-      toast.success(`已更新 MCP 服务器 ${server.name}`)
+      toast.success(t('mcp.toast.updated', { name: server.name }))
     } else {
       await mcp.add(server, targetAgentIds)
-      toast.success(`已添加 MCP 服务器 ${server.name}`)
+      toast.success(t('mcp.toast.added', { name: server.name }))
     }
     formErrors.value = []
     emit('updated')
     open.value = false
     if (props.mode === 'add') reset()
   } catch (e) {
-    const msg = toast.fromError(e, '操作失败')
-    formErrors.value = ['操作失败，请重试']
+    const msg = toast.fromError(e, t('common.operationFailed'))
+    formErrors.value = [t('mcp.errors.operationFailed')]
     toast.error(msg)
   }
 }
@@ -420,24 +423,24 @@ async function submit() {
     <DialogTrigger v-if="mode === 'add'" as-child>
       <Button size="sm">
         <PhPlus :size="14" />
-        <span>添加MCP</span>
+        <span>{{ t('mcp.add') }}</span>
       </Button>
     </DialogTrigger>
     <DialogTrigger v-else as-child>
-      <Button variant="outline" size="icon" aria-label="编辑">
+      <Button variant="outline" size="icon" :aria-label="t('common.edit')">
         <PhPencilSimple :size="14" />
       </Button>
     </DialogTrigger>
     <DialogContent class="max-w-2xl flex flex-col max-h-[85vh]">
       <DialogHeader>
-        <DialogTitle>{{ mode === 'add' ? '添加 MCP 服务器' : '编辑 MCP 服务器' }}</DialogTitle>
+        <DialogTitle>{{ mode === 'add' ? t('mcp.addServerTitle') : t('mcp.editServerTitle') }}</DialogTitle>
         <DialogDescription>
-          配置模型上下文协议服务器。
+          {{ t('mcp.dialogDescription') }}
         </DialogDescription>
       </DialogHeader>
       <Tabs :model-value="entryMode" @update:model-value="onEntryModeChange" class="w-full">
         <TabsList class="w-full">
-          <TabsTrigger value="form" class="flex-1">表单</TabsTrigger>
+          <TabsTrigger value="form" class="flex-1">{{ t('mcp.tab.form') }}</TabsTrigger>
           <TabsTrigger value="json" class="flex-1">
             <PhCode :size="12" />JSON
           </TabsTrigger>
@@ -449,11 +452,11 @@ async function submit() {
           <template v-if="entryMode === 'form'">
             <div class="grid grid-cols-2 gap-3">
               <div class="space-y-1.5">
-                <Label for="mcp-name">名称</Label>
+                <Label for="mcp-name">{{ t('mcp.name') }}</Label>
                 <Input id="mcp-name" v-model="form.name" name="mcp-name" autocomplete="off" placeholder="github" required />
               </div>
               <div class="space-y-1.5">
-                <Label>传输方式</Label>
+                <Label>{{ t('mcp.transport') }}</Label>
                 <Tabs v-model="form.transport" class="w-full">
                   <TabsList class="w-full">
                     <TabsTrigger value="stdio" class="flex-1">STDIO</TabsTrigger>
@@ -465,17 +468,17 @@ async function submit() {
             </div>
 
             <div class="space-y-1.5">
-              <Label for="mcp-desc">描述</Label>
-              <Input id="mcp-desc" v-model="form.description" name="mcp-desc" autocomplete="off" placeholder="此服务器的功能..." />
+              <Label for="mcp-desc">{{ t('common.description') }}</Label>
+              <Input id="mcp-desc" v-model="form.description" name="mcp-desc" autocomplete="off" :placeholder="t('mcp.descriptionPlaceholder')" />
             </div>
 
             <div class="space-y-1.5">
-              <Label for="mcp-cmd">命令</Label>
+              <Label for="mcp-cmd">{{ t('mcp.command') }}</Label>
               <Input id="mcp-cmd" v-model="form.command" name="mcp-cmd" autocomplete="off" placeholder="npx" :required="form.transport === 'stdio'" class="font-mono" />
             </div>
 
             <div class="space-y-1.5">
-              <Label for="mcp-args">参数</Label>
+              <Label for="mcp-args">{{ t('mcp.args') }}</Label>
               <Input id="mcp-args" v-model="form.args" name="mcp-args" autocomplete="off" placeholder="-y @modelcontextprotocol/server-github" class="font-mono" />
             </div>
 
@@ -485,7 +488,7 @@ async function submit() {
             </div>
 
             <div class="space-y-1.5">
-              <Label for="mcp-env">环境变量</Label>
+              <Label for="mcp-env">{{ t('mcp.env') }}</Label>
               <textarea
                 id="mcp-env"
                 name="mcp-env"
@@ -500,7 +503,7 @@ async function submit() {
 
           <template v-if="entryMode === 'json'">
               <div class="flex flex-col space-y-1.5">
-                <Label>JSON 配置</Label>
+                <Label>{{ t('mcp.jsonConfig') }}</Label>
                 <textarea
                   v-model="jsonRaw"
                   autocomplete="off"
@@ -529,9 +532,9 @@ async function submit() {
                 @change="(e: Event) => toggleSelectAll((e.target as HTMLInputElement).checked)"
                 class="h-4 w-4"
               />
-              全选 / 取消
+              {{ t('common.toggleAll') }}
               <span v-if="selectedAgentIds.size > 0" class="ml-auto text-xs text-muted-foreground">
-                {{ selectedAgentIds.size }}/{{ allAgentIds.length }} 已选
+                {{ selectedAgentIds.size }}/{{ allAgentIds.length }} {{ t('common.selected') }}
               </span>
             </label>
             <div class="flex flex-wrap gap-1.5">
@@ -560,7 +563,7 @@ async function submit() {
           </div>
 
           <div v-if="formErrors.length > 0" class="rounded-md border border-destructive/50 bg-destructive/5 p-3">
-            <p class="text-xs font-medium text-destructive">请修复以下错误：</p>
+            <p class="text-xs font-medium text-destructive">{{ t('mcp.errors.fixErrors') }}</p>
             <ul class="mt-1 space-y-0.5">
               <li v-for="err in formErrors" :key="err" class="text-xs text-destructive/80">
                 {{ err }}
@@ -571,19 +574,19 @@ async function submit() {
 
         <div v-if="entryMode === 'json'" class="flex items-start gap-2 shrink-0 px-1">
           <Button type="button" variant="outline" size="sm" class="h-6 text-[11px]" @click="formatJson">
-            格式化
+            {{ t('mcp.formatJson') }}
           </Button>
           <span class="text-[11px] text-muted-foreground/70">
-            支持 Claude Code / Cursor / Trae / OpenCode 格式，支持 // 注释，
-            <button type="button" class="underline hover:text-foreground" @click="switchToForm">切换回表单</button>
-            解析当前服务器。
+            {{ t('mcp.jsonSupportHint') }}
+            <button type="button" class="underline hover:text-foreground" @click="switchToForm">{{ t('mcp.switchToForm') }}</button>
+            {{ t('mcp.parseHint') }}
           </span>
         </div>
 
         <DialogFooter class="shrink-0">
-          <Button type="button" variant="outline" @click="open = false">取消</Button>
+          <Button type="button" variant="outline" @click="open = false">{{ t('common.cancel') }}</Button>
           <Button type="submit">
-            {{ mode === 'add' ? '安装' : '保存' }}
+            {{ mode === 'add' ? t('common.install') : t('common.save') }}
           </Button>
         </DialogFooter>
       </form>

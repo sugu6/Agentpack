@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { PhDownloadSimple, PhTag, PhTerminal, PhCheck, PhTrash, PhInfo, PhGlobe, PhBookOpen, PhLink, PhStar } from '@phosphor-icons/vue'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription, Badge, Button, Spinner, Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter, Separator } from '@/components/ui'
 import { useMarketStore } from '@/stores/market'
@@ -14,6 +15,7 @@ import { matchInstalledServer } from '@/lib/mcpMatch'
 
 const props = defineProps<{ server: MarketServer }>()
 
+const { t } = useI18n()
 const market = useMarketStore()
 const mcpStore = useMcpStore()
 const confirm = useConfirm()
@@ -70,17 +72,17 @@ async function confirmInstall() {
         serverToInstall = await api.market.getServer('smithery', props.server.sourceId)
       } catch (e) {
         const apiError = ApiError.from(e)
-        toast.error(`获取 Smithery 服务器详情失败：${apiError.message}`)
+        toast.error(t('market.toast.getSmitheryFailed', { error: apiError.message }))
         busy.value = false
         return
       }
     }
     await market.installServer(serverToInstall, ids)
     await mcpStore.fetch()
-    toast.success(`已安装 MCP 服务器 ${serverToInstall.title || serverToInstall.name}`)
+    toast.success(t('market.toast.installed', { name: serverToInstall.title || serverToInstall.name }))
   } catch (e) {
     const apiError = ApiError.from(e)
-    toast.error(`安装失败：${apiError.message}`)
+    toast.error(t('market.toast.installFailed', { error: apiError.message }))
   } finally {
     busy.value = false
   }
@@ -89,19 +91,19 @@ async function confirmInstall() {
 async function uninstallServer() {
   if (!installedServer.value) return
   const ok = await confirm.confirm({
-    title: '确认卸载',
-    message: `确定要卸载 MCP 服务器 "${installedServer.value.name}" 吗？将从所有绑定的 Agent 配置中移除。`,
-    confirmText: '卸载',
+    title: t('dialog.confirm.uninstall'),
+    message: t('market.uninstallConfirmMessage', { name: installedServer.value.name }),
+    confirmText: t('common.uninstall'),
     variant: 'destructive',
   })
   if (!ok) return
   uninstalling.value = true
   try {
     await mcpStore.remove(installedServer.value.id)
-    toast.success(`已卸载 MCP 服务器 ${installedServer.value.name}`)
+    toast.success(t('market.toast.uninstalled', { name: installedServer.value.name }))
   } catch (e) {
     const apiError = ApiError.from(e)
-    toast.error(`MCP 卸载失败：${apiError.message}`)
+    toast.error(t('market.toast.uninstallFailed', { error: apiError.message }))
   } finally {
     uninstalling.value = false
   }
@@ -130,7 +132,7 @@ async function uninstallServer() {
           <button
             type="button"
             class="rounded-md p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-muted hover:text-foreground group-hover:opacity-100"
-            title="查看详情"
+            :title="t('market.viewDetails')"
             @click.stop="openDetail"
           >
             <PhInfo :size="14" />
@@ -159,7 +161,7 @@ async function uninstallServer() {
 
       <div class="flex items-center justify-between pt-1">
         <p class="text-[11px] text-muted-foreground">
-          {{ activeGroups.length }} 个 Agent
+          {{ t('common.agentCount', { count: activeGroups.length }) }}
           <template v-if="server.installs">
             <span class="mx-1.5">·</span>
             <PhDownloadSimple :size="11" class="inline" />
@@ -177,7 +179,7 @@ async function uninstallServer() {
           >
             <Spinner v-if="uninstalling" class="mr-1" />
             <PhTrash v-else :size="13" class="mr-1 text-destructive" />
-            卸载
+            {{ t('common.uninstall') }}
           </Button>
           <Button
             v-else
@@ -188,11 +190,11 @@ async function uninstallServer() {
           >
             <Spinner v-if="busy" class="mr-1" />
             <PhDownloadSimple v-else :size="13" class="mr-1" />
-            安装
+            {{ t('common.install') }}
           </Button>
           <Badge v-if="installed" variant="outline" class="text-[10px] text-emerald-600 dark:text-emerald-400 border-emerald-500/40">
             <PhCheck :size="11" class="mr-0.5" />
-            已安装
+            {{ t('common.installed') }}
           </Badge>
         </div>
       </div>
@@ -210,7 +212,7 @@ async function uninstallServer() {
           </Badge>
           <Badge v-if="installed" variant="outline" class="shrink-0 text-[10px] text-emerald-600 dark:text-emerald-400 border-emerald-500/40">
             <PhCheck :size="11" class="mr-0.5" />
-            已安装
+            {{ t('common.installed') }}
           </Badge>
         </DialogTitle>
         <DialogDescription v-if="server.name !== server.title" class="font-mono text-xs">
@@ -228,7 +230,7 @@ async function uninstallServer() {
 
         <!-- 标签 -->
         <div v-if="server.tags?.length" class="space-y-1.5">
-          <p class="text-xs font-medium text-muted-foreground">标签</p>
+          <p class="text-xs font-medium text-muted-foreground">{{ t('market.tags') }}</p>
           <div class="flex flex-wrap gap-1.5">
             <Badge v-for="tag in server.tags" :key="tag" variant="outline" class="font-normal text-[10px]">
               {{ tag }}
@@ -238,7 +240,7 @@ async function uninstallServer() {
 
         <!-- 命令预览 -->
         <div v-if="commandFull" class="space-y-1.5">
-          <p class="text-xs font-medium text-muted-foreground">命令</p>
+          <p class="text-xs font-medium text-muted-foreground">{{ t('mcp.command') }}</p>
           <pre class="overflow-x-auto rounded-md bg-muted/60 px-3 py-2 font-mono text-[11px] leading-relaxed"><code>{{ commandFull }}</code></pre>
         </div>
 
@@ -253,13 +255,13 @@ async function uninstallServer() {
 
         <!-- Transport -->
         <div v-if="server.transport" class="flex items-center gap-2 text-xs">
-          <span class="text-muted-foreground">Transport:</span>
+          <span class="text-muted-foreground">{{ t('market.transportLabel') }}:</span>
           <Badge variant="outline" class="font-mono text-[10px]">{{ server.transport }}</Badge>
         </div>
 
         <!-- 环境变量 -->
         <div v-if="envKeys.length" class="space-y-1.5">
-          <p class="text-xs font-medium text-muted-foreground">环境变量（安装时填写）</p>
+          <p class="text-xs font-medium text-muted-foreground">{{ t('market.envVarsHint') }}</p>
           <div class="flex flex-wrap gap-1.5">
             <Badge v-for="key in envKeys" :key="key" variant="outline" class="font-mono text-[10px]">
               {{ key }}
@@ -273,7 +275,7 @@ async function uninstallServer() {
         <div v-if="server.installs || server.stars" class="flex flex-wrap items-center gap-4 text-xs text-muted-foreground">
           <span v-if="server.installs" class="inline-flex items-center gap-1">
             <PhDownloadSimple :size="13" />
-            {{ server.installs.toLocaleString() }} 次安装
+            {{ t('market.installsCount', { count: server.installs.toLocaleString() }) }}
           </span>
           <span v-if="server.stars" class="inline-flex items-center gap-1">
             <PhStar :size="13" />
@@ -285,11 +287,11 @@ async function uninstallServer() {
         <div v-if="server.homepage || server.docs" class="flex flex-wrap gap-2">
           <Button v-if="server.homepage" size="sm" variant="outline" @click="openExternal(server.homepage)">
             <PhGlobe :size="13" class="mr-1.5" />
-            主页
+            {{ t('market.homepage') }}
           </Button>
           <Button v-if="server.docs" size="sm" variant="outline" @click="openExternal(server.docs)">
             <PhBookOpen :size="13" class="mr-1.5" />
-            文档
+            {{ t('market.docs') }}
           </Button>
         </div>
       </div>
@@ -298,12 +300,12 @@ async function uninstallServer() {
         <Button v-if="installed" variant="outline" class="border-destructive/40 text-destructive hover:bg-destructive/10" :disabled="uninstalling" @click="detailOpen = false; uninstallServer()">
           <Spinner v-if="uninstalling" class="mr-1" />
           <PhTrash v-else :size="13" class="mr-1 text-destructive" />
-          卸载
+          {{ t('common.uninstall') }}
         </Button>
         <Button v-else variant="outline" :disabled="busy" @click="detailOpen = false; openDialog()">
           <Spinner v-if="busy" class="mr-1" />
           <PhDownloadSimple v-else :size="13" class="mr-1" />
-          安装
+          {{ t('common.install') }}
         </Button>
       </DialogFooter>
     </DialogContent>
@@ -313,9 +315,9 @@ async function uninstallServer() {
   <Dialog v-model:open="showDialog">
     <DialogContent class="max-w-md select-none">
       <DialogHeader>
-        <DialogTitle>选择目标 Agent</DialogTitle>
+        <DialogTitle>{{ t('skills.selectTargetAgentsTitle') }}</DialogTitle>
         <DialogDescription>
-          选择要将 {{ server.title || server.name }} 安装到哪些 Agent。
+          {{ t('market.installTargetDesc', { name: server.title || server.name }) }}
         </DialogDescription>
       </DialogHeader>
 
@@ -328,9 +330,9 @@ async function uninstallServer() {
             @change="(e: Event) => toggleSelectAll((e.target as HTMLInputElement).checked)"
             class="h-4 w-4"
           />
-          全选 / 取消
+          {{ t('common.toggleAll') }}
           <span v-if="selectedAgentIds.size > 0" class="ml-auto text-xs text-muted-foreground">
-            {{ selectedAgentIds.size }}/{{ allAgentIds.length }} 已选
+            {{ selectedAgentIds.size }}/{{ allAgentIds.length }} {{ t('common.selected') }}
           </span>
         </label>
 
@@ -353,10 +355,10 @@ async function uninstallServer() {
       </div>
 
       <DialogFooter>
-        <Button variant="ghost" @click="showDialog = false">取消</Button>
+        <Button variant="ghost" @click="showDialog = false">{{ t('common.cancel') }}</Button>
         <Button :disabled="selectedAgentIds.size === 0 || busy" @click="confirmInstall">
           <Spinner v-if="busy" class="mr-1" />
-          安装到 {{ selectedAgentIds.size }} 个 Agent
+          {{ t('market.installToAgents', { count: selectedAgentIds.size }) }}
         </Button>
       </DialogFooter>
     </DialogContent>

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { PhDownloadSimple, PhGithubLogo, PhCheck, PhTrash } from '@phosphor-icons/vue'
 import {
   Card, CardContent, CardHeader, CardTitle, CardDescription,
@@ -18,6 +19,7 @@ import { useToast } from '@/composables/useToast'
 
 const props = defineProps<{ skill: MarketSkill }>()
 
+const { t } = useI18n()
 const market = useMarketStore()
 const skillsStore = useSkillsStore()
 const confirm = useConfirm()
@@ -67,11 +69,11 @@ async function confirmInstall() {
     await market.installSkill(props.skill, ids)
     showDialog.value = false
     await skillsStore.load()
-    toast.success(`已安装 Skill ${props.skill.name}`)
+    toast.success(t('skills.toast.installSuccess', { name: props.skill.name }))
   } catch (e) {
     const apiError = ApiError.from(e)
     installError.value = apiError.message
-    toast.error(`安装失败：${apiError.message}`)
+    toast.error(t('market.toast.installFailed', { error: apiError.message }))
   } finally {
     busy.value = false
   }
@@ -80,19 +82,19 @@ async function confirmInstall() {
 async function uninstallSkill() {
   if (!installedSkill.value) return
   const ok = await confirm.confirm({
-    title: '确认卸载',
-    message: `确定要卸载技能 "${installedSkill.value.name}" 吗？将从 SSOT 及所有绑定的 Agent 目录中移除。`,
-    confirmText: '卸载',
+    title: t('dialog.confirm.uninstall'),
+    message: t('skills.uninstallConfirmMessageNamed', { name: installedSkill.value.name }),
+    confirmText: t('common.uninstall'),
     variant: 'destructive',
   })
   if (!ok) return
   uninstalling.value = true
   try {
     await skillsStore.uninstall(installedSkill.value.id)
-    toast.success(`已卸载 Skill ${installedSkill.value.name}`)
+    toast.success(t('skills.toast.uninstalled', { name: installedSkill.value.name }))
   } catch (e) {
     const apiError = ApiError.from(e)
-    toast.error(`Skill 卸载失败：${apiError.message}`)
+    toast.error(t('skills.toast.uninstallFailed', { error: apiError.message }))
   } finally {
     uninstalling.value = false
   }
@@ -135,7 +137,7 @@ async function uninstallSkill() {
         <button
           type="button"
           class="truncate font-mono transition-colors hover:text-foreground hover:underline"
-          :title="`查看仓库 ${skill.repoOwner}/${skill.repoName}`"
+          :title="t('skills.viewRepo', { repo: `${skill.repoOwner}/${skill.repoName}` })"
           @click="openRepoUrl"
         >
           {{ skill.repoOwner }}/{{ skill.repoName }}
@@ -143,13 +145,13 @@ async function uninstallSkill() {
         <template v-if="skill.installs > 0">
           <span class="text-border">·</span>
           <PhDownloadSimple :size="12" />
-          <span>{{ skill.installs.toLocaleString() }} 次安装</span>
+          <span>{{ t('market.installsCount', { count: skill.installs.toLocaleString() }) }}</span>
         </template>
       </div>
 
       <div class="flex items-center justify-between pt-1">
         <p class="text-[11px] text-muted-foreground">
-          {{ activeGroups.length }} 个 Agent
+          {{ t('common.agentCount', { count: activeGroups.length }) }}
         </p>
         <div class="flex items-center gap-2">
           <Button
@@ -162,7 +164,7 @@ async function uninstallSkill() {
           >
             <Spinner v-if="uninstalling" class="mr-1" />
             <PhTrash v-else :size="13" class="mr-1 text-destructive" />
-            卸载
+            {{ t('common.uninstall') }}
           </Button>
           <Button
             v-else
@@ -173,11 +175,11 @@ async function uninstallSkill() {
           >
             <Spinner v-if="busy" class="mr-1" />
             <PhDownloadSimple v-else :size="13" class="mr-1" />
-            安装
+            {{ t('common.install') }}
           </Button>
           <Badge v-if="installed" variant="outline" class="text-[10px] text-emerald-600 dark:text-emerald-400 border-emerald-500/40">
             <PhCheck :size="11" class="mr-0.5" />
-            已安装
+            {{ t('common.installed') }}
           </Badge>
         </div>
       </div>
@@ -188,9 +190,9 @@ async function uninstallSkill() {
   <Dialog v-model:open="showDialog">
     <DialogContent class="max-w-md select-none">
       <DialogHeader>
-        <DialogTitle>选择目标 Agent</DialogTitle>
+        <DialogTitle>{{ t('skills.selectTargetAgentsTitle') }}</DialogTitle>
         <DialogDescription>
-          选择要将 {{ skill.name }} 安装到哪些 Agent。默认未选中任何 Agent。
+          {{ t('skills.marketInstallTargetDesc', { name: skill.name }) }}
         </DialogDescription>
       </DialogHeader>
 
@@ -203,9 +205,9 @@ async function uninstallSkill() {
             @change="(e: Event) => toggleSelectAll((e.target as HTMLInputElement).checked)"
             class="h-4 w-4"
           />
-          全选 / 取消
+          {{ t('common.toggleAll') }}
           <span v-if="selectedAgentIds.size > 0" class="ml-auto text-xs text-muted-foreground">
-            {{ selectedAgentIds.size }}/{{ allAgentIds.length }} 已选
+            {{ selectedAgentIds.size }}/{{ allAgentIds.length }} {{ t('common.selected') }}
           </span>
         </label>
 
@@ -231,10 +233,10 @@ async function uninstallSkill() {
         <div v-if="installError" class="mb-3 w-full text-xs text-destructive">
           {{ installError }}
         </div>
-        <Button variant="ghost" :disabled="busy" @click="showDialog = false">取消</Button>
+        <Button variant="ghost" :disabled="busy" @click="showDialog = false">{{ t('common.cancel') }}</Button>
         <Button :disabled="selectedAgentIds.size === 0 || busy" @click="confirmInstall">
           <Spinner v-if="busy" class="mr-1" />
-          安装到 {{ selectedAgentIds.size }} 个 Agent
+          {{ t('market.installToAgents', { count: selectedAgentIds.size }) }}
         </Button>
       </DialogFooter>
     </DialogContent>

@@ -1,4 +1,5 @@
 import { createRouter, createWebHashHistory } from 'vue-router'
+import { i18n } from '@/i18n'
 
 const router = createRouter({
   history: createWebHashHistory(),
@@ -7,31 +8,31 @@ const router = createRouter({
       path: '/',
       name: 'agents',
       component: () => import('@/views/AgentsView.vue'),
-      meta: { title: 'Agent' },
+      meta: { title: () => i18n.global.t('nav.agents') },
     },
     {
       path: '/mcp',
       name: 'mcp',
       component: () => import('@/views/McpView.vue'),
-      meta: { title: 'MCP 服务器' },
+      meta: { title: () => i18n.global.t('nav.mcp') },
     },
     {
       path: '/skills',
       name: 'skills',
       component: () => import('@/views/SkillsView.vue'),
-      meta: { title: '技能' },
+      meta: { title: () => i18n.global.t('nav.skills') },
     },
     {
       path: '/market',
       name: 'market',
       component: () => import('@/views/MarketView.vue'),
-      meta: { title: '市场' },
+      meta: { title: () => i18n.global.t('nav.market') },
     },
     {
       path: '/settings',
       name: 'settings',
       component: () => import('@/views/SettingsView.vue'),
-      meta: { title: '设置' },
+      meta: { title: () => i18n.global.t('nav.settings') },
     },
     {
       path: '/:pathMatch(.*)*',
@@ -41,8 +42,10 @@ const router = createRouter({
 })
 
 router.afterEach((to) => {
-  if (to.meta.title) {
-    document.title = `${to.meta.title} · AgentPack`
+  const title = to.meta.title
+  const resolved = typeof title === 'function' ? (title as () => string)() : title
+  if (resolved) {
+    document.title = `${resolved} · AgentPack`
   }
 })
 
