@@ -16,44 +16,22 @@ permissions:
 
 jobs:
   changelog:
-    name: Generate Changelog
+    name: Extract Release Notes
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0
           ref: ${{ github.event.repository.default_branch }}
 
-      - name: Generate full CHANGELOG.md
+      - name: Extract latest release notes from CHANGELOG.md
         if: startsWith(github.ref, 'refs/tags/v')
-        uses: orhun/git-cliff-action@v4
-        with:
-          config: cliff.toml
-          args: -v
-        env:
-          OUTPUT: CHANGELOG.md
-
-      - name: Generate latest release notes
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: orhun/git-cliff-action@v4
-        with:
-          config: cliff.toml
-          args: --latest --strip header
-        env:
-          OUTPUT: release_notes.md
-
-      - name: Commit and push CHANGELOG.md
-        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add CHANGELOG.md
-          git commit -m "docs(changelog): update for ${{ github.ref_name }}" || echo "No changes to commit"
-          git push
-
-      - name: Save release notes as CHANGELOG.txt
-        if: startsWith(github.ref, 'refs/tags/v')
-        run: cp release_notes.md "${{ runner.temp }}/CHANGELOG.txt"
+          # Extract the first version section (skipping [Unreleased]) from CHANGELOG.md
+          # awk: skip [Unreleased] header, print from first real version to next version
+          awk '/^## \[Unreleased\]/{next} /^## \[/{c++; if(c==2) exit} c==1' CHANGELOG.md > "${{ runner.temp }}/CHANGELOG.txt"
+          echo "=== Extracted release notes ==="
+          cat "${{ runner.temp }}/CHANGELOG.txt"
 
       - name: Upload changelog artifact
         if: startsWith(github.ref, 'refs/tags/v')

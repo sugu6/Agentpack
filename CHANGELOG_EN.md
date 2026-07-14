@@ -34,6 +34,8 @@ versioned by [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - TitleBar titles inconsistent with Sidebar (`Agent` → `Agents`, `MCP Servers` → `MCP`)
 - Switching back to "Follow system" from English not working (`resolveLanguage("")` was reading localStorage cache)
 - Skills page English subtitle wrapping to multiple lines
+- Check update routing GitHub API through `gh-proxy.com` caused 403 rate limiting (shared proxy IP), never fetching release data (API calls now direct-connect; downloads still proxied)
+- Check update toast falsely showing "latest version" on rate-limit/network errors; now displays backend message
 - Missing `assets` field in `githubRelease` struct, download URL not passed to frontend
 - "Don't remind" checkbox in close dialog not saving `windowNoRemind`
 - `StartDownloadUpdate` missing HTTP status check and progress events
@@ -44,6 +46,7 @@ versioned by [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### CI
 
 - Added i18n key consistency check to CI workflow
+- CI no longer auto-generates CHANGELOG.md with git-cliff; release notes extracted from manually maintained CHANGELOG.md
 
 ## [0.1.0] - 2026-07-14
 
