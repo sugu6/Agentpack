@@ -13,11 +13,16 @@ versioned by [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - Sidebar Skills nav item now shows a badge with the installed skill count
 - Auto-prompt update changelog dialog when a new version is found, with in-dialog download button
+- New Release CI workflow: enter a version number in GitHub Actions to auto-bump versions, transform CHANGELOG, create tag and trigger packaging
 
 ### Changed
 
 - Agent variant labels (CLI / Desktop / IDE / Config) no longer use i18n translation, now hardcoded in English
 - Removed `agents.variant` i18n keys from `en.json` / `zh-CN.json`
+- Auto update check moved to Settings page entry (once per session), no longer triggers on app startup
+- Removed "Open file" button after download completes (download auto-installs, button was unused)
+- Cleaned up orphaned `OpenDownloadedFile` backend method and frontend API binding
+- Dialog close button (X) reverted to original minimal style (`opacity-70` + `hover:opacity-100`), removed incorrectly added borders
 
 ### Fixed
 
@@ -29,6 +34,11 @@ versioned by [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Download writes to `.downloading` temp file first, then renames to final name on success, preventing concurrent download conflicts
 - Wait 1 second after download before quitting to ensure installer starts
 - Added `XDG_DOWNLOAD_DIR` env var support for macOS downloads
+- Market MCP detail dialog close caused list scroll position offset: reka-ui Dialog's focus restoration triggers browser scroll, now saves and restores scroll position
+- `autoUpdateChecked` variable was inside `<script setup>`, resetting on every component remount; moved to a separate `<script>` block for true module-level persistence
+- Release workflow's `${{ inputs.version }}` direct shell interpolation was an injection risk; switched to env var passing + `[[ =~ ]]` whole-string matching
+- CHANGELOG footer compare links pointed to wrong repo `JetBrains/AgentPack`; release script now auto-fixes to `sugu6/Agentpack`
+- Chinese CHANGELOG [0.1.0] section had untranslated English entries; all translated to Chinese
 
 ## [0.1.1] - 2026-07-15
 
@@ -91,6 +101,7 @@ Initial release of AgentPack — a unified MCP / Skills / Agent management deskt
 
 - Replace macos-13 intel build with darwin/universal on macos-latest
 
-[0.1.2]: https://github.com/JetBrains/AgentPack/compare/v0.1.1...v0.1.2
-[0.1.1]: https://github.com/JetBrains/AgentPack/compare/v0.1.0...v0.1.1
-[0.1.0]: https://github.com/JetBrains/AgentPack/releases/tag/v0.1.0
+[0.1.2]: https://github.com/sugu6/Agentpack/compare/v0.1.1...v0.1.2
+[0.1.1]: https://github.com/sugu6/Agentpack/compare/v0.1.0...v0.1.1
+[0.1.0]: https://github.com/sugu6/Agentpack/releases/tag/v0.1.0
+[Unreleased]: https://github.com/sugu6/Agentpack/compare/v0.1.2...HEAD

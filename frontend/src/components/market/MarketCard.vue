@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { PhDownloadSimple, PhTag, PhTerminal, PhCheck, PhTrash, PhInfo, PhGlobe, PhBookOpen, PhLink, PhStar } from '@phosphor-icons/vue'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription, Badge, Button, Spinner, Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter, Separator } from '@/components/ui'
@@ -25,6 +25,33 @@ const busy = ref(false)
 const uninstalling = ref(false)
 const detailOpen = ref(false)
 
+// 保存打开弹窗时的滚动位置，关闭后恢复，防止 reka-ui Dialog 焦点还原导致列表位置偏移
+let savedScrollTop = 0
+
+function findScrollContainer(): HTMLElement | null {
+  return document.querySelector('.market-scroll-container')
+}
+
+function openDetail() {
+  const container = findScrollContainer()
+  if (container) savedScrollTop = container.scrollTop
+  detailOpen.value = true
+}
+
+// 弹窗关闭后恢复滚动位置（在焦点还原之后执行）
+watch(detailOpen, (open) => {
+  if (!open) {
+    const container = findScrollContainer()
+    if (!container) return
+    // 双重 RAF 确保在 reka-ui 的 watch + FocusScope unmount 之后执行
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        container.scrollTop = savedScrollTop
+      })
+    })
+  }
+})
+
 // 匹配已安装的 MCP 服务器：
 // 1. source + sourceId 精确匹配（managed 安装路径）
 // 2. command + args 归一化匹配（处理 cmd /c 包装与 @latest 差异，覆盖手动安装的 context7 等场景）
@@ -49,10 +76,6 @@ const envKeys = computed(() => {
   const env = props.server.env || {}
   return Object.keys(env)
 })
-
-function openDetail() {
-  detailOpen.value = true
-}
 
 async function openExternal(url: string) {
   if (!url) return

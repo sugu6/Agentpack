@@ -1,3 +1,9 @@
+<script lang="ts">
+// 模块级标记：每个页面会话只静默自动检查一次更新，避免反复进入设置页时重复请求
+// 必须放在非 setup 的 <script> 块中，才能跨组件实例持久化
+let autoUpdateChecked = false
+</script>
+
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useSettingsStore } from '@/stores/settings'
@@ -37,8 +43,6 @@ const appVersion = ref('')
 const downloadStatus = ref<'idle' | 'downloading' | 'complete' | 'error'>('idle')
 const downloadProgress = ref(0)
 const downloadSpeed = ref('')
-const downloadedFilePath = ref('')
-const downloadedFileName = ref('')
 let offDownloadProgress: (() => void) | null = null
 let offDownloadComplete: (() => void) | null = null
 let offDownloadError: (() => void) | null = null
@@ -62,6 +66,11 @@ onMounted(() => {
   void settings.fetch()
   // 从后端获取版本号
   api.system.getAppVersion().then(v => { appVersion.value = v }).catch(() => {})
+  // 进入设置页时自动检查一次更新（每个会话仅一次），避免反复进入设置页时重复请求
+  if (!autoUpdateChecked) {
+    autoUpdateChecked = true
+    void checkUpdate()
+  }
   // 监听下载进度事件
   offDownloadProgress = events.on('update:download:progress', (data: any) => {
     if (data && typeof data === 'object') {
@@ -72,8 +81,6 @@ onMounted(() => {
   offDownloadComplete = events.on('update:download:complete', (data: any) => {
     if (data && typeof data === 'object') {
       downloadStatus.value = 'complete'
-      downloadedFilePath.value = data.filePath || ''
-      downloadedFileName.value = data.fileName || ''
     }
   })
   offDownloadError = events.on('update:download:error', (data: any) => {
@@ -324,8 +331,6 @@ async function startDownload() {
   downloadStatus.value = 'downloading'
   downloadProgress.value = 0
   downloadSpeed.value = ''
-  downloadedFilePath.value = ''
-  downloadedFileName.value = ''
   try {
     await api.system.startDownloadUpdate(updateResult.value.downloadUrl)
   } catch (e) {
@@ -343,16 +348,6 @@ async function cancelDownload() {
     downloadSpeed.value = ''
   } catch (e) {
     // ignore
-  }
-}
-
-async function openDownloadedFile() {
-  if (!downloadedFilePath.value) return
-  try {
-    await api.system.openDownloadedFile(downloadedFilePath.value)
-  } catch (e) {
-    const apiError = ApiError.from(e)
-    toast.error(t('settings.toast.openFileFailed', { error: apiError.message }))
   }
 }
 

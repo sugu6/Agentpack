@@ -13,11 +13,16 @@
 
 - Sidebar Skills 导航项添加数量角标，显示已安装数量
 - 发现新版本时自动弹出更新日志弹窗，可直接在弹窗内下载安装包，不再需要到页面底部下载
+- 新增 Release CI workflow：在 GitHub Actions 输入版本号即可自动更新版本号、转换 CHANGELOG、打 tag 并触发打包
 
 ### 变更
 
 - Agent 类型标签（CLI / Desktop / IDE / Config）不再走 i18n 翻译，直接使用英文硬编码
 - 删除 `en.json` / `zh-CN.json` 中 `agents.variant` 的 i18n 键
+- 自动检查更新改为进入设置页时触发（每个会话仅一次），避免刚开软件就弹更新提示
+- 移除下载完成的"打开文件"按钮（下载完成会自动安装，按钮已无用）
+- 清理孤立的 `OpenDownloadedFile` 后端方法和前端 API 绑定
+- 弹窗关闭按钮（X）恢复为原始简洁样式（`opacity-70` + `hover:opacity-100`），移除错误添加的边框
 
 ### 修复
 
@@ -29,6 +34,11 @@
 - 下载完成先写入 `.downloading` 临时文件，成功后再重命名为正式文件名，防止并发下载冲突
 - 下载完成后等待 1 秒再退出应用，确保安装程序启动完毕
 - macOS 下载增加 `XDG_DOWNLOAD_DIR` 环境变量支持
+- 市场 MCP 查看弹窗关闭后列表滚动位置偏移：reka-ui Dialog 关闭时的焦点还原会触发浏览器滚动，改为保存并恢复滚动位置
+- `autoUpdateChecked` 变量误放在 `<script setup>` 内导致每次组件重新挂载都重置，移到独立 `<script>` 块实现真正的模块级持久化
+- Release workflow 的 `${{ inputs.version }}` 直接插值到 shell 存在注入风险，改用 env 变量传参 + `[[ =~ ]]` 整串匹配
+- CHANGELOG 底部 compare 链接的 repo URL 错误指向 `JetBrains/AgentPack`，由 release 脚本自动修正为 `sugu6/Agentpack`
+- 中文 CHANGELOG 的 [0.1.0] 节存在未翻译的英文条目，已全部翻译为中文
 
 ## [0.1.1] - 2026-07-15
 
@@ -77,20 +87,21 @@ AgentPack 的初始版本，一款面向 AI 编码工具的统一 MCP / Skills /
 
 ### 特性
 
-- 添加 ARM 平台构建支持并修复右键菜单调试行为
+- 新增 ARM 平台构建支持，修复右键菜单调试行为
 
 ### 修复
 
-- Add packages field to pnpm-workspace.yaml to fix build
-- Stop tracking generated wailsjs/bindings dirs to fix CI
-- Install libwebkit2gtk-4.0-dev for Wails v2 instead of 4.1
-- Install NSIS via choco for Windows installer generation
-- Add NSIS to GITHUB_PATH so makensis is found by wails build
+- 在 pnpm-workspace.yaml 中添加 packages 字段以修复构建问题
+- 取消跟踪生成的 wailsjs/bindings 目录以修复 CI
+- 为 Wails v2 安装 libwebkit2gtk-4.0-dev 而非 4.1
+- 通过 choco 安装 NSIS 以生成 Windows 安装包
+- 将 NSIS 添加到 GITHUB_PATH，确保 wails build 能找到 makensis
 
 ### 持续集成
 
-- Replace macos-13 intel build with darwin/universal on macos-latest
+- 用 macos-latest 上的 darwin/universal 构建替代 macos-13 intel 构建
 
-[0.1.2]: https://github.com/JetBrains/AgentPack/compare/v0.1.1...v0.1.2
-[0.1.1]: https://github.com/JetBrains/AgentPack/compare/v0.1.0...v0.1.1
-[0.1.0]: https://github.com/JetBrains/AgentPack/releases/tag/v0.1.0
+[0.1.2]: https://github.com/sugu6/Agentpack/compare/v0.1.1...v0.1.2
+[0.1.1]: https://github.com/sugu6/Agentpack/compare/v0.1.0...v0.1.1
+[0.1.0]: https://github.com/sugu6/Agentpack/releases/tag/v0.1.0
+[Unreleased]: https://github.com/sugu6/Agentpack/compare/v0.1.2...HEAD

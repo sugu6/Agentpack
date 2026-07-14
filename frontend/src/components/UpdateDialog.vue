@@ -6,7 +6,7 @@ import { useToast } from '@/composables/useToast'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter, Button } from '@/components/ui'
-import { PhDownload, PhFolderOpen, PhArrowsClockwise } from '@phosphor-icons/vue'
+import { PhDownload, PhArrowsClockwise } from '@phosphor-icons/vue'
 
 function renderMarkdown(md: string): string {
   if (!md) return ''
@@ -21,8 +21,6 @@ const result = ref<UpdateCheckResult | null>(null)
 const downloadStatus = ref<'idle' | 'downloading' | 'complete' | 'error'>('idle')
 const downloadProgress = ref(0)
 const downloadSpeed = ref('')
-const downloadedFilePath = ref('')
-const downloadedFileName = ref('')
 
 let offUpdateAvailable: (() => void) | null = null
 let offDownloadProgress: (() => void) | null = null
@@ -45,8 +43,6 @@ onMounted(() => {
   offDownloadComplete = events.on('update:download:complete', (data: any) => {
     if (data && typeof data === 'object') {
       downloadStatus.value = 'complete'
-      downloadedFilePath.value = data.filePath || ''
-      downloadedFileName.value = data.fileName || ''
     }
   })
   offDownloadError = events.on('update:download:error', (data: any) => {
@@ -83,8 +79,6 @@ async function startDownload() {
   downloadStatus.value = 'downloading'
   downloadProgress.value = 0
   downloadSpeed.value = ''
-  downloadedFilePath.value = ''
-  downloadedFileName.value = ''
   try {
     await api.system.startDownloadUpdate(result.value.downloadUrl)
   } catch (e) {
@@ -102,15 +96,6 @@ async function cancelDownload() {
   }
 }
 
-async function openDownloadedFile() {
-  if (!downloadedFilePath.value) return
-  try {
-    await api.system.openDownloadedFile(downloadedFilePath.value)
-  } catch (e) {
-    toast.error(t('settings.toast.openFileFailed', { error: String(e) }))
-  }
-}
-
 function handleClose() {
   if (downloadStatus.value === 'downloading') {
     cancelDownload()
@@ -118,8 +103,6 @@ function handleClose() {
   downloadStatus.value = 'idle'
   downloadProgress.value = 0
   downloadSpeed.value = ''
-  downloadedFilePath.value = ''
-  downloadedFileName.value = ''
   result.value = null
 }
 </script>
@@ -163,11 +146,8 @@ function handleClose() {
             </Button>
           </div>
         </div>
-        <div v-if="downloadStatus === 'complete'" class="flex gap-2 justify-end">
-          <Button size="sm" variant="default" @click="openDownloadedFile">
-            <PhFolderOpen :size="14" />
-            <span>{{ t('settings.update.openFile') }}</span>
-          </Button>
+        <div v-if="downloadStatus === 'complete'" class="flex justify-end">
+          <span class="text-xs text-emerald-600 dark:text-emerald-400">{{ t('settings.update.downloadComplete') }}</span>
         </div>
         <div v-if="downloadStatus === 'error'" class="flex gap-2 justify-end">
           <Button size="sm" variant="outline" @click="startDownload">

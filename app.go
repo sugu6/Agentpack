@@ -148,22 +148,6 @@ func (a *App) startup(ctx context.Context) {
 	// 启动系统托盘（在 goroutine 中运行）
 	a.trayActive = true
 	go setupTray(a)
-
-	// 启动 5 秒后静默检查更新
-	go func() {
-		time.Sleep(5 * time.Second)
-		a.mu.RLock()
-		if a.closed {
-			a.mu.RUnlock()
-			return
-		}
-		ctx := a.ctx
-		a.mu.RUnlock()
-		result, err := a.CheckUpdate()
-		if err == nil && result.HasUpdate {
-			wruntime.EventsEmit(ctx, "app:update-available", result)
-		}
-	}()
 }
 
 func (a *App) shutdown(ctx context.Context) {

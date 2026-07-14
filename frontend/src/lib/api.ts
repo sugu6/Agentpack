@@ -41,7 +41,6 @@ import {
   CheckSkillUpdates,
   CheckUpdate,
   DeleteMcpServer,
-  OpenDownloadedFile,
   RemoveSkillRepo,
   StartDownloadUpdate,
   UpdateSkillRepo,
@@ -394,9 +393,6 @@ export const api = {
     },
     cancelDownload: async (): Promise<void> => {
       return safeCall(() => CancelDownload())
-    },
-    openDownloadedFile: async (filePath: string): Promise<void> => {
-      return safeCall(() => OpenDownloadedFile(filePath))
     },
   },
 }

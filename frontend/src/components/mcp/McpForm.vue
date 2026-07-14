@@ -188,7 +188,9 @@ function switchToJson() {
 }
 
 function switchToForm() {
+  entryMode.value = 'form'
   formErrors.value = []
+  if (!jsonRaw.value.trim()) return
   const result = jsonToForm(jsonRaw.value)
   if (!result) return
 
@@ -212,7 +214,6 @@ function switchToForm() {
     transport: transport as 'stdio' | 'sse' | 'http',
     url,
   }
-  entryMode.value = 'form'
 }
 
 function formatJson() {

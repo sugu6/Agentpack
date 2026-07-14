@@ -146,7 +146,6 @@
       "changelog": "更新日志",
       "download": "下载安装包",
       "cancelDownload": "取消下载",
-      "openFile": "打开文件",
       "downloading": "下载中… {percent}%",
       "downloadComplete": "下载完成",
       "downloadFailed": "下载失败",
@@ -189,7 +188,6 @@
       "canDownloadBelow": "可在下方下载安装包",
       "checkUpdateFailed": "检查更新失败：{error}",
       "startDownloadFailed": "启动下载失败：{error}",
-      "openFileFailed": "打开文件失败：{error}",
       "manualBackupLabel": "手动备份",
       "exportBackupLabel": "导出备份",
       "detailsSeparator": "，"
@@ -249,6 +247,7 @@
     "addToAgentPack": "添加到AgentPack（{count}个）",
     "formatJson": "格式化",
     "switchToForm": "切换回表单",
+    "jsonConfig": "JSON 配置",
     "parseHint": "解析当前服务器。",
     "jsonSupportHint": "支持 Claude Code / Cursor / Trae / OpenCode 格式，支持 // 注释，",
     "descriptionPlaceholder": "此服务器的功能...",

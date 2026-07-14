@@ -279,7 +279,7 @@ async function onSkillSearch() {
       </div>
     </div>
 
-    <div ref="scrollContainer" class="flex-1 overflow-y-auto">
+    <div ref="scrollContainer" class="market-scroll-container flex-1 overflow-y-auto">
       <div class="mx-auto max-w-6xl px-8 py-4">
         <Tabs v-model="mode" class="space-y-6">
           <TabsList>

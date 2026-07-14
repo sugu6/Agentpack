@@ -424,17 +424,6 @@ func (a *App) CancelDownload() error {
 	return nil
 }
 
-func (a *App) OpenDownloadedFile(filePath string) error {
-	switch runtime.GOOS {
-	case "windows":
-		return exec.Command("explorer.exe", filePath).Start()
-	case "darwin":
-		return exec.Command("open", filePath).Start()
-	default:
-		return exec.Command("xdg-open", filePath).Start()
-	}
-}
-
 func parseVersionParts(v string) []int {
 	v = strings.TrimPrefix(v, "v")
 	if idx := strings.IndexAny(v, "-+"); idx >= 0 {
