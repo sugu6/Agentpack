@@ -15,6 +15,8 @@
 
 - Install NSIS via choco for Windows installer generation
 
+- Add NSIS to GITHUB_PATH so makensis is found by wails build
+
 
 ### 持续集成
 
@@ -22,6 +24,8 @@
 
 
 ### 文档
+
+- Update for v0.1.0
 
 - Update for v0.1.0
 
