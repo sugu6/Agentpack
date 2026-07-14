@@ -14,7 +14,7 @@ import (
 
 // DefaultGitHubProxy 是默认的 GitHub API/下载代理地址
 // 用于解决中国地区无法直接访问 GitHub 的问题
-const DefaultGitHubProxy = "https://gh-proxy.com/"
+var DefaultGitHubProxy = "https://gh-proxy.com/"
 
 const currentVersion = 1
 
