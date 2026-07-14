@@ -211,12 +211,6 @@
     "noConfigPath": "无配置路径",
     "emptyTitle": "未检测到 Agent",
     "emptyDescription": "点击重新扫描来搜索系统。",
-    "variant": {
-      "cli": "命令行",
-      "desktop": "桌面应用",
-      "ide": "IDE",
-      "config": "配置文件"
-    },
     "toast": {
       "scanComplete": "已扫描完成，检测到 {count} 个 Agent",
       "scanFailed": "扫描失败：{error}"

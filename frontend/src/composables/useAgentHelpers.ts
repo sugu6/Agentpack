@@ -51,13 +51,12 @@ export function statusLabel(status: string): string {
 
 export function variantLabel(variant: string): string {
   const map: Record<string, string> = {
-    cli: 'agents.variant.cli',
-    desktop: 'agents.variant.desktop',
-    ide: 'agents.variant.ide',
-    config: 'agents.variant.config',
+    cli: 'CLI',
+    desktop: 'Desktop',
+    ide: 'IDE',
+    config: 'Config',
   }
-  const key = map[variant]
-  return key ? i18n.global.t(key) : variant
+  return map[variant] ?? variant
 }
 
 export function getVariantFromId(id: string): string {

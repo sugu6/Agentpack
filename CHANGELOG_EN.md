@@ -7,6 +7,22 @@ versioned by [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-07-15
+
+### Features
+
+- Sidebar Skills nav item now shows a badge with the installed skill count
+
+### Changed
+
+- Agent variant labels (CLI / Desktop / IDE / Config) no longer use i18n translation, now hardcoded in English
+- Removed `agents.variant` i18n keys from `en.json` / `zh-CN.json`
+
+### Fixed
+
+- Added missing `LocalHash` field to `UpdateStatus` struct for frontend local hash display
+- Tests decoupled from `config.DefaultGitHubProxy`; directory-not-found falls back to repo tree SHA instead of erroring
+
 ## [0.1.1] - 2026-07-15
 
 ### Features
@@ -67,3 +83,7 @@ Initial release of AgentPack — a unified MCP / Skills / Agent management deskt
 ### CI
 
 - Replace macos-13 intel build with darwin/universal on macos-latest
+
+[0.1.2]: https://github.com/JetBrains/AgentPack/compare/v0.1.1...v0.1.2
+[0.1.1]: https://github.com/JetBrains/AgentPack/compare/v0.1.0...v0.1.1
+[0.1.0]: https://github.com/JetBrains/AgentPack/releases/tag/v0.1.0

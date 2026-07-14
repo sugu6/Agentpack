@@ -7,6 +7,22 @@
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-07-15
+
+### 特性
+
+- Sidebar Skills 导航项添加数量角标，显示已安装数量
+
+### 变更
+
+- Agent 类型标签（CLI / Desktop / IDE / Config）不再走 i18n 翻译，直接使用英文硬编码
+- 删除 `en.json` / `zh-CN.json` 中 `agents.variant` 的 i18n 键
+
+### 修复
+
+- `UpdateStatus` 结构体缺少 `LocalHash` 字段，补全以便前端展示本地哈希
+- 测试用例移除对 `config.DefaultGitHubProxy` 的耦合，directory 不存在时回退返回 repo tree SHA 而非报错
+
 ## [0.1.1] - 2026-07-15
 
 ### 特性
@@ -67,3 +83,7 @@ AgentPack 的初始版本，一款面向 AI 编码工具的统一 MCP / Skills /
 ### 持续集成
 
 - Replace macos-13 intel build with darwin/universal on macos-latest
+
+[0.1.2]: https://github.com/JetBrains/AgentPack/compare/v0.1.1...v0.1.2
+[0.1.1]: https://github.com/JetBrains/AgentPack/compare/v0.1.0...v0.1.1
+[0.1.0]: https://github.com/JetBrains/AgentPack/releases/tag/v0.1.0

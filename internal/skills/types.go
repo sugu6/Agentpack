@@ -88,6 +88,7 @@ type SkillConflict struct {
 type UpdateStatus struct {
 	SkillID    string `json:"skillId"`
 	Directory  string `json:"directory"`
+	LocalHash  string `json:"localHash"`
 	RemoteHash string `json:"remoteHash"`
 	HasUpdate  bool   `json:"hasUpdate"`
 	CheckedAt  string `json:"checkedAt"`

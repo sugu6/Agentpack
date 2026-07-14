@@ -211,12 +211,6 @@
     "noConfigPath": "No config path",
     "emptyTitle": "No agents detected",
     "emptyDescription": "Click rescan to search the system.",
-    "variant": {
-      "cli": "CLI",
-      "desktop": "Desktop",
-      "ide": "IDE",
-      "config": "Config file"
-    },
     "toast": {
       "scanComplete": "Scan complete, detected {count} agents",
       "scanFailed": "Scan failed: {error}"

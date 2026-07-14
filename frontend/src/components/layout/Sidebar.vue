@@ -6,6 +6,7 @@ import { PhRobot, PhPlugs, PhSparkle, PhStorefront, PhGearSix } from '@phosphor-
 import { useAgentsStore } from '@/stores/agents'
 import { useMcpStore } from '@/stores/mcp'
 import { useSettingsStore } from '@/stores/settings'
+import { useSkillsStore } from '@/stores/skills'
 
 const router = useRouter()
 const route = useRoute()
@@ -13,11 +14,12 @@ const { t } = useI18n()
 const agents = useAgentsStore()
 const mcp = useMcpStore()
 const settings = useSettingsStore()
+const skills = useSkillsStore()
 
 const nav = computed(() => [
   { to: '/', label: 'Agents', icon: PhRobot, badge: agents.detected.length },
   { to: '/mcp', label: 'MCP', icon: PhPlugs, badge: mcp.total },
-  { to: '/skills', label: 'Skills', icon: PhSparkle },
+  { to: '/skills', label: 'Skills', icon: PhSparkle, badge: skills.skills.length },
   { to: '/market', label: t('nav.market'), icon: PhStorefront },
   { to: '/settings', label: t('nav.settings'), icon: PhGearSix },
 ])
