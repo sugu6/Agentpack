@@ -205,6 +205,7 @@
     "disabled": "已禁用",
     "detected": "已检测",
     "notFound": "未找到",
+    "error": "错误",
     "configPath": "配置路径",
     "mcpCount": "MCP 数量",
     "noConfigPath": "无配置路径",

@@ -1,4 +1,5 @@
 import type { BadgeVariant } from '@/components/ui'
+import { i18n } from '@/i18n'
 
 const AGENT_LOGO_MAP: Record<string, string> = {
   'claude-code': 'https://thesvg.org/icons/claude/default.svg',
@@ -39,22 +40,24 @@ export function statusVariant(status: string): BadgeVariant {
 
 export function statusLabel(status: string): string {
   const map: Record<string, string> = {
-    enabled: '已启用',
-    disabled: '已禁用',
-    not_found: '未找到',
-    error: '错误',
+    enabled: 'agents.enabled',
+    disabled: 'agents.disabled',
+    not_found: 'agents.notFound',
+    error: 'agents.error',
   }
-  return map[status] ?? status
+  const key = map[status]
+  return key ? i18n.global.t(key) : status
 }
 
 export function variantLabel(variant: string): string {
   const map: Record<string, string> = {
-    cli: 'CLI',
-    desktop: 'Desktop',
-    ide: 'IDE',
-    config: '仅配置',
+    cli: 'agents.variant.cli',
+    desktop: 'agents.variant.desktop',
+    ide: 'agents.variant.ide',
+    config: 'agents.variant.config',
   }
-  return map[variant] ?? variant
+  const key = map[variant]
+  return key ? i18n.global.t(key) : variant
 }
 
 export function getVariantFromId(id: string): string {
