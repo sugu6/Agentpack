@@ -65,7 +65,8 @@ export interface Settings {
   skillStorage: 'agentpack' | 'unified'
   skillSyncMethod: 'symlink' | 'copy'
   skillRepos: SkillRepo[]
-  windowAction: 'ask' | 'minimize' | 'exit'
+  windowAction: 'minimize' | 'exit'
+  windowNoRemind: boolean
 }
 
 export interface SkillRepo {

@@ -16,7 +16,6 @@ const toast = useToast()
 const saving = ref(false)
 const backupLoading = ref<'create' | 'export' | 'import' | null>(null)
 const updateChecking = ref(false)
-const updateMessage = ref<string | null>(null)
 const updateResult = ref<UpdateCheckResult | null>(null)
 const changelogDialogOpen = ref(false)
 let saveDirty = false
@@ -139,8 +138,12 @@ function setTheme(t: 'light' | 'dark' | 'system') {
 }
 
 function setWindowAction(v: string) {
-  if (v !== 'ask' && v !== 'minimize' && v !== 'exit') return
-  withAutoSave(cfg => { cfg.windowAction = v as 'ask' | 'minimize' | 'exit' })
+  if (v !== 'minimize' && v !== 'exit') return
+  withAutoSave(cfg => { cfg.windowAction = v as 'minimize' | 'exit' })
+}
+
+function setWindowNoRemind(v: boolean) {
+  withAutoSave(cfg => { cfg.windowNoRemind = v })
 }
 
 function setMarketSource(key: string, v: boolean) {
@@ -268,7 +271,6 @@ async function openConfigFolder() {
 
 async function checkUpdate() {
   updateChecking.value = true
-  updateMessage.value = null
   updateResult.value = null
   downloadStatus.value = 'idle'
   downloadProgress.value = 0
@@ -279,13 +281,16 @@ async function checkUpdate() {
     const result = await api.system.checkUpdate()
     updateResult.value = result
     if (result.hasUpdate) {
-      updateMessage.value = `发现新版本 v${result.latestVersion}（当前 v${result.currentVersion}）`
+      toast.success(`发现新版本 v${result.latestVersion}（当前 v${result.currentVersion}）`, {
+        duration: 5000,
+        description: '可在下方下载安装包',
+      })
     } else {
-      updateMessage.value = result.message || `当前已是最新版本 v${result.currentVersion}`
+      toast.success(`当前已是最新版本 v${result.currentVersion}`)
     }
   } catch (e) {
     const apiError = ApiError.from(e)
-    updateMessage.value = `检查更新失败：${apiError.message}`
+    toast.error(`检查更新失败：${apiError.message}`, { duration: 5000 })
   } finally {
     updateChecking.value = false
   }
@@ -535,19 +540,24 @@ const marketSourceList = computed(() => {
         <CardTitle>窗口行为</CardTitle>
         <CardDescription>点击关闭按钮（X）时的行为。</CardDescription>
       </CardHeader>
-      <CardContent>
-        <div class="flex items-center justify-between">
-          <div>
-            <Label>关闭按钮行为</Label>
-            <p class="text-xs text-muted-foreground">选择"询问"时每次关闭会弹出选择对话框</p>
+      <CardContent class="space-y-3">
+        <div class="flex items-start justify-between">
+          <Label class="mt-2">关闭按钮行为</Label>
+          <div class="flex flex-col items-center gap-1.5">
+            <Tabs :model-value="settings.config.windowAction || 'minimize'" @update:model-value="(v: any) => setWindowAction(v)" class="w-fit">
+              <TabsList>
+                <TabsTrigger value="minimize">最小化到托盘</TabsTrigger>
+                <TabsTrigger value="exit">退出</TabsTrigger>
+              </TabsList>
+            </Tabs>
+            <label class="flex items-center gap-2 cursor-pointer select-none">
+              <Checkbox
+                :model-value="settings.config.windowNoRemind ?? false"
+                @update:model-value="(v) => setWindowNoRemind(v === true)"
+              />
+              <span class="text-sm text-muted-foreground">不在提醒</span>
+            </label>
           </div>
-          <Tabs :model-value="settings.config.windowAction || 'ask'" @update:model-value="(v: any) => setWindowAction(v)" class="w-fit">
-            <TabsList>
-              <TabsTrigger value="ask">询问</TabsTrigger>
-              <TabsTrigger value="minimize">最小化到托盘</TabsTrigger>
-              <TabsTrigger value="exit">退出</TabsTrigger>
-            </TabsList>
-          </Tabs>
         </div>
       </CardContent>
     </Card>
@@ -841,12 +851,9 @@ const marketSourceList = computed(() => {
         </div>
         <Separator />
         <div class="flex items-center justify-between">
-          <div>
-            <Label>检查更新</Label>
-            <p v-if="updateMessage" class="text-xs text-muted-foreground mt-0.5">{{ updateMessage }}</p>
-          </div>
+          <Label>检查更新</Label>
           <div class="flex gap-2">
-            <Button v-if="updateResult?.changelog" variant="ghost" size="sm" @click="changelogDialogOpen = true">
+            <Button v-if="updateResult?.changelog" variant="outline" size="sm" @click="changelogDialogOpen = true">
               <span>更新日志</span>
             </Button>
             <Button variant="outline" size="sm" :disabled="updateChecking" @click="checkUpdate">
@@ -978,7 +985,7 @@ const marketSourceList = computed(() => {
           </DialogDescription>
         </DialogHeader>
         <div class="flex-1 overflow-y-auto">
-          <pre class="text-sm whitespace-pre-wrap break-words font-sans text-muted-foreground">{{ updateResult?.changelog }}</pre>
+          <div class="text-sm text-muted-foreground leading-relaxed" v-html="renderMarkdown(updateResult?.changelog || '')" />
         </div>
         <DialogFooter>
           <Button v-if="updateResult?.releaseUrl" variant="outline" size="sm" @click="api.system.openUrl(updateResult.releaseUrl)">

@@ -35,12 +35,9 @@ type UpdateCheckResult struct {
 	DownloadName   string `json:"downloadName"`
 }
 
-// wailsJSON 通过 go:embed 在编译时嵌入 wails.json，用于读取版本号
-//
 //go:embed wails.json
 var wailsJSON []byte
 
-// currentAppVersion 从嵌入的 wails.json 中解析 productVersion
 func currentAppVersion() string {
 	var cfg struct {
 		Info struct {
@@ -57,7 +54,6 @@ func currentAppVersion() string {
 	return v
 }
 
-// githubRelease 对应 GitHub Releases API 的响应结构
 type githubRelease struct {
 	TagName     string         `json:"tag_name"`
 	Name        string         `json:"name"`
@@ -76,7 +72,6 @@ type releaseAsset struct {
 	Size               int    `json:"size"`
 }
 
-// CheckUpdate 调用 GitHub Releases API 检查最新版本
 func (a *App) CheckUpdate() (*UpdateCheckResult, error) {
 	current := currentAppVersion()
 
@@ -148,9 +143,14 @@ func (a *App) CheckUpdate() (*UpdateCheckResult, error) {
 		latest := strings.TrimPrefix(release.TagName, "v")
 		hasUpdate := compareVersions(current, latest) < 0
 
-		downloadURL, downloadName, downloadSize := "", "", 0
+		downloadURL, downloadName := "", ""
+		downloadSize := 0
 		if hasUpdate {
-			downloadURL, downloadName, downloadSize = matchPlatformAsset(release.Assets)
+			if asset := matchPlatformAsset(release.Assets); asset != nil {
+				downloadURL = asset.BrowserDownloadURL
+				downloadSize = asset.Size
+				downloadName = asset.Name
+			}
 		}
 
 		message := fmt.Sprintf("当前已是最新版本 v%s", current)
@@ -179,8 +179,23 @@ func (a *App) CheckUpdate() (*UpdateCheckResult, error) {
 	}, nil
 }
 
-// compareVersions 比较两个语义化版本号
-// 返回 -1 表示 a < b，0 表示相等，1 表示 a > b
+func matchPlatformAsset(assets []releaseAsset) *releaseAsset {
+	goos := runtime.GOOS
+	goarch := runtime.GOARCH
+	platform := fmt.Sprintf("%s_%s", goos, goarch)
+	for i := range assets {
+		if strings.Contains(assets[i].Name, platform) {
+			return &assets[i]
+		}
+	}
+	for i := range assets {
+		if !strings.Contains(assets[i].Name, "Source code") {
+			return &assets[i]
+		}
+	}
+	return nil
+}
+
 func compareVersions(a, b string) int {
 	aParts := parseVersionParts(a)
 	bParts := parseVersionParts(b)
@@ -283,7 +298,6 @@ func (a *App) OpenDownloadedFile(filePath string) error {
 
 func parseVersionParts(v string) []int {
 	v = strings.TrimPrefix(v, "v")
-	// 去除预发布后缀（如 -beta.1）
 	if idx := strings.IndexAny(v, "-+"); idx >= 0 {
 		v = v[:idx]
 	}
@@ -300,15 +314,4 @@ func parseVersionParts(v string) []int {
 		result = append(result, n)
 	}
 	return result
-}
-
-func matchPlatformAsset(assets []releaseAsset) (string, string, int) {
-	target := fmt.Sprintf("%s_%s", runtime.GOOS, runtime.GOARCH)
-	targetLower := strings.ToLower(target)
-	for _, a := range assets {
-		if strings.Contains(strings.ToLower(a.Name), targetLower) {
-			return config.DefaultGitHubProxy + a.BrowserDownloadURL, a.Name, a.Size
-		}
-	}
-	return "", "", 0
 }

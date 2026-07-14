@@ -42,5 +42,5 @@ export type SearchResultServers = ApiSearchResultServers
 export type Skill = ApiSkill
 export type AppSettings = ApiSettings
 
-export type WindowAction = 'ask' | 'minimize' | 'exit'
+export type WindowAction = 'minimize' | 'exit'
 export type UpdateCheckResult = import('@/lib/api').UpdateCheckResult

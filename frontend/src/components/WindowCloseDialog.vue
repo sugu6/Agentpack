@@ -25,9 +25,10 @@ async function confirm() {
   emit('update:open', false)
   try {
     if (dontRemind.value) {
-      // 保存用户选择到设置
+      // 保存用户选择到设置（不再提醒 + 默认行为）
       const cfg = JSON.parse(JSON.stringify(settings.config))
       cfg.windowAction = action.value
+      cfg.windowNoRemind = true
       await settings.update(cfg)
     }
     if (action.value === 'exit') {

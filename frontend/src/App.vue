@@ -42,13 +42,15 @@ function handleSkillsChanged() {
 async function handleCloseRequested() {
   if (!mounted.value) return
   try {
-    const action = settings.config.windowAction || 'ask'
-    if (action === 'exit') {
-      await api.system.quit()
-    } else if (action === 'minimize') {
-      await api.system.hideWindow()
+    const noRemind = settings.config.windowNoRemind ?? false
+    if (noRemind) {
+      const action = settings.config.windowAction || 'minimize'
+      if (action === 'exit') {
+        await api.system.quit()
+      } else {
+        await api.system.hideWindow()
+      }
     } else {
-      // ask 模式：弹出对话框
       closeDialogOpen.value = true
     }
   } catch (e) {

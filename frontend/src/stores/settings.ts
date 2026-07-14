@@ -18,7 +18,8 @@ const DEFAULT_SETTINGS: AppSettings = {
   skillStorage: 'agentpack',
   skillSyncMethod: 'symlink',
   skillRepos: [],
-  windowAction: 'ask',
+  windowAction: 'minimize',
+  windowNoRemind: false,
 }
 
 export const useSettingsStore = defineStore('settings', () => {
@@ -109,11 +110,14 @@ export const useSettingsStore = defineStore('settings', () => {
       // Migrate legacy "auto" sync method to "symlink" before typed assignment.
       const rawSyncMethod = (s.skillSyncMethod as string | undefined) ?? 'symlink'
       const skillSyncMethod: AppSettings['skillSyncMethod'] = rawSyncMethod === 'copy' ? 'copy' : 'symlink'
+      const rawWindowAction = s.windowAction as string | undefined
+      const windowAction: AppSettings['windowAction'] = rawWindowAction === 'exit' ? 'exit' : 'minimize'
       const migrated: AppSettings = {
         ...DEFAULT_SETTINGS,
         ...s,
         marketSources: { ...DEFAULT_SETTINGS.marketSources, ...(s.marketSources ?? {}) },
         skillSyncMethod,
+        windowAction,
       }
       config.value = migrated
       loaded.value = true
