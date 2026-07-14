@@ -1,8 +1,7 @@
 package skills
 
 import (
-	"agentpack/internal/agents"
-	"agentpack/internal/iowriter"
+	"agentpack/internal/config"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -14,15 +13,18 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"agentpack/internal/agents"
+	"agentpack/internal/iowriter"
 )
 
 // updateCachePath 返回更新检测缓存的文件路径
 func updateCachePath() (string, error) {
-	dir, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
+	dir := config.AgentPackDir()
+	if dir == "" {
+		return "", fmt.Errorf("agentpack dir not available")
 	}
-	return filepath.Join(dir, ".agentpack", "skill-update-cache.json"), nil
+	return filepath.Join(dir, "skill-update-cache.json"), nil
 }
 
 // updateCacheEntry 是缓存中单个 skill 的条目
@@ -93,6 +95,7 @@ var githubAPIBaseURL = "https://api.github.com"
 func fetchSkillTreeSHA(ctx context.Context, owner, repo, branch, directory string) (string, error) {
 	treeURL := fmt.Sprintf("%s/repos/%s/%s/git/trees/%s?recursive=1",
 		githubAPIBaseURL, url.PathEscape(owner), url.PathEscape(repo), url.PathEscape(branch))
+	treeURL = config.DefaultGitHubProxy + treeURL
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, treeURL, nil)
 	if err != nil {
@@ -134,9 +137,26 @@ func fetchSkillTreeSHA(ctx context.Context, owner, repo, branch, directory strin
 		}
 	}
 
-	// 如果未找到精确匹配的 tree 条目，可能是 skill 在仓库根目录
-	// 此时整个 repo tree SHA 即为代表
-	return body.SHA, nil
+	return "", fmt.Errorf("directory %q not found in repository %s/%s", directory, owner, repo)
+}
+
+// CacheSkillTreeSHA 为指定 skill 获取并缓存远程 tree SHA
+func CacheSkillTreeSHA(skillID, owner, repo, branch, directory string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	sha, err := fetchSkillTreeSHA(ctx, owner, repo, branch, directory)
+	if err != nil {
+		return err
+	}
+	cache := readUpdateCache()
+	if cache == nil {
+		cache = make(map[string]updateCacheEntry)
+	}
+	cache[skillID] = updateCacheEntry{
+		TreeSHA:   sha,
+		CheckedAt: time.Now().UTC().Format(time.RFC3339),
+	}
+	return writeUpdateCache(cache)
 }
 
 // CheckUpdates 检查所有已安装 skills 的远程更新
@@ -177,7 +197,6 @@ func (s *Store) CheckUpdates(reg *agents.Registry) []UpdateStatus {
 			status := UpdateStatus{
 				SkillID:   skill.ID,
 				Directory: skill.Directory,
-				LocalHash: skill.ContentHash,
 				CheckedAt: time.Now().UTC().Format(time.RFC3339),
 			}
 
