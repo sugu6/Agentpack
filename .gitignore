@@ -1,6 +1,8 @@
 build/bin
 node_modules
 frontend/dist
+frontend/wailsjs
+frontend/bindings
 *.exe
 *.log
 *.tmp
