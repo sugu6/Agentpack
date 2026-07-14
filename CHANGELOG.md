@@ -14,7 +14,14 @@
 - Install libwebkit2gtk-4.0-dev for Wails v2 instead of 4.1
 
 
+### 持续集成
+
+- Replace macos-13 intel build with darwin/universal on macos-latest
+
+
 ### 文档
+
+- Update for v0.1.0
 
 - Update for v0.1.0
 
