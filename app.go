@@ -47,8 +47,9 @@ type App struct {
 	allowClose    bool
 	trayActive    bool
 	startupErrors []string
-	inFlight      int
-	flightCond    *sync.Cond
+	inFlight       int
+	flightCond     *sync.Cond
+	downloadCancel context.CancelFunc
 }
 
 func NewApp(cfg *config.AppConfig) *App {

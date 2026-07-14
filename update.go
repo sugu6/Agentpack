@@ -7,6 +7,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
@@ -204,6 +207,125 @@ func compareVersions(a, b string) int {
 
 func (a *App) GetAppVersion() string {
 	return currentAppVersion()
+}
+
+func (a *App) StartDownloadUpdate(url string) error {
+	ctx, cancel := context.WithCancel(context.Background())
+	a.mu.Lock()
+	if a.downloadCancel != nil {
+		a.downloadCancel()
+	}
+	a.downloadCancel = cancel
+	a.mu.Unlock()
+
+	go func() {
+		a.beginInFlight()
+		defer a.endInFlight()
+		defer cancel()
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err != nil {
+			a.emit("update:download:error", map[string]string{"message": err.Error()})
+			return
+		}
+		req.Header.Set("User-Agent", "AgentPack/"+currentAppVersion())
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			a.emit("update:download:error", map[string]string{"message": err.Error()})
+			return
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			a.emit("update:download:error", map[string]string{"message": fmt.Sprintf("服务器返回 %d", resp.StatusCode)})
+			return
+		}
+
+		totalSize := resp.ContentLength
+		var downloaded int64
+		lastTime := time.Now()
+		var lastBytes int64
+
+		fileName := filepath.Base(url)
+		tmpPath := filepath.Join(os.TempDir(), "agentpack-update-"+fileName)
+		f, err := os.Create(tmpPath)
+		if err != nil {
+			a.emit("update:download:error", map[string]string{"message": err.Error()})
+			return
+		}
+		defer f.Close()
+
+		removeTmp := func() { os.Remove(tmpPath) }
+		buf := make([]byte, 32*1024)
+		for {
+			select {
+			case <-ctx.Done():
+				removeTmp()
+				return
+			default:
+			}
+			n, readErr := resp.Body.Read(buf)
+			if n > 0 {
+				if _, writeErr := f.Write(buf[:n]); writeErr != nil {
+					removeTmp()
+					a.emit("update:download:error", map[string]string{"message": writeErr.Error()})
+					return
+				}
+				downloaded += int64(n)
+				if time.Since(lastTime) > 200*time.Millisecond {
+					speed := float64(downloaded-lastBytes) / time.Since(lastTime).Seconds()
+					percent := 0.0
+					if totalSize > 0 {
+						percent = float64(downloaded) / float64(totalSize) * 100
+					}
+					a.emit("update:download:progress", map[string]interface{}{
+						"downloaded": downloaded,
+						"total":      totalSize,
+						"speed":      speed,
+						"percent":    percent,
+					})
+					lastTime = time.Now()
+					lastBytes = downloaded
+				}
+			}
+			if readErr == io.EOF {
+				break
+			}
+			if readErr != nil {
+				removeTmp()
+				a.emit("update:download:error", map[string]string{"message": readErr.Error()})
+				return
+			}
+		}
+
+		a.emit("update:download:complete", map[string]interface{}{
+			"filePath": tmpPath,
+			"fileName": fileName,
+		})
+	}()
+
+	return nil
+}
+
+func (a *App) CancelDownload() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.downloadCancel != nil {
+		a.downloadCancel()
+		a.downloadCancel = nil
+	}
+}
+
+func (a *App) OpenDownloadedFile(filePath string) error {
+	switch runtime.GOOS {
+	case "windows":
+		return exec.Command("explorer.exe", "/select,", filePath).Start()
+	case "darwin":
+		return exec.Command("open", "-R", filePath).Start()
+	default:
+		return exec.Command("xdg-open", filepath.Dir(filePath)).Start()
+	}
 }
 
 func parseVersionParts(v string) []int {
