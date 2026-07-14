@@ -76,7 +76,10 @@ func (a *App) CheckUpdate() (*UpdateCheckResult, error) {
 	current := currentAppVersion()
 	lang := i18n.ResolveLanguage(a.cfg.Settings.Language)
 
-	url := config.DefaultGitHubProxy + strings.TrimPrefix(fmt.Sprintf("https://api.github.com/repos/%s/releases/latest", githubRepo), "https://")
+	// GitHub API 直连,不走代理:
+	// gh-proxy.com 等公共代理共享 IP 调用 api.github.com 极易触发 403 限流,
+	// 导致永远拿不到 release 数据。文件下载在 StartDownloadUpdate 中单独走代理。
+	url := fmt.Sprintf("https://api.github.com/repos/%s/releases/latest", githubRepo)
 
 	var lastErr error
 	for attempt := 0; attempt < 3; attempt++ {

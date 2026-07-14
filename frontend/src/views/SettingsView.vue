@@ -300,7 +300,9 @@ async function checkUpdate() {
         description: t('settings.toast.canDownloadBelow'),
       })
     } else {
-      toast.success(t('update.message.latest', { version: result.currentVersion }))
+      // 后端在限流/网络失败/无 release/版本相同等情况返回不同 message，
+      // 直接显示后端 message 让用户知晓真实状态(而非一律显示"已是最新版本")
+      toast.info(result.message || t('update.message.latest', { version: result.currentVersion }))
     }
   } catch (e) {
     const apiError = ApiError.from(e)
