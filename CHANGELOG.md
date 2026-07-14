@@ -11,8 +11,12 @@
 
 - Stop tracking generated wailsjs/bindings dirs to fix CI
 
+- Install libwebkit2gtk-4.0-dev for Wails v2 instead of 4.1
+
 
 ### 文档
+
+- Update for v0.1.0
 
 - Update for v0.1.0
 
