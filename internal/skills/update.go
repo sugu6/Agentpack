@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -95,7 +96,7 @@ var githubAPIBaseURL = "https://api.github.com"
 func fetchSkillTreeSHA(ctx context.Context, owner, repo, branch, directory string) (string, error) {
 	treeURL := fmt.Sprintf("%s/repos/%s/%s/git/trees/%s?recursive=1",
 		githubAPIBaseURL, url.PathEscape(owner), url.PathEscape(repo), url.PathEscape(branch))
-	treeURL = config.DefaultGitHubProxy + treeURL
+	treeURL = config.DefaultGitHubProxy + strings.TrimPrefix(treeURL, "https://")
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, treeURL, nil)
 	if err != nil {

@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"os"
 	"os/exec"
@@ -75,7 +74,7 @@ type releaseAsset struct {
 func (a *App) CheckUpdate() (*UpdateCheckResult, error) {
 	current := currentAppVersion()
 
-	url := config.DefaultGitHubProxy + fmt.Sprintf("https://api.github.com/repos/%s/releases/latest", githubRepo)
+	url := config.DefaultGitHubProxy + strings.TrimPrefix(fmt.Sprintf("https://api.github.com/repos/%s/releases/latest", githubRepo), "https://")
 
 	var lastErr error
 	for attempt := 0; attempt < 3; attempt++ {
@@ -226,52 +225,105 @@ func (a *App) GetAppVersion() string {
 }
 
 func (a *App) StartDownloadUpdate(url string) error {
+	if !strings.HasPrefix(url, config.DefaultGitHubProxy) {
+		url = config.DefaultGitHubProxy + strings.TrimPrefix(url, "https://")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
 	a.mu.Lock()
 	if a.downloadCancel != nil {
 		a.downloadCancel()
 	}
-	ctx, cancel := context.WithCancel(context.Background())
 	a.downloadCancel = cancel
 	a.mu.Unlock()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return fmt.Errorf("创建下载请求失败: %w", err)
-	}
-	req.Header.Set("User-Agent", fmt.Sprintf("AgentPack/%s", currentAppVersion()))
+	go func() {
+		a.beginInFlight()
+		defer a.endInFlight()
+		defer cancel()
 
-	client := &http.Client{
-		Timeout: 30 * time.Minute,
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return fmt.Errorf("下载请求失败: %w", err)
-	}
-	defer resp.Body.Close()
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err != nil {
+			a.emit("update:download:error", map[string]string{"message": err.Error()})
+			return
+		}
+		req.Header.Set("User-Agent", "AgentPack/"+currentAppVersion())
 
-	downloadDir := filepath.Join(config.AgentPackDir(), "downloads")
-	if err := os.MkdirAll(downloadDir, 0700); err != nil {
-		return fmt.Errorf("创建下载目录失败: %w", err)
-	}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			a.emit("update:download:error", map[string]string{"message": err.Error()})
+			return
+		}
+		defer resp.Body.Close()
 
-	fileName := "update"
-	if parts := strings.Split(url, "/"); len(parts) > 0 {
-		fileName = parts[len(parts)-1]
-	}
-	destPath := filepath.Join(downloadDir, fileName)
+		if resp.StatusCode != http.StatusOK {
+			a.emit("update:download:error", map[string]string{"message": fmt.Sprintf("服务器返回 %d", resp.StatusCode)})
+			return
+		}
 
-	out, err := os.Create(destPath)
-	if err != nil {
-		return fmt.Errorf("创建文件失败: %w", err)
-	}
-	defer out.Close()
+		totalSize := resp.ContentLength
+		var downloaded int64
+		lastTime := time.Now()
+		var lastBytes int64
 
-	written, err := io.Copy(out, resp.Body)
-	if err != nil {
-		os.Remove(destPath)
-		return fmt.Errorf("下载失败: %w", err)
-	}
-	log.Printf("下载完成: %s (%d bytes)", destPath, written)
+		fileName := filepath.Base(url)
+		tmpPath := filepath.Join(os.TempDir(), "agentpack-update-"+fileName)
+		f, err := os.Create(tmpPath)
+		if err != nil {
+			a.emit("update:download:error", map[string]string{"message": err.Error()})
+			return
+		}
+		defer f.Close()
+
+		removeTmp := func() { os.Remove(tmpPath) }
+		buf := make([]byte, 32*1024)
+		for {
+			select {
+			case <-ctx.Done():
+				removeTmp()
+				return
+			default:
+			}
+			n, readErr := resp.Body.Read(buf)
+			if n > 0 {
+				if _, writeErr := f.Write(buf[:n]); writeErr != nil {
+					removeTmp()
+					a.emit("update:download:error", map[string]string{"message": writeErr.Error()})
+					return
+				}
+				downloaded += int64(n)
+				if time.Since(lastTime) > 200*time.Millisecond {
+					speed := float64(downloaded-lastBytes) / time.Since(lastTime).Seconds()
+					percent := 0.0
+					if totalSize > 0 {
+						percent = float64(downloaded) / float64(totalSize) * 100
+					}
+					a.emit("update:download:progress", map[string]interface{}{
+						"downloaded": downloaded,
+						"total":      totalSize,
+						"speed":      speed,
+						"percent":    percent,
+					})
+					lastTime = time.Now()
+					lastBytes = downloaded
+				}
+			}
+			if readErr == io.EOF {
+				break
+			}
+			if readErr != nil {
+				removeTmp()
+				a.emit("update:download:error", map[string]string{"message": readErr.Error()})
+				return
+			}
+		}
+
+		a.emit("update:download:complete", map[string]interface{}{
+			"filePath": tmpPath,
+			"fileName": fileName,
+		})
+	}()
+
 	return nil
 }
 
