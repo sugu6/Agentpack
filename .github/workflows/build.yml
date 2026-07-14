@@ -120,6 +120,10 @@ jobs:
       - name: Install Wails CLI
         run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0
 
+      - name: Check i18n key consistency
+        run: pnpm check:i18n
+        working-directory: frontend
+
       - name: Install NSIS (Windows installer)
         if: runner.os == 'Windows'
         run: |
