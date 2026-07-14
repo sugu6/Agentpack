@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { PhStorefront, PhMagnifyingGlass, PhBooks, PhSparkle, PhFunnel } from '@phosphor-icons/vue'
 import { Button, Input, Spinner, Tabs, TabsList, TabsTrigger, TabsContent, Empty, EmptyHeader, EmptyTitle, EmptyDescription, Select, SelectTrigger, SelectValue, SelectContent, SelectItem, SelectPortal, Checkbox } from '@/components/ui'
 import MarketCard from '@/components/market/MarketCard.vue'
@@ -16,16 +17,17 @@ const ALL_VALUE = '__all__'
 
 // Smithery 分类预设（来自 smithery.ai/servers 顶部 Categories）
 // 每个分类对应一个语义搜索 query，选中时触发新搜索替换当前 query
-const SMITHERY_CATEGORIES: { label: string; query: string }[] = [
-  { label: '全部', query: '' },
-  { label: 'Web 搜索', query: 'search the web for information' },
-  { label: '浏览器自动化', query: 'automate and control web browsers' },
-  { label: '学术研究', query: 'research papers citations and scholarly' },
-  { label: '金融', query: 'financial data stocks and trading' },
-  { label: '推理', query: 'thinking reasoning and problem solving' },
-  { label: '开发工具', query: 'software development and coding tools' },
+const SMITHERY_CATEGORIES: { labelKey: string; query: string }[] = [
+  { labelKey: 'market.all', query: '' },
+  { labelKey: 'market.smitheryCategory.webSearch', query: 'search the web for information' },
+  { labelKey: 'market.smitheryCategory.browserAutomation', query: 'automate and control web browsers' },
+  { labelKey: 'market.smitheryCategory.academic', query: 'research papers citations and scholarly' },
+  { labelKey: 'market.smitheryCategory.finance', query: 'financial data stocks and trading' },
+  { labelKey: 'market.smitheryCategory.reasoning', query: 'thinking reasoning and problem solving' },
+  { labelKey: 'market.smitheryCategory.devTools', query: 'software development and coding tools' },
 ]
 
+const { t } = useI18n()
 const market = useMarketStore()
 const settings = useSettingsStore()
 const skillsStore = useSkillsStore()
@@ -269,10 +271,10 @@ async function onSkillSearch() {
       <div class="mx-auto max-w-6xl">
         <h1 class="flex items-center gap-2 text-2xl font-semibold tracking-tight">
           <PhStorefront :size="22" weight="duotone" class="text-blue-500" />
-          市场
+          {{ t('market.title') }}
         </h1>
         <p class="mt-1 text-sm text-muted-foreground">
-          发现社区的 MCP 服务器与 Skills 并安装到已启用的 Agent。
+          {{ t('market.subtitle') }}
         </p>
       </div>
     </div>
@@ -283,7 +285,7 @@ async function onSkillSearch() {
           <TabsList>
             <TabsTrigger value="servers" :disabled="!officialEnabled && !smitheryEnabled">
               <PhBooks :size="13" class="mr-1.5" />
-              MCP 服务器
+              {{ t('market.mcpServers') }}
               <span v-if="total > 0" class="ml-1.5 text-[10px] text-muted-foreground">{{ total }}</span>
             </TabsTrigger>
             <TabsTrigger value="skills" :disabled="!skillsSourceEnabled">
@@ -299,8 +301,8 @@ async function onSkillSearch() {
               v-if="!officialEnabled && !smitheryEnabled"
             >
               <EmptyHeader>
-                <EmptyTitle>无可用 MCP 来源</EmptyTitle>
-                <EmptyDescription>请在设置中启用 official 或 smithery 市场来源。</EmptyDescription>
+                <EmptyTitle>{{ t('market.noMcpSource') }}</EmptyTitle>
+                <EmptyDescription>{{ t('market.noMcpSourceDesc') }}</EmptyDescription>
               </EmptyHeader>
             </Empty>
             <template v-else>
@@ -313,7 +315,7 @@ async function onSkillSearch() {
                   :class="mcpSource === 'official' ? 'bg-primary text-primary-foreground shadow' : 'bg-muted/60 text-muted-foreground hover:bg-muted'"
                   @click="switchMcpSource('official')"
                 >
-                  官方
+                  {{ t('market.official') }}
                 </button>
                 <button
                   v-if="smitheryEnabled"
@@ -331,14 +333,14 @@ async function onSkillSearch() {
                   <PhMagnifyingGlass :size="14" class="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
                   <Input
                     v-model="query"
-                    :placeholder="mcpSource === 'smithery' ? '搜索 Smithery MCP 服务器（googledrive、dropbox...）' : '搜索 MCP 服务器（filesystem、github、redis...）'"
+                    :placeholder="mcpSource === 'smithery' ? t('market.searchSmitheryPlaceholder') : t('market.searchMcpPlaceholder')"
                     class="pl-9"
-                    aria-label="搜索 MCP 服务器"
+                    :aria-label="t('market.searchMcpAria')"
                   />
                 </div>
                 <Button type="submit" :disabled="market.loadingServers">
                   <PhMagnifyingGlass :size="14" />
-                  搜索
+                  {{ t('common.search') }}
                 </Button>
               </form>
 
@@ -348,17 +350,17 @@ async function onSkillSearch() {
               <div v-if="market.servers.items.length > 0" class="flex flex-wrap items-center gap-2 rounded-md border border-border bg-muted/20 px-3 py-2">
                 <div class="flex items-center gap-1.5 text-xs text-muted-foreground">
                   <PhFunnel :size="12" />
-                  筛选
+                  {{ t('market.filter') }}
                 </div>
                 <template v-if="mcpSource === 'smithery'">
                   <Select v-model="smitheryFilter.category">
                     <SelectTrigger size="sm" class="w-40 text-xs">
-                      <SelectValue placeholder="选择分类" />
+                      <SelectValue :placeholder="t('market.selectCategory')" />
                     </SelectTrigger>
                     <SelectPortal>
                       <SelectContent>
-                        <SelectItem v-for="cat in SMITHERY_CATEGORIES" :key="cat.label" :value="cat.query || ALL_VALUE" class="text-xs">
-                          {{ cat.label }}
+                        <SelectItem v-for="cat in SMITHERY_CATEGORIES" :key="cat.labelKey" :value="cat.query || ALL_VALUE" class="text-xs">
+                          {{ t(cat.labelKey) }}
                         </SelectItem>
                       </SelectContent>
                     </SelectPortal>
@@ -368,43 +370,43 @@ async function onSkillSearch() {
                       :model-value="smitheryFilter.bySmithery"
                       @update:model-value="(v: boolean | 'indeterminate') => { smitheryFilter.bySmithery = v === true; onSmitheryToggleChange() }"
                     />
-                    Smithery 官方
+                    {{ t('market.smitheryOfficial') }}
                   </label>
                   <label class="inline-flex cursor-pointer items-center gap-1.5 text-xs">
                     <Checkbox
                       :model-value="smitheryFilter.deployed"
                       @update:model-value="(v: boolean | 'indeterminate') => { smitheryFilter.deployed = v === true; onSmitheryToggleChange() }"
                     />
-                    已部署
+                    {{ t('market.deployed') }}
                   </label>
                   <label class="inline-flex cursor-pointer items-center gap-1.5 text-xs">
                     <Checkbox
                       :model-value="smitheryFilter.verified"
                       @update:model-value="(v: boolean | 'indeterminate') => { smitheryFilter.verified = v === true; onSmitheryToggleChange() }"
                     />
-                    已验证
+                    {{ t('market.verified') }}
                   </label>
                   <!-- remote 在 API 中等同 is:deployed，不再单独暴露以避免重复 -->
                 </template>
                 <template v-else>
                   <Select v-model="officialFilter.registry">
                     <SelectTrigger size="sm" class="w-40 text-xs">
-                      <SelectValue placeholder="全部注册表" />
+                      <SelectValue :placeholder="t('market.allRegistries')" />
                     </SelectTrigger>
                     <SelectPortal>
                       <SelectContent>
-                        <SelectItem :value="ALL_VALUE" class="text-xs">全部注册表</SelectItem>
+                        <SelectItem :value="ALL_VALUE" class="text-xs">{{ t('market.allRegistries') }}</SelectItem>
                         <SelectItem v-for="r in officialRegistries" :key="r" :value="r" class="text-xs">{{ r }}</SelectItem>
                       </SelectContent>
                     </SelectPortal>
                   </Select>
                   <Select v-model="officialFilter.transport">
                     <SelectTrigger size="sm" class="w-44 text-xs">
-                      <SelectValue placeholder="全部 Transport" />
+                      <SelectValue :placeholder="t('market.allTransports')" />
                     </SelectTrigger>
                     <SelectPortal>
                       <SelectContent>
-                        <SelectItem :value="ALL_VALUE" class="text-xs">全部 Transport</SelectItem>
+                        <SelectItem :value="ALL_VALUE" class="text-xs">{{ t('market.allTransports') }}</SelectItem>
                         <SelectItem value="stdio" class="text-xs">stdio</SelectItem>
                         <SelectItem value="http" class="text-xs">http</SelectItem>
                         <SelectItem value="sse" class="text-xs">sse</SelectItem>
@@ -414,10 +416,10 @@ async function onSkillSearch() {
                 </template>
                 <span class="ml-auto text-[10px] text-muted-foreground">
                   <template v-if="mcpSource === 'smithery'">
-                    {{ market.servers.total }} 个
+                    {{ t('market.resultCount', { count: market.servers.total }) }}
                   </template>
                   <template v-else>
-                    已加载 {{ filteredServers.length }} / {{ market.servers.items.length }}（仅过滤已加载）
+                    {{ t('market.loadedCount', { loaded: filteredServers.length, total: market.servers.items.length }) }}
                   </template>
                 </span>
               </div>
@@ -430,8 +432,8 @@ async function onSkillSearch() {
                 v-else-if="!hasResults"
               >
                 <EmptyHeader>
-                  <EmptyTitle>未找到服务器</EmptyTitle>
-                  <EmptyDescription>尝试不同的搜索关键词，或调整筛选条件。</EmptyDescription>
+                  <EmptyTitle>{{ t('market.noServers') }}</EmptyTitle>
+                  <EmptyDescription>{{ t('market.noServersDesc') }}</EmptyDescription>
                 </EmptyHeader>
               </Empty>
 
@@ -450,17 +452,17 @@ async function onSkillSearch() {
               >
                 <template v-if="market.loadingServers">
                   <Spinner />
-                  <span>加载中...</span>
+                  <span>{{ t('common.loading') }}</span>
                 </template>
                 <template v-else>
-                  <span>滚动加载更多</span>
+                  <span>{{ t('market.scrollForMore') }}</span>
                 </template>
               </div>
               <div
                 v-else-if="hasResults && market.servers.total > 0 && !market.servers.hasMore"
                 class="flex items-center justify-center py-6 text-sm text-muted-foreground"
               >
-                <span>已显示全部 {{ market.servers.total }} 个服务器</span>
+                <span>{{ t('market.allServersShown', { count: market.servers.total }) }}</span>
               </div>
             </template>
           </TabsContent>
@@ -471,8 +473,8 @@ async function onSkillSearch() {
               v-if="!skillsSourceEnabled"
             >
               <EmptyHeader>
-                <EmptyTitle>Skills 来源已禁用</EmptyTitle>
-                <EmptyDescription>请在设置中启用 github 或 skills-sh 来源。</EmptyDescription>
+                <EmptyTitle>{{ t('market.skillsSourceDisabled') }}</EmptyTitle>
+                <EmptyDescription>{{ t('market.skillsSourceDisabledDesc') }}</EmptyDescription>
               </EmptyHeader>
             </Empty>
             <template v-else>
@@ -485,7 +487,7 @@ async function onSkillSearch() {
                   :class="skillSource === 'github' ? 'bg-primary text-primary-foreground shadow' : 'bg-muted/60 text-muted-foreground hover:bg-muted'"
                   @click="switchSkillSource('github')"
                 >
-                  GitHub 仓库
+                  {{ t('market.githubRepos') }}
                 </button>
                 <button
                   v-if="skillsShEnabled"
@@ -503,19 +505,19 @@ async function onSkillSearch() {
                   <PhMagnifyingGlass :size="14" class="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
                   <Input
                     v-model="skillQuery"
-                    :placeholder="skillSource === 'skills-sh' ? '搜索 skills.sh（至少 2 个字符）' : '搜索 GitHub 仓库 Skills（空查询浏览全部）'"
+                    :placeholder="skillSource === 'skills-sh' ? t('market.searchSkillsShPlaceholder') : t('market.searchGithubSkillsPlaceholder')"
                     class="pl-9"
-                    aria-label="搜索 Skills"
+                    :aria-label="t('market.searchSkillsAria')"
                   />
                 </div>
                 <Button type="submit" :disabled="market.loadingSkills">
                   <PhMagnifyingGlass :size="14" />
-                  搜索
+                  {{ t('common.search') }}
                 </Button>
               </form>
 
               <p v-if="skillQuery.trim().length > 0 && skillQuery.trim().length < 2" class="text-xs text-muted-foreground">
-                skills.sh API 要求查询至少 2 个字符。
+                {{ t('market.skillsShMinLength') }}
               </p>
 
               <div v-if="market.loadingSkills && !hasSkillResults" class="flex items-center justify-center py-12">
@@ -526,10 +528,10 @@ async function onSkillSearch() {
                 v-else-if="!skillsSearched"
               >
                 <EmptyHeader>
-                  <EmptyTitle>{{ skillSource === 'skills-sh' ? '搜索 skills.sh Skills' : '搜索 GitHub Skills' }}</EmptyTitle>
+                  <EmptyTitle>{{ skillSource === 'skills-sh' ? t('market.searchSkillsShPrompt') : t('market.searchGithubPrompt') }}</EmptyTitle>
                   <EmptyDescription>{{ skillSource === 'skills-sh'
-                    ? '输入关键词搜索 skills.sh（至少 2 个字符）。'
-                    : '留空浏览已配置 GitHub 仓库中的全部 Skills，或输入关键词搜索。' }}</EmptyDescription>
+                    ? t('market.searchSkillsShPromptDesc')
+                    : t('market.searchGithubPromptDesc') }}</EmptyDescription>
                 </EmptyHeader>
               </Empty>
 
@@ -537,10 +539,10 @@ async function onSkillSearch() {
                 v-else-if="!hasSkillResults"
               >
                 <EmptyHeader>
-                  <EmptyTitle>{{ skillSource === 'skills-sh' ? '未找到 skills.sh Skills' : '未找到 GitHub Skills' }}</EmptyTitle>
+                  <EmptyTitle>{{ skillSource === 'skills-sh' ? t('market.noSkillsShSkills') : t('market.noGithubSkills') }}</EmptyTitle>
                   <EmptyDescription>{{ skillSource === 'skills-sh'
-                    ? '尝试不同的关键词。'
-                    : '尝试不同的关键词，或留空浏览全部。可在设置中添加更多 GitHub 仓库。' }}</EmptyDescription>
+                    ? t('market.noSkillsShSkillsDesc')
+                    : t('market.noGithubSkillsDesc') }}</EmptyDescription>
                 </EmptyHeader>
               </Empty>
 
@@ -559,17 +561,17 @@ async function onSkillSearch() {
               >
                 <template v-if="market.loadingSkills">
                   <Spinner />
-                  <span>加载中...</span>
+                  <span>{{ t('common.loading') }}</span>
                 </template>
                 <template v-else>
-                  <span>滚动加载更多</span>
+                  <span>{{ t('market.scrollForMore') }}</span>
                 </template>
               </div>
               <div
                 v-else-if="hasSkillResults && market.skills.total > 0 && !market.skills.hasMore"
                 class="flex items-center justify-center py-6 text-sm text-muted-foreground"
               >
-                <span>已显示全部 {{ market.skills.total }} 个 skill</span>
+                <span>{{ t('market.allSkillsShown', { count: market.skills.total }) }}</span>
               </div>
             </template>
           </TabsContent>

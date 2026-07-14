@@ -1,10 +1,27 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useRoute } from 'vue-router'
+import { useI18n } from 'vue-i18n'
 import { PhPackage } from '@phosphor-icons/vue'
 
 const route = useRoute()
-const title = computed(() => (route.meta.title as string) || 'AgentPack')
+const { t } = useI18n()
+const title = computed(() => {
+  switch (route.name as string) {
+    case 'agents':
+      return 'Agent'
+    case 'mcp':
+      return 'MCP Servers'
+    case 'skills':
+      return 'Skills'
+    case 'market':
+      return t('market.title')
+    case 'settings':
+      return t('settings.title')
+    default:
+      return 'AgentPack'
+  }
+})
 </script>
 
 <template>

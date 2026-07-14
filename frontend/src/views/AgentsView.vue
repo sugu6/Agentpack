@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useAgentsStore } from '@/stores/agents'
 import { useMcpStore } from '@/stores/mcp'
 import { Card, CardHeader, CardTitle, CardDescription, CardContent, Badge, Spinner, Button, Empty, EmptyHeader, EmptyTitle, EmptyDescription, EmptyMedia } from '@/components/ui'
@@ -8,6 +9,7 @@ import { ApiError } from '@/lib/api'
 import { agentLogoUrl, agentLogoInvertClass, statusVariant, statusLabel, variantLabel, getVariantFromId } from '@/composables/useAgentHelpers'
 import { useToast } from '@/composables/useToast'
 
+const { t } = useI18n()
 const agents = useAgentsStore()
 const mcp = useMcpStore()
 const toast = useToast()
@@ -18,10 +20,10 @@ const enabled = computed(() => agents.items.filter((a) => a.status === 'enabled'
 async function onRescan() {
   try {
     await agents.rescan()
-    toast.success(`已扫描完成，检测到 ${detected.value} 个 Agent`)
+    toast.success(t('agents.toast.scanComplete', { count: detected.value }))
   } catch (e) {
     const err = ApiError.from(e)
-    toast.error(`Rescan 失败：${err.message}`)
+    toast.error(t('agents.toast.scanFailed', { error: err.message }))
   }
 }
 </script>
@@ -35,14 +37,14 @@ async function onRescan() {
           <div>
             <h1 class="text-2xl font-semibold tracking-tight">Agent</h1>
             <p class="mt-1 text-sm text-muted-foreground">
-              检测本机上的 AI Agent。在设置中启用或禁用 Agent 管理。
+              {{ t('agents.subtitle') }}
             </p>
           </div>
           <div class="flex items-center gap-2">
             <Button variant="default" size="sm" :disabled="agents.loading" @click="onRescan">
               <PhArrowsClockwise v-if="!agents.loading" :size="14" />
               <Spinner v-else class="size-3.5" />
-              <span>重新扫描</span>
+              <span>{{ t('agents.rescan') }}</span>
             </Button>
           </div>
         </div>
@@ -50,19 +52,19 @@ async function onRescan() {
         <div class="mt-4 grid grid-cols-3 gap-3">
           <Card class="bg-card/50">
             <CardContent class="p-4">
-              <div class="text-xs uppercase tracking-wider text-muted-foreground">已检测</div>
+              <div class="text-xs uppercase tracking-wider text-muted-foreground">{{ t('agents.detected') }}</div>
               <div class="mt-1 text-2xl font-semibold tabular-nums">{{ detected }}</div>
             </CardContent>
           </Card>
           <Card class="bg-card/50">
             <CardContent class="p-4">
-              <div class="text-xs uppercase tracking-wider text-muted-foreground">已启用</div>
+              <div class="text-xs uppercase tracking-wider text-muted-foreground">{{ t('agents.enabled') }}</div>
               <div class="mt-1 text-2xl font-semibold tabular-nums text-success">{{ enabled }}</div>
             </CardContent>
           </Card>
           <Card class="bg-card/50">
             <CardContent class="p-4">
-              <div class="text-xs uppercase tracking-wider text-muted-foreground">MCP 总数</div>
+              <div class="text-xs uppercase tracking-wider text-muted-foreground">{{ t('agents.mcpCount') }}</div>
               <div class="mt-1 text-2xl font-semibold tabular-nums">
                 {{ mcp.total }}
               </div>
@@ -82,8 +84,8 @@ async function onRescan() {
         <Empty v-else-if="agents.items.length === 0" class="mt-8">
           <EmptyMedia><PhCircleNotch :size="32" class="text-muted-foreground" /></EmptyMedia>
           <EmptyHeader>
-            <EmptyTitle>未检测到 Agent</EmptyTitle>
-            <EmptyDescription>点击重新扫描来搜索系统。</EmptyDescription>
+            <EmptyTitle>{{ t('agents.emptyTitle') }}</EmptyTitle>
+            <EmptyDescription>{{ t('agents.emptyDescription') }}</EmptyDescription>
           </EmptyHeader>
         </Empty>
 
@@ -104,7 +106,7 @@ async function onRescan() {
                   <Badge :variant="statusVariant(agent.status)">{{ statusLabel(agent.status) }}</Badge>
                 </div>
                 <p class="mt-0.5 truncate font-mono text-[11px] text-muted-foreground">
-                  {{ agent.configPath || '无配置路径' }}
+                  {{ agent.configPath || t('agents.noConfigPath') }}
                 </p>
                 <div class="mt-2 flex items-center gap-3 text-xs text-muted-foreground">
                   <span class="flex items-center gap-1">

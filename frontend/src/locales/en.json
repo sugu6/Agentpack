@@ -27,7 +27,13 @@
     "no": "No",
     "all": "All",
     "none": "None",
-    "ok": "OK"
+    "ok": "OK",
+    "installed": "Installed",
+    "activeAgents": "Active agents",
+    "error": "Error",
+    "unknown": "Unknown",
+    "selectAll": "Select all",
+    "toggleAll": "Select all / None"
   },
   "settings": {
     "title": "Settings",
@@ -93,7 +99,9 @@
   },
   "agents": {
     "title": "Agents",
+    "subtitle": "Detect AI agents on your machine. Enable or disable agent management in settings.",
     "scan": "Scan",
+    "rescan": "Rescan",
     "rescanning": "Scanning…",
     "enabled": "Enabled",
     "disabled": "Disabled",
@@ -101,15 +109,23 @@
     "notFound": "Not found",
     "configPath": "Config path",
     "mcpCount": "MCP count",
+    "noConfigPath": "No config path",
+    "emptyTitle": "No agents detected",
+    "emptyDescription": "Click rescan to search the system.",
     "variant": {
       "cli": "CLI",
       "desktop": "Desktop",
       "ide": "IDE",
       "config": "Config file"
+    },
+    "toast": {
+      "scanComplete": "Scan complete, detected {count} agents",
+      "scanFailed": "Scan failed: {error}"
     }
   },
   "mcp": {
     "title": "MCP",
+    "subtitle": "Model Context Protocol servers. Define once, shared across all agents.",
     "add": "Add MCP",
     "edit": "Edit MCP",
     "scan": "Scan MCP",
@@ -120,23 +136,65 @@
     "transport": "Transport",
     "boundAgents": "Bound agents",
     "empty": "No MCP servers",
+    "emptyDescription": "Click the top-right to add a custom server.",
     "scanResult": "Scan result"
   },
   "skills": {
     "title": "Skills",
+    "subtitle": "Manage local skills and sync them to each agent.",
     "install": "Install skill",
     "uninstall": "Uninstall skill",
     "installFromZip": "Install from ZIP",
+    "importExisting": "Import existing",
+    "importing": "Importing…",
+    "installing": "Installing…",
+    "scanning": "Scanning…",
+    "scan": "Scan skills",
     "checkUpdates": "Check for updates",
     "checkingUpdates": "Checking…",
     "hasUpdate": "Update available",
+    "checkFailed": "Check failed",
     "latest": "Latest",
     "directory": "Directory",
     "agents": "Bound agents",
-    "empty": "No skills"
+    "boundAgentCount": "{count} agents",
+    "noCapableAgents": "No Skills-capable agents detected",
+    "goToRepo": "Go to repository",
+    "empty": "No skills",
+    "emptyTitle": "No skills installed yet.",
+    "emptyDescription": "Click \"Import existing\" to manage skills in agent directories, or \"Install from ZIP\" to upload a zip package.",
+    "source": "Source",
+    "sourceLine": "Source: {agents}",
+    "importExistingTitle": "Import existing skill",
+    "importExistingDesc": "Select skills to manage from each agent's skills directory. Toggles control sync targets. Only the source agent is enabled by default.",
+    "selectedCount": "{selected} / {total} selected",
+    "noImportable": "No importable skills found.",
+    "noImportableHint": "Place a skill in an agent's skills directory and retry.",
+    "importCount": "Import {count}",
+    "selectTargetAgentsTitle": "Select target agents",
+    "selectTargetAgentsDesc": "Select which agents to install this skill to.",
+    "uninstallConfirmMessage": "Are you sure you want to uninstall this skill? It will be removed from the SSOT and all bound agent directories.",
+    "updatable": "Updatable",
+    "toast": {
+      "scanComplete": "Scan complete",
+      "scanFailed": "Scan skills failed",
+      "importSuccess": "Imported {count} skills",
+      "importFailedCount": "{count} skills failed to import",
+      "importFailed": "Import failed",
+      "pickFileFailed": "Failed to select file",
+      "zipInstallSuccess": "Skill installed from ZIP",
+      "zipInstallFailed": "Install from ZIP failed",
+      "updatesFound": "Found {count} skills with updates",
+      "allUpToDate": "All skills are up to date",
+      "checkUpdatesFailed": "Check for updates failed: {error}",
+      "toggleFailed": "Toggle failed",
+      "toggleBindingPartialFailed": "Some agent binding toggles failed: {error}",
+      "toggleBindingFailed": "Toggle agent binding failed: {error}"
+    }
   },
   "market": {
     "title": "Market",
+    "subtitle": "Discover community MCP servers and skills, and install them to enabled agents.",
     "search": "Search market",
     "category": "Category",
     "source": "Source",
@@ -146,7 +204,50 @@
     "install": "Install",
     "installed": "Installed",
     "installing": "Installing…",
-    "empty": "No results"
+    "empty": "No results",
+    "mcpServers": "MCP servers",
+    "filter": "Filter",
+    "selectCategory": "Select category",
+    "smitheryOfficial": "Smithery official",
+    "deployed": "Deployed",
+    "verified": "Verified",
+    "allRegistries": "All registries",
+    "allTransports": "All transports",
+    "resultCount": "{count} items",
+    "loadedCount": "Loaded {loaded} / {total} (filtered only)",
+    "scrollForMore": "Scroll to load more",
+    "allServersShown": "All {count} servers shown",
+    "allSkillsShown": "All {count} skills shown",
+    "noServers": "No servers found",
+    "noServersDesc": "Try a different keyword, or adjust the filters.",
+    "noMcpSource": "No MCP source available",
+    "noMcpSourceDesc": "Enable the official or smithery market source in settings.",
+    "skillsSourceDisabled": "Skills source disabled",
+    "skillsSourceDisabledDesc": "Enable the github or skills-sh source in settings.",
+    "githubRepos": "GitHub repos",
+    "searchMcpPlaceholder": "Search MCP servers (filesystem, github, redis...)",
+    "searchSmitheryPlaceholder": "Search Smithery MCP servers (googledrive, dropbox...)",
+    "searchMcpAria": "Search MCP servers",
+    "searchSkillsShPlaceholder": "Search skills.sh (at least 2 characters)",
+    "searchGithubSkillsPlaceholder": "Search GitHub repo skills (empty query to browse all)",
+    "searchSkillsAria": "Search skills",
+    "skillsShMinLength": "The skills.sh API requires at least 2 characters.",
+    "searchSkillsShPrompt": "Search skills.sh skills",
+    "searchGithubPrompt": "Search GitHub skills",
+    "searchSkillsShPromptDesc": "Enter a keyword to search skills.sh (at least 2 characters).",
+    "searchGithubPromptDesc": "Leave empty to browse all skills in configured GitHub repos, or enter a keyword to search.",
+    "noSkillsShSkills": "No skills.sh skills found",
+    "noGithubSkills": "No GitHub skills found",
+    "noSkillsShSkillsDesc": "Try a different keyword.",
+    "noGithubSkillsDesc": "Try a different keyword, or leave empty to browse all. Add more GitHub repos in settings.",
+    "smitheryCategory": {
+      "webSearch": "Web search",
+      "browserAutomation": "Browser automation",
+      "academic": "Academic research",
+      "finance": "Finance",
+      "reasoning": "Reasoning",
+      "devTools": "Dev tools"
+    }
   },
   "update": {
     "message": {
@@ -187,5 +288,10 @@
   },
   "startup": {
     "errors": "The following issues occurred during startup:"
+  },
+  "status": {
+    "detecting": "Detecting...",
+    "agentsDetected": "{count} agents detected",
+    "lastScan": "Last scan: {time}"
   }
 }

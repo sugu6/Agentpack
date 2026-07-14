@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
+import { useI18n } from 'vue-i18n'
 import { PhRobot, PhPlugs, PhSparkle, PhStorefront, PhGearSix } from '@phosphor-icons/vue'
 import { useAgentsStore } from '@/stores/agents'
 import { useMcpStore } from '@/stores/mcp'
@@ -8,6 +9,7 @@ import { useSettingsStore } from '@/stores/settings'
 
 const router = useRouter()
 const route = useRoute()
+const { t } = useI18n()
 const agents = useAgentsStore()
 const mcp = useMcpStore()
 const settings = useSettingsStore()
@@ -16,8 +18,8 @@ const nav = computed(() => [
   { to: '/', label: 'Agents', icon: PhRobot, badge: agents.detected.length },
   { to: '/mcp', label: 'MCP', icon: PhPlugs, badge: mcp.total },
   { to: '/skills', label: 'Skills', icon: PhSparkle },
-  { to: '/market', label: 'Market', icon: PhStorefront },
-  { to: '/settings', label: '设置', icon: PhGearSix },
+  { to: '/market', label: t('nav.market'), icon: PhStorefront },
+  { to: '/settings', label: t('nav.settings'), icon: PhGearSix },
 ])
 
 const skillsDir = computed(() =>

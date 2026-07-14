@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useMcpStore } from '@/stores/mcp'
 import { useAgentsStore } from '@/stores/agents'
 import { Card, CardContent, Spinner, Empty, EmptyHeader, EmptyTitle, EmptyDescription, EmptyMedia } from '@/components/ui'
@@ -9,6 +10,7 @@ import McpForm from '@/components/mcp/McpForm.vue'
 import McpScanDialog from '@/components/mcp/McpScanDialog.vue'
 import { ApiError } from '@/lib/api'
 
+const { t } = useI18n()
 const mcp = useMcpStore()
 const agents = useAgentsStore()
 
@@ -31,9 +33,9 @@ async function handleUpdated() {
       <div class="mx-auto max-w-6xl">
         <div class="flex items-end justify-between">
           <div>
-            <h1 class="text-2xl font-semibold tracking-tight">MCP 服务器</h1>
+            <h1 class="text-2xl font-semibold tracking-tight">MCP Servers</h1>
             <p class="mt-1 text-sm text-muted-foreground">
-              模型上下文协议服务器。一次定义，所有 Agent 通用。
+              {{ t('mcp.subtitle') }}
             </p>
           </div>
           <div class="flex items-center gap-2">
@@ -45,13 +47,13 @@ async function handleUpdated() {
         <div class="mt-4 grid grid-cols-2 gap-3">
           <Card class="bg-card/50">
             <CardContent class="p-4">
-              <div class="text-xs uppercase tracking-wider text-muted-foreground">已安装</div>
+              <div class="text-xs uppercase tracking-wider text-muted-foreground">{{ t('common.installed') }}</div>
               <div class="mt-1 text-2xl font-semibold tabular-nums">{{ mcp.total }}</div>
             </CardContent>
           </Card>
           <Card class="bg-card/50">
             <CardContent class="p-4">
-              <div class="text-xs uppercase tracking-wider text-muted-foreground">活跃 Agent</div>
+              <div class="text-xs uppercase tracking-wider text-muted-foreground">{{ t('common.activeAgents') }}</div>
               <div class="mt-1 text-2xl font-semibold tabular-nums">{{ agents.active.length }}</div>
             </CardContent>
           </Card>
@@ -69,8 +71,8 @@ async function handleUpdated() {
         <Empty v-else-if="mcp.items.length === 0" class="mt-4">
           <EmptyMedia><PhPlugsConnected :size="32" class="text-muted-foreground" /></EmptyMedia>
           <EmptyHeader>
-            <EmptyTitle>未安装 MCP 服务器</EmptyTitle>
-            <EmptyDescription>点击右上角添加自定义服务器。</EmptyDescription>
+            <EmptyTitle>{{ t('mcp.empty') }}</EmptyTitle>
+            <EmptyDescription>{{ t('mcp.emptyDescription') }}</EmptyDescription>
           </EmptyHeader>
         </Empty>
 

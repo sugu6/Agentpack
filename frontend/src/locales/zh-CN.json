@@ -27,7 +27,13 @@
     "no": "否",
     "all": "全部",
     "none": "无",
-    "ok": "确定"
+    "ok": "确定",
+    "installed": "已安装",
+    "activeAgents": "活跃 Agent",
+    "error": "错误",
+    "unknown": "未知",
+    "selectAll": "全选",
+    "toggleAll": "全选/取消"
   },
   "settings": {
     "title": "设置",
@@ -93,7 +99,9 @@
   },
   "agents": {
     "title": "Agents",
+    "subtitle": "检测本机上的 AI Agent。在设置中启用或禁用 Agent 管理。",
     "scan": "扫描",
+    "rescan": "重新扫描",
     "rescanning": "扫描中…",
     "enabled": "已启用",
     "disabled": "已禁用",
@@ -101,15 +109,23 @@
     "notFound": "未找到",
     "configPath": "配置路径",
     "mcpCount": "MCP 数量",
+    "noConfigPath": "无配置路径",
+    "emptyTitle": "未检测到 Agent",
+    "emptyDescription": "点击重新扫描来搜索系统。",
     "variant": {
       "cli": "命令行",
       "desktop": "桌面应用",
       "ide": "IDE",
       "config": "配置文件"
+    },
+    "toast": {
+      "scanComplete": "已扫描完成，检测到 {count} 个 Agent",
+      "scanFailed": "扫描失败：{error}"
     }
   },
   "mcp": {
     "title": "MCP",
+    "subtitle": "模型上下文协议服务器。一次定义，所有 Agent 通用。",
     "add": "添加 MCP",
     "edit": "编辑 MCP",
     "scan": "扫描 MCP",
@@ -120,23 +136,65 @@
     "transport": "传输方式",
     "boundAgents": "绑定 Agent",
     "empty": "暂无 MCP 服务器",
+    "emptyDescription": "点击右上角添加自定义服务器。",
     "scanResult": "扫描结果"
   },
   "skills": {
     "title": "Skills",
+    "subtitle": "管理本地 Skills 并同步到各 Agent。",
     "install": "安装 Skill",
     "uninstall": "卸载 Skill",
     "installFromZip": "从 ZIP 安装",
+    "importExisting": "导入已有",
+    "importing": "导入中…",
+    "installing": "安装中…",
+    "scanning": "扫描中…",
+    "scan": "扫描 Skills",
     "checkUpdates": "检查更新",
     "checkingUpdates": "检查中…",
     "hasUpdate": "有更新",
+    "checkFailed": "检查失败",
     "latest": "最新",
     "directory": "目录",
     "agents": "绑定 Agent",
-    "empty": "暂无 Skills"
+    "boundAgentCount": "{count} 个 Agent",
+    "noCapableAgents": "未检测到支持 Skills 的 Agent",
+    "goToRepo": "前往仓库",
+    "empty": "暂无 Skills",
+    "emptyTitle": "尚未安装任何 Skill。",
+    "emptyDescription": "点击“导入已有”纳管 Agent 目录中的 Skill，或“从 Zip 安装”上传 zip 包。",
+    "source": "来源",
+    "sourceLine": "来源: {agents}",
+    "importExistingTitle": "导入已有 Skill",
+    "importExistingDesc": "从各 Agent 的 skills 目录中选择要纳管的 Skill，开关控制同步目标。默认只启用来源 Agent。",
+    "selectedCount": "{selected} / {total} 已选",
+    "noImportable": "未发现可导入的 Skill。",
+    "noImportableHint": "将 Skill 放入 Agent 的 skills 目录后重试。",
+    "importCount": "导入 {count} 个",
+    "selectTargetAgentsTitle": "选择目标 Agent",
+    "selectTargetAgentsDesc": "选择要将此 Skill 安装到哪些 Agent。",
+    "uninstallConfirmMessage": "确定要卸载此技能吗？将从 SSOT 及所有绑定的 Agent 目录中移除。",
+    "updatable": "可更新",
+    "toast": {
+      "scanComplete": "扫描完成",
+      "scanFailed": "扫描 Skills 失败",
+      "importSuccess": "已导入 {count} 个 Skill",
+      "importFailedCount": "{count} 个 Skill 导入失败",
+      "importFailed": "导入失败",
+      "pickFileFailed": "选择文件失败",
+      "zipInstallSuccess": "已从 Zip 安装 Skill",
+      "zipInstallFailed": "从 zip 安装失败",
+      "updatesFound": "发现 {count} 个 Skill 有更新",
+      "allUpToDate": "所有 Skill 均为最新版本",
+      "checkUpdatesFailed": "检查更新失败：{error}",
+      "toggleFailed": "切换失败",
+      "toggleBindingPartialFailed": "部分 Agent 绑定切换失败：{error}",
+      "toggleBindingFailed": "切换 Agent 绑定失败：{error}"
+    }
   },
   "market": {
     "title": "市场",
+    "subtitle": "发现社区的 MCP 服务器与 Skills 并安装到已启用的 Agent。",
     "search": "搜索市场",
     "category": "分类",
     "source": "来源",
@@ -146,7 +204,50 @@
     "install": "安装",
     "installed": "已安装",
     "installing": "安装中…",
-    "empty": "暂无结果"
+    "empty": "暂无结果",
+    "mcpServers": "MCP 服务器",
+    "filter": "筛选",
+    "selectCategory": "选择分类",
+    "smitheryOfficial": "Smithery 官方",
+    "deployed": "已部署",
+    "verified": "已验证",
+    "allRegistries": "全部注册表",
+    "allTransports": "全部 Transport",
+    "resultCount": "{count} 个",
+    "loadedCount": "已加载 {loaded} / {total}（仅过滤已加载）",
+    "scrollForMore": "滚动加载更多",
+    "allServersShown": "已显示全部 {count} 个服务器",
+    "allSkillsShown": "已显示全部 {count} 个 skill",
+    "noServers": "未找到服务器",
+    "noServersDesc": "尝试不同的搜索关键词，或调整筛选条件。",
+    "noMcpSource": "无可用 MCP 来源",
+    "noMcpSourceDesc": "请在设置中启用 official 或 smithery 市场来源。",
+    "skillsSourceDisabled": "Skills 来源已禁用",
+    "skillsSourceDisabledDesc": "请在设置中启用 github 或 skills-sh 来源。",
+    "githubRepos": "GitHub 仓库",
+    "searchMcpPlaceholder": "搜索 MCP 服务器（filesystem、github、redis...）",
+    "searchSmitheryPlaceholder": "搜索 Smithery MCP 服务器（googledrive、dropbox...）",
+    "searchMcpAria": "搜索 MCP 服务器",
+    "searchSkillsShPlaceholder": "搜索 skills.sh（至少 2 个字符）",
+    "searchGithubSkillsPlaceholder": "搜索 GitHub 仓库 Skills（空查询浏览全部）",
+    "searchSkillsAria": "搜索 Skills",
+    "skillsShMinLength": "skills.sh API 要求查询至少 2 个字符。",
+    "searchSkillsShPrompt": "搜索 skills.sh Skills",
+    "searchGithubPrompt": "搜索 GitHub Skills",
+    "searchSkillsShPromptDesc": "输入关键词搜索 skills.sh（至少 2 个字符）。",
+    "searchGithubPromptDesc": "留空浏览已配置 GitHub 仓库中的全部 Skills，或输入关键词搜索。",
+    "noSkillsShSkills": "未找到 skills.sh Skills",
+    "noGithubSkills": "未找到 GitHub Skills",
+    "noSkillsShSkillsDesc": "尝试不同的关键词。",
+    "noGithubSkillsDesc": "尝试不同的关键词，或留空浏览全部。可在设置中添加更多 GitHub 仓库。",
+    "smitheryCategory": {
+      "webSearch": "Web 搜索",
+      "browserAutomation": "浏览器自动化",
+      "academic": "学术研究",
+      "finance": "金融",
+      "reasoning": "推理",
+      "devTools": "开发工具"
+    }
   },
   "update": {
     "message": {
@@ -187,5 +288,10 @@
   },
   "startup": {
     "errors": "启动时出现以下问题:"
+  },
+  "status": {
+    "detecting": "正在检测...",
+    "agentsDetected": "{count} 个 Agents 已检测",
+    "lastScan": "上次扫描: {time}"
   }
 }

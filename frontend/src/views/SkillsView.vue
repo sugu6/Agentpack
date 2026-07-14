@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, computed } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useSkillsStore } from '@/stores/skills'
 import { useAgentsStore } from '@/stores/agents'
 import { Card, CardContent, Button, Badge, Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui'
@@ -10,6 +11,7 @@ import AgentToggleButton from '@/components/agent/AgentToggleButton.vue'
 import { useConfirm } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
 
+const { t } = useI18n()
 const skills = useSkillsStore()
 const agents = useAgentsStore()
 const confirm = useConfirm()
@@ -150,12 +152,12 @@ async function toggleGroup(skillId: string, group: { ids: string[] }, enabled: b
     )
     const failures = results.filter((r) => r.status === 'rejected')
     if (failures.length > 0) {
-      const msg = failures.map((r) => (r as PromiseRejectedResult).reason?.message || '切换失败').join('; ')
-      toast.warning(`部分 Agent 绑定切换失败：${msg}`)
+      const msg = failures.map((r) => (r as PromiseRejectedResult).reason?.message || t('skills.toast.toggleFailed')).join('; ')
+      toast.warning(t('skills.toast.toggleBindingPartialFailed', { error: msg }))
     }
   } catch (e) {
     const apiError = ApiError.from(e)
-    toast.error(`切换 Agent 绑定失败：${apiError.message}`)
+    toast.error(t('skills.toast.toggleBindingFailed', { error: apiError.message }))
   }
 }
 
@@ -204,15 +206,15 @@ async function confirmImportExisting() {
     const failures = results.filter(r => r.status === 'rejected')
     const successCount = results.length - failures.length
     if (successCount > 0) {
-      toast.success(`已导入 ${successCount} 个 Skill`)
+      toast.success(t('skills.toast.importSuccess', { count: successCount }))
     }
     if (failures.length > 0) {
-      toast.warning(`${failures.length} 个 Skill 导入失败`)
+      toast.warning(t('skills.toast.importFailedCount', { count: failures.length }))
     }
     await skills.load()
     showImportExisting.value = false
   } catch (e: unknown) {
-    toast.error(toast.fromError(e, '导入失败'))
+    toast.error(toast.fromError(e, t('skills.toast.importFailed')))
   } finally {
     importingUnmanaged.value = false
   }
@@ -226,7 +228,7 @@ async function installFromZip() {
 
     const agentIDs = allCapableAgentIds.value
     if (agentIDs.length === 0) {
-      toast.info('未检测到支持 Skills 的 Agent')
+      toast.info(t('skills.noCapableAgents'))
       return
     }
 
@@ -234,7 +236,7 @@ async function installFromZip() {
     pendingZipPath.value = zipPath
     showAgentSelector.value = true
   } catch (e: unknown) {
-    toast.error(toast.fromError(e, '选择文件失败'))
+    toast.error(toast.fromError(e, t('skills.toast.pickFileFailed')))
   }
 }
 
@@ -249,9 +251,9 @@ async function confirmZipImport() {
   try {
     await skills.installFromZip(zipPath, agentIDs)
     await skills.load()
-    toast.success('已从 Zip 安装 Skill')
+    toast.success(t('skills.toast.zipInstallSuccess'))
   } catch (e: unknown) {
-    toast.error(toast.fromError(e, '从 zip 安装失败'))
+    toast.error(toast.fromError(e, t('skills.toast.zipInstallFailed')))
   } finally {
     importingZip.value = false
   }
@@ -259,17 +261,17 @@ async function confirmZipImport() {
 
 async function uninstallSkill(id: string) {
   const ok = await confirm.confirm({
-    title: '确认卸载',
-    message: '确定要卸载此技能吗？将从 SSOT 及所有绑定的 Agent 目录中移除。',
-    confirmText: '卸载',
+    title: t('dialog.confirm.uninstall'),
+    message: t('skills.uninstallConfirmMessage'),
+    confirmText: t('common.uninstall'),
     variant: 'destructive',
   })
   if (!ok) return
   try {
     await skills.uninstall(id)
-    toast.success('已卸载 Skill')
+    toast.success(t('toast.uninstallSuccess'))
   } catch (e: unknown) {
-    toast.error(toast.fromError(e, '卸载失败'))
+    toast.error(toast.fromError(e, t('toast.uninstallFailed')))
   }
 }
 
@@ -281,18 +283,18 @@ async function onCheckUpdates() {
     await skills.checkUpdates()
     const updatesCount = skills.updateStatuses.filter(s => s.hasUpdate).length
     if (updatesCount > 0) {
-      toast.success(`发现 ${updatesCount} 个 Skill 有更新`)
+      toast.success(t('skills.toast.updatesFound', { count: updatesCount }))
     } else {
-      toast.info('所有 Skill 均为最新版本')
+      toast.info(t('skills.toast.allUpToDate'))
     }
   } catch (e: unknown) {
     const apiError = ApiError.from(e)
     const msg = apiError.message
     // 限流友好提示
     if (msg.includes('rate limit') || msg.includes('403') || msg.includes('429') || msg.includes('too many') || msg.includes('限流')) {
-      toast.warning('GitHub API 请求过于频繁，请稍后再试')
+      toast.warning(t('update.message.rateLimited'))
     } else {
-      toast.error(`检查更新失败：${msg}`)
+      toast.error(t('skills.toast.checkUpdatesFailed', { error: msg }))
     }
   }
 }
@@ -321,9 +323,9 @@ async function scanSkills() {
     // 4. Scan unmanaged skills in global ~/.agents/skills (read-only)
     await skills.scanUnmanaged()
     scannedOnce.value = true
-    toast.success('扫描完成')
+    toast.success(t('skills.toast.scanComplete'))
   } catch (e: unknown) {
-    toast.error(toast.fromError(e, '扫描 Skills 失败'))
+    toast.error(toast.fromError(e, t('skills.toast.scanFailed')))
   } finally {
     scanning.value = false
   }
@@ -337,24 +339,24 @@ async function scanSkills() {
       <div class="mx-auto max-w-6xl flex items-end justify-between">
         <div>
           <h1 class="text-2xl font-semibold tracking-tight">Skills</h1>
-          <p class="mt-1 text-sm text-muted-foreground">管理本地 Skills 并同步到各 Agent。</p>
+          <p class="mt-1 text-sm text-muted-foreground">{{ t('skills.subtitle') }}</p>
         </div>
         <div class="flex gap-2">
           <Button variant="outline" size="sm" :disabled="importingUnmanaged" @click="openImportExisting">
             <PhFolderOpen :size="14" :class="{ 'animate-pulse': importingUnmanaged }" />
-            <span>{{ importingUnmanaged ? '导入中...' : '导入已有' }}</span>
+            <span>{{ importingUnmanaged ? t('skills.importing') : t('skills.importExisting') }}</span>
           </Button>
           <Button variant="outline" size="sm" :disabled="importingZip" @click="installFromZip">
             <PhFileArchive :size="14" :class="{ 'animate-pulse': importingZip }" />
-            <span>{{ importingZip ? '安装中...' : '从 Zip 安装' }}</span>
+            <span>{{ importingZip ? t('skills.installing') : t('skills.installFromZip') }}</span>
           </Button>
           <Button variant="outline" size="sm" :disabled="scanning" @click="scanSkills">
             <PhMagnifyingGlass :size="14" :class="{ 'animate-pulse': scanning }" />
-            <span>{{ scanning ? '扫描中...' : '扫描 Skills' }}</span>
+            <span>{{ scanning ? t('skills.scanning') : t('skills.scan') }}</span>
           </Button>
           <Button variant="outline" size="sm" :disabled="skills.checkingUpdates" @click="onCheckUpdates">
             <PhArrowClockwise :size="14" :class="{ 'animate-spin': skills.checkingUpdates }" />
-            <span>{{ skills.checkingUpdates ? '检查中...' : '检查更新' }}</span>
+            <span>{{ skills.checkingUpdates ? t('skills.checkingUpdates') : t('skills.checkUpdates') }}</span>
           </Button>
         </div>
       </div>
@@ -362,19 +364,19 @@ async function scanSkills() {
       <div class="mt-4 grid grid-cols-3 gap-3">
         <Card class="bg-card/50">
           <CardContent class="p-4">
-            <div class="text-xs uppercase tracking-wider text-muted-foreground">已安装</div>
+            <div class="text-xs uppercase tracking-wider text-muted-foreground">{{ t('common.installed') }}</div>
             <div class="mt-1 text-2xl font-semibold tabular-nums">{{ skills.skills.length }}</div>
           </CardContent>
         </Card>
         <Card class="bg-card/50">
           <CardContent class="p-4">
-            <div class="text-xs uppercase tracking-wider text-muted-foreground">活跃 Agent</div>
+            <div class="text-xs uppercase tracking-wider text-muted-foreground">{{ t('common.activeAgents') }}</div>
             <div class="mt-1 text-2xl font-semibold tabular-nums">{{ agents.active.length }}</div>
           </CardContent>
         </Card>
         <Card class="bg-card/50">
           <CardContent class="p-4">
-            <div class="text-xs uppercase tracking-wider text-muted-foreground">可更新</div>
+            <div class="text-xs uppercase tracking-wider text-muted-foreground">{{ t('skills.updatable') }}</div>
             <div class="mt-1 text-2xl font-semibold tabular-nums" :class="{ 'text-warning': updatesCount > 0 }">{{ updatesCount }}</div>
           </CardContent>
         </Card>
@@ -387,13 +389,13 @@ async function scanSkills() {
         <!-- Empty state -->
         <div v-if="skills.skills.length === 0 && !skills.loading" class="py-12 text-center">
           <PhSparkle :size="48" class="mx-auto mb-4 text-muted-foreground/30" />
-          <p class="text-muted-foreground">尚未安装任何 Skill。</p>
-          <p class="mt-1 text-sm text-muted-foreground">点击"导入已有"纳管 Agent 目录中的 Skill，或"从 Zip 安装"上传 zip 包。</p>
+          <p class="text-muted-foreground">{{ t('skills.emptyTitle') }}</p>
+          <p class="mt-1 text-sm text-muted-foreground">{{ t('skills.emptyDescription') }}</p>
         </div>
 
         <!-- Loading -->
         <div v-if="skills.loading" class="py-8 text-center text-sm text-muted-foreground">
-          加载中...
+          {{ t('common.loading') }}
         </div>
 
         <!-- Skill cards -->
@@ -407,9 +409,9 @@ async function scanSkills() {
                 <div class="flex items-center gap-2">
                   <h3 class="text-sm font-semibold">{{ skill.name }}</h3>
                   <Badge variant="outline">{{ skill.directory }}</Badge>
-                  <Badge v-if="skills.updateStatusOf(skill.id)?.hasUpdate" variant="warning">有更新</Badge>
-                  <Badge v-else-if="skills.updateStatusOf(skill.id)?.error" variant="destructive" :title="skills.updateStatusOf(skill.id)!.error">检查失败</Badge>
-                  <span v-if="skill.boundAgents.length > 0" class="text-[11px] text-muted-foreground">{{ skill.boundAgents.length }} 个 Agent</span>
+                  <Badge v-if="skills.updateStatusOf(skill.id)?.hasUpdate" variant="warning">{{ t('skills.hasUpdate') }}</Badge>
+                  <Badge v-else-if="skills.updateStatusOf(skill.id)?.error" variant="destructive" :title="skills.updateStatusOf(skill.id)!.error">{{ t('skills.checkFailed') }}</Badge>
+                  <span v-if="skill.boundAgents.length > 0" class="text-[11px] text-muted-foreground">{{ t('skills.boundAgentCount', { count: skill.boundAgents.length }) }}</span>
                 </div>
 
                 <div class="mt-3 flex flex-nowrap items-center gap-2 border-t border-border pt-3">
@@ -428,7 +430,7 @@ async function scanSkills() {
                     />
                   </div>
                   <span v-if="skillCapableGroups.length === 0" class="text-[11px] text-muted-foreground">
-                    未检测到支持 Skills 的 Agent。
+                    {{ t('skills.noCapableAgents') }}
                   </span>
                 </div>
               </div>
@@ -437,13 +439,13 @@ async function scanSkills() {
                   v-if="repoUrl(skill)"
                   variant="ghost"
                   size="icon"
-                  aria-label="前往仓库"
-                  title="前往仓库"
+                  :aria-label="t('skills.goToRepo')"
+                  :title="t('skills.goToRepo')"
                   @click="openRepo(repoUrl(skill)!)"
                 >
                   <PhArrowSquareOut :size="14" />
                 </Button>
-                <Button variant="outline" size="icon" class="border-destructive/40 text-destructive hover:bg-destructive/10" aria-label="卸载" @click="uninstallSkill(skill.id)">
+                <Button variant="outline" size="icon" class="border-destructive/40 text-destructive hover:bg-destructive/10" :aria-label="t('common.uninstall')" @click="uninstallSkill(skill.id)">
                   <PhTrash :size="14" class="text-destructive" />
                 </Button>
               </div>
@@ -461,8 +463,8 @@ async function scanSkills() {
     <Dialog v-model:open="showImportExisting">
       <DialogContent class="max-w-2xl">
         <DialogHeader>
-          <DialogTitle>导入已有 Skill</DialogTitle>
-          <DialogDescription>从各 Agent 的 skills 目录中选择要纳管的 Skill，开关控制同步目标。默认只启用来源 Agent。</DialogDescription>
+          <DialogTitle>{{ t('skills.importExistingTitle') }}</DialogTitle>
+          <DialogDescription>{{ t('skills.importExistingDesc') }}</DialogDescription>
         </DialogHeader>
 
         <!-- 工具栏 -->
@@ -483,9 +485,9 @@ async function scanSkills() {
               }"
               class="h-3.5 w-3.5"
             />
-            全选
+            {{ t('common.selectAll') }}
           </label>
-          <span class="text-xs text-muted-foreground">{{ selectedPaths.length }} / {{ unmanagedList.length }} 已选</span>
+          <span class="text-xs text-muted-foreground">{{ t('skills.selectedCount', { selected: selectedPaths.length, total: unmanagedList.length }) }}</span>
         </div>
 
         <div class="max-h-[55vh] space-y-2 overflow-y-auto py-2">
@@ -509,7 +511,7 @@ async function scanSkills() {
                   <Badge variant="outline" class="text-[10px]">{{ u.directory }}</Badge>
                 </div>
                 <p class="mt-0.5 text-[10px] text-muted-foreground/70">
-                  来源: {{ u.agentIds.length > 0 ? u.agentIds.map(id => agentNameMap.get(id) || id).join(', ') : '未知' }}
+                  {{ t('skills.sourceLine', { agents: u.agentIds.length > 0 ? u.agentIds.map(id => agentNameMap.get(id) || id).join(', ') : t('common.unknown') }) }}
                 </p>
               </div>
             </div>
@@ -528,22 +530,22 @@ async function scanSkills() {
                   :badge="variantToBadge(getVariantFromId(ag.id))"
                   @update:model-value="(v: boolean) => toggleImportAgentExplicit(u.path, ag.id, v, u.agentIds)"
                 />
-                <Badge v-if="u.agentIds.includes(ag.id)" variant="secondary" class="text-[9px] px-1 py-0">来源</Badge>
+                <Badge v-if="u.agentIds.includes(ag.id)" variant="secondary" class="text-[9px] px-1 py-0">{{ t('skills.source') }}</Badge>
               </div>
             </div>
           </div>
 
           <div v-if="unmanagedList.length === 0" class="py-8 text-center text-sm text-muted-foreground">
             <PhMagnifyingGlass :size="28" class="mx-auto mb-3 text-muted-foreground/30" />
-            <p>未发现可导入的 Skill。</p>
-            <p class="mt-1 text-xs">将 Skill 放入 Agent 的 skills 目录后重试。</p>
+            <p>{{ t('skills.noImportable') }}</p>
+            <p class="mt-1 text-xs">{{ t('skills.noImportableHint') }}</p>
           </div>
         </div>
 
         <DialogFooter>
-          <Button variant="ghost" @click="showImportExisting = false">取消</Button>
+          <Button variant="ghost" @click="showImportExisting = false">{{ t('common.cancel') }}</Button>
           <Button :disabled="selectedPaths.length === 0 || importingUnmanaged" @click="confirmImportExisting">
-            {{ importingUnmanaged ? '导入中...' : `导入 ${selectedPaths.length} 个` }}
+            {{ importingUnmanaged ? t('skills.importing') : t('skills.importCount', { count: selectedPaths.length }) }}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -553,13 +555,13 @@ async function scanSkills() {
     <Dialog v-model:open="showAgentSelector">
       <DialogContent class="max-w-md">
         <DialogHeader>
-          <DialogTitle>选择目标 Agent</DialogTitle>
-          <DialogDescription>选择要将此 Skill 安装到哪些 Agent。</DialogDescription>
+          <DialogTitle>{{ t('skills.selectTargetAgentsTitle') }}</DialogTitle>
+          <DialogDescription>{{ t('skills.selectTargetAgentsDesc') }}</DialogDescription>
         </DialogHeader>
         <div class="space-y-2 py-2">
           <label class="flex items-center gap-2 text-sm font-medium">
             <input type="checkbox" :checked="selectedAgentIds.size === allCapableAgentIds.length" :indeterminate="selectedAgentIds.size > 0 && selectedAgentIds.size < allCapableAgentIds.length" @change="(e: Event) => toggleSelectAll((e.target as HTMLInputElement).checked)" class="h-4 w-4" />
-            全选/取消
+            {{ t('common.toggleAll') }}
           </label>
           <div class="flex flex-wrap items-center gap-2 pt-1">
             <div v-for="ag in skills.skillCapableAgents" :key="ag.id" class="flex items-center">
@@ -574,9 +576,9 @@ async function scanSkills() {
           </div>
         </div>
         <DialogFooter>
-          <Button variant="ghost" @click="showAgentSelector = false">取消</Button>
+          <Button variant="ghost" @click="showAgentSelector = false">{{ t('common.cancel') }}</Button>
           <Button :disabled="selectedAgentIds.size === 0 || importingZip" @click="confirmZipImport">
-            {{ importingZip ? '安装中...' : '安装' }}
+            {{ importingZip ? t('skills.installing') : t('common.install') }}
           </Button>
         </DialogFooter>
       </DialogContent>
