@@ -299,9 +299,11 @@ async function checkUpdate() {
         duration: 5000,
         description: t('settings.toast.canDownloadBelow'),
       })
+    } else if (result.changelog) {
+      // 成功获取 release 且版本相同 → 真正最新
+      toast.success(result.message || t('update.message.latest', { version: result.currentVersion }))
     } else {
-      // 后端在限流/网络失败/无 release/版本相同等情况返回不同 message，
-      // 直接显示后端 message 让用户知晓真实状态(而非一律显示"已是最新版本")
+      // changelog 为空说明限流/网络错误/无 release，如实显示后端 message
       toast.info(result.message || t('update.message.latest', { version: result.currentVersion }))
     }
   } catch (e) {
