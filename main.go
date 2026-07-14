@@ -60,6 +60,8 @@ func main() {
 		Width:            960,
 		Height:           640,
 		BackgroundColour: nil,
+		// dev 模式保留右键菜单便于调试；生产构建禁用以防止用户通过右键"检查"打开 DevTools
+		EnableDefaultContextMenu: isDevMode(),
 		AssetServer: &assetserver.Options{
 			Assets: assets,
 		},

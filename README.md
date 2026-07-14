@@ -40,7 +40,7 @@ AgentPack 是一个基于 [Wails v2](https://wails.io)（Go + Vue 3 + TypeScript
 ## 技术栈
 
 - **后端**：Go 1.25+、Wails v2.12
-- **前端**：Vue 3、TypeScript、Vite、Tailwind CSS、reka UI
+- **前端**：Vue 3、TypeScript、Vite、Tailwind CSS、shadcn/vue
 - **数据库**：SQLite（modernc.org/sqlite 纯 Go 实现）
 - **图标**：Phosphor Icons
 

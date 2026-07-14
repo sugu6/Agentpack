@@ -2,6 +2,7 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { PhStorefront, PhMagnifyingGlass, PhBooks, PhSparkle, PhFunnel } from '@phosphor-icons/vue'
 import { Button, Input, Spinner, Tabs, TabsList, TabsTrigger, TabsContent, Empty, EmptyHeader, EmptyTitle, EmptyDescription, Select, SelectTrigger, SelectValue, SelectContent, SelectItem, Checkbox } from '@/components/ui'
+import { SelectPortal } from 'reka-ui'
 import MarketCard from '@/components/market/MarketCard.vue'
 import SkillMarketCard from '@/components/market/SkillMarketCard.vue'
 import { useMarketStore } from '@/stores/market'
@@ -355,11 +356,13 @@ async function onSkillSearch() {
                     <SelectTrigger size="sm" class="w-40 text-xs">
                       <SelectValue placeholder="选择分类" />
                     </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem v-for="cat in SMITHERY_CATEGORIES" :key="cat.label" :value="cat.query || ALL_VALUE" class="text-xs">
-                        {{ cat.label }}
-                      </SelectItem>
-                    </SelectContent>
+                    <SelectPortal>
+                      <SelectContent>
+                        <SelectItem v-for="cat in SMITHERY_CATEGORIES" :key="cat.label" :value="cat.query || ALL_VALUE" class="text-xs">
+                          {{ cat.label }}
+                        </SelectItem>
+                      </SelectContent>
+                    </SelectPortal>
                   </Select>
                   <label class="inline-flex cursor-pointer items-center gap-1.5 text-xs">
                     <Checkbox
@@ -389,21 +392,25 @@ async function onSkillSearch() {
                     <SelectTrigger size="sm" class="w-40 text-xs">
                       <SelectValue placeholder="全部注册表" />
                     </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem :value="ALL_VALUE" class="text-xs">全部注册表</SelectItem>
-                      <SelectItem v-for="r in officialRegistries" :key="r" :value="r" class="text-xs">{{ r }}</SelectItem>
-                    </SelectContent>
+                    <SelectPortal>
+                      <SelectContent>
+                        <SelectItem :value="ALL_VALUE" class="text-xs">全部注册表</SelectItem>
+                        <SelectItem v-for="r in officialRegistries" :key="r" :value="r" class="text-xs">{{ r }}</SelectItem>
+                      </SelectContent>
+                    </SelectPortal>
                   </Select>
                   <Select v-model="officialFilter.transport">
                     <SelectTrigger size="sm" class="w-44 text-xs">
                       <SelectValue placeholder="全部 Transport" />
                     </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem :value="ALL_VALUE" class="text-xs">全部 Transport</SelectItem>
-                      <SelectItem value="stdio" class="text-xs">stdio</SelectItem>
-                      <SelectItem value="http" class="text-xs">http</SelectItem>
-                      <SelectItem value="sse" class="text-xs">sse</SelectItem>
-                    </SelectContent>
+                    <SelectPortal>
+                      <SelectContent>
+                        <SelectItem :value="ALL_VALUE" class="text-xs">全部 Transport</SelectItem>
+                        <SelectItem value="stdio" class="text-xs">stdio</SelectItem>
+                        <SelectItem value="http" class="text-xs">http</SelectItem>
+                        <SelectItem value="sse" class="text-xs">sse</SelectItem>
+                      </SelectContent>
+                    </SelectPortal>
                   </Select>
                 </template>
                 <span class="ml-auto text-[10px] text-muted-foreground">
