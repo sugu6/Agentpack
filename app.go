@@ -17,6 +17,7 @@ import (
 	"agentpack/internal/backup"
 	"agentpack/internal/config"
 	"agentpack/internal/database"
+	"agentpack/internal/i18n"
 	"agentpack/internal/market"
 	"agentpack/internal/mcp"
 	"agentpack/internal/skills"
@@ -1042,6 +1043,7 @@ func (a *App) UpdateSettings(s config.Settings) error {
 	}
 
 	a.mu.Lock()
+	oldLang := i18n.ResolveLanguage(a.cfg.Settings.Language)
 	a.cfg.Settings = newSettings
 	a.refreshBackupHooksLocked()
 	a.mu.Unlock()
@@ -1072,6 +1074,12 @@ func (a *App) UpdateSettings(s config.Settings) error {
 	// 在锁外 emit 事件
 	if skillsStore != nil && (s.SkillStorage != oldSkillStorage || s.SkillSyncMethod != oldSkillSyncMethod) {
 		a.emit("skills:changed", skillsStore.List())
+	}
+
+	// 语言变化时重建托盘菜单
+	newLang := i18n.ResolveLanguage(s.Language)
+	if oldLang != newLang {
+		rebuildTrayMenu(newLang)
 	}
 
 	// emit settings:changed 让前端同步 i18n 语言 + 后端托盘重建

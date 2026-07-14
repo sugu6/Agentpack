@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"agentpack/internal/config"
+	"agentpack/internal/i18n"
 )
 
 // GitHub 仓库地址（owner/repo），用于检查更新
@@ -73,6 +74,7 @@ type releaseAsset struct {
 
 func (a *App) CheckUpdate() (*UpdateCheckResult, error) {
 	current := currentAppVersion()
+	lang := i18n.ResolveLanguage(a.cfg.Settings.Language)
 
 	url := config.DefaultGitHubProxy + strings.TrimPrefix(fmt.Sprintf("https://api.github.com/repos/%s/releases/latest", githubRepo), "https://")
 
@@ -106,7 +108,7 @@ func (a *App) CheckUpdate() (*UpdateCheckResult, error) {
 				HasUpdate:      false,
 				CurrentVersion: current,
 				LatestVersion:  current,
-				Message:        "尚未发布任何版本",
+				Message:        i18n.T(lang, "update.message.noRelease"),
 			}, nil
 		}
 
@@ -117,7 +119,7 @@ func (a *App) CheckUpdate() (*UpdateCheckResult, error) {
 				HasUpdate:      false,
 				CurrentVersion: current,
 				LatestVersion:  current,
-				Message:        "GitHub API 请求过于频繁，请稍后再试",
+				Message:        i18n.T(lang, "update.message.rateLimited"),
 			}, nil
 		}
 
@@ -152,9 +154,9 @@ func (a *App) CheckUpdate() (*UpdateCheckResult, error) {
 			}
 		}
 
-		message := fmt.Sprintf("当前已是最新版本 v%s", current)
+		message := i18n.T(lang, "update.message.latest", map[string]interface{}{"version": current})
 		if hasUpdate {
-			message = fmt.Sprintf("发现新版本 v%s", latest)
+			message = i18n.T(lang, "update.message.hasUpdate", map[string]interface{}{"version": latest})
 		}
 
 		return &UpdateCheckResult{
@@ -174,7 +176,7 @@ func (a *App) CheckUpdate() (*UpdateCheckResult, error) {
 		HasUpdate:      false,
 		CurrentVersion: current,
 		LatestVersion:  current,
-		Message:        fmt.Sprintf("网络请求失败: %v", lastErr),
+		Message:        i18n.T(lang, "update.message.networkFailed", map[string]interface{}{"error": lastErr.Error()}),
 	}, nil
 }
 
@@ -241,23 +243,24 @@ func (a *App) StartDownloadUpdate(url string) error {
 		a.beginInFlight()
 		defer a.endInFlight()
 		defer cancel()
+		lang := i18n.ResolveLanguage(a.cfg.Settings.Language)
 
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 		if err != nil {
-			a.emit("update:download:error", map[string]string{"message": err.Error()})
+			a.emit("update:download:error", map[string]string{"message": i18n.T(lang, "update.download.failed", map[string]interface{}{"error": err.Error()})})
 			return
 		}
 		req.Header.Set("User-Agent", "AgentPack/"+currentAppVersion())
 
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
-			a.emit("update:download:error", map[string]string{"message": err.Error()})
+			a.emit("update:download:error", map[string]string{"message": i18n.T(lang, "update.download.failed", map[string]interface{}{"error": err.Error()})})
 			return
 		}
 		defer resp.Body.Close()
 
 		if resp.StatusCode != http.StatusOK {
-			a.emit("update:download:error", map[string]string{"message": fmt.Sprintf("服务器返回 %d", resp.StatusCode)})
+			a.emit("update:download:error", map[string]string{"message": i18n.T(lang, "update.download.serverError", map[string]interface{}{"code": resp.StatusCode})})
 			return
 		}
 
@@ -270,7 +273,7 @@ func (a *App) StartDownloadUpdate(url string) error {
 		tmpPath := filepath.Join(os.TempDir(), "agentpack-update-"+fileName)
 		f, err := os.Create(tmpPath)
 		if err != nil {
-			a.emit("update:download:error", map[string]string{"message": err.Error()})
+			a.emit("update:download:error", map[string]string{"message": i18n.T(lang, "update.download.failed", map[string]interface{}{"error": err.Error()})})
 			return
 		}
 		defer f.Close()
@@ -288,7 +291,7 @@ func (a *App) StartDownloadUpdate(url string) error {
 			if n > 0 {
 				if _, writeErr := f.Write(buf[:n]); writeErr != nil {
 					removeTmp()
-					a.emit("update:download:error", map[string]string{"message": writeErr.Error()})
+					a.emit("update:download:error", map[string]string{"message": i18n.T(lang, "update.download.failed", map[string]interface{}{"error": writeErr.Error()})})
 					return
 				}
 				downloaded += int64(n)
@@ -313,7 +316,7 @@ func (a *App) StartDownloadUpdate(url string) error {
 			}
 			if readErr != nil {
 				removeTmp()
-				a.emit("update:download:error", map[string]string{"message": readErr.Error()})
+				a.emit("update:download:error", map[string]string{"message": i18n.T(lang, "update.download.failed", map[string]interface{}{"error": readErr.Error()})})
 				return
 			}
 		}
