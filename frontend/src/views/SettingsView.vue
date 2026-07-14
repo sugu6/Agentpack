@@ -8,10 +8,20 @@ import { PhFolderOpen, PhArrowsClockwise, PhDownload, PhUpload, PhPlus, PhTrash,
 import { api, ApiError, events, type SkillRepo, type UpdateCheckResult } from '@/lib/api'
 import { getVariantFromId, variantToBadge, agentDisplayName } from '@/composables/useAgentHelpers'
 import { useToast } from '@/composables/useToast'
+import { marked } from 'marked'
+import DOMPurify from 'dompurify'
+import { useI18n } from 'vue-i18n'
+
+// 将 changelog markdown 渲染为安全的 HTML
+function renderMarkdown(md: string): string {
+  if (!md) return ''
+  return DOMPurify.sanitize(marked.parse(md, { async: false }) as string)
+}
 
 const settings = useSettingsStore()
 const agents = useAgentsStore()
 const toast = useToast()
+const { t } = useI18n()
 
 const saving = ref(false)
 const backupLoading = ref<'create' | 'export' | 'import' | null>(null)
@@ -135,6 +145,10 @@ function setTheme(t: 'light' | 'dark' | 'system') {
     cfg.theme = t
     settings.applyTheme(t)
   })
+}
+
+function setLanguage(v: string) {
+  withAutoSave(cfg => { cfg.language = v })
 }
 
 function setWindowAction(v: string) {
@@ -532,13 +546,23 @@ const marketSourceList = computed(() => {
             </TabsList>
           </Tabs>
         </div>
+        <div class="flex items-center justify-between">
+          <Label>{{ t('settings.language') }}</Label>
+          <Tabs :model-value="settings.config.language" @update:model-value="(v: any) => setLanguage(v)" class="w-fit">
+            <TabsList>
+              <TabsTrigger value="">{{ t('settings.languageOptions.system') }}</TabsTrigger>
+              <TabsTrigger value="zh-CN">{{ t('settings.languageOptions.zhCN') }}</TabsTrigger>
+              <TabsTrigger value="en">{{ t('settings.languageOptions.en') }}</TabsTrigger>
+            </TabsList>
+          </Tabs>
+        </div>
       </CardContent>
     </Card>
 
     <Card>
       <CardHeader>
         <CardTitle>窗口行为</CardTitle>
-        <CardDescription>点击关闭按钮（X）时的行为。</CardDescription>
+        <CardDescription>点击关闭按钮时的行为。</CardDescription>
       </CardHeader>
       <CardContent class="space-y-3">
         <div class="flex items-start justify-between">
@@ -555,7 +579,7 @@ const marketSourceList = computed(() => {
                 :model-value="settings.config.windowNoRemind ?? false"
                 @update:model-value="(v) => setWindowNoRemind(v === true)"
               />
-              <span class="text-sm text-muted-foreground">不在提醒</span>
+              <span class="text-sm text-muted-foreground">不再提醒</span>
             </label>
           </div>
         </div>
@@ -985,7 +1009,7 @@ const marketSourceList = computed(() => {
           </DialogDescription>
         </DialogHeader>
         <div class="flex-1 overflow-y-auto">
-          <div class="text-sm text-muted-foreground leading-relaxed" v-html="renderMarkdown(updateResult?.changelog || '')" />
+          <div class="text-sm text-muted-foreground leading-relaxed max-w-none [&_a]:text-primary [&_a]:underline [&_h1]:text-base [&_h1]:font-semibold [&_h1]:mt-4 [&_h1]:mb-2 [&_h2]:text-sm [&_h2]:font-semibold [&_h2]:mt-3 [&_h2]:mb-2 [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:list-decimal [&_ol]:pl-5 [&_li]:my-1 [&_pre]:bg-muted [&_pre]:p-3 [&_pre]:rounded [&_pre]:overflow-x-auto [&_code]:text-primary [&_hr]:my-4 [&_blockquote]:border-l-2 [&_blockquote]:border-border [&_blockquote]:pl-3 [&_blockquote]:italic" v-html="renderMarkdown(updateResult?.changelog || '')" />
         </div>
         <DialogFooter>
           <Button v-if="updateResult?.releaseUrl" variant="outline" size="sm" @click="api.system.openUrl(updateResult.releaseUrl)">
