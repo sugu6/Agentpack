@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=AgentPack
+Comment=Unified MCP / Skills / Agent management for AI coding tools
+Exec=AgentPack
+Icon=AgentPack
+Terminal=false
+Categories=Development;

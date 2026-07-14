@@ -1,0 +1,202 @@
+name: Build
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      release:
+        description: 'Create a GitHub release with the artifacts'
+        required: false
+        default: 'false'
+
+permissions:
+  contents: write
+
+jobs:
+  changelog:
+    name: Generate Changelog
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.repository.default_branch }}
+
+      - name: Generate full CHANGELOG.md
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: orhun/git-cliff-action@v4
+        with:
+          config: cliff.toml
+          args: -v
+        env:
+          OUTPUT: CHANGELOG.md
+
+      - name: Generate latest release notes
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: orhun/git-cliff-action@v4
+        with:
+          config: cliff.toml
+          args: --latest --strip header
+        env:
+          OUTPUT: release_notes.md
+
+      - name: Commit and push CHANGELOG.md
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add CHANGELOG.md
+          git commit -m "docs(changelog): update for ${{ github.ref_name }}" || echo "No changes to commit"
+          git push
+
+      - name: Save release notes as CHANGELOG.txt
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: cp release_notes.md "${{ runner.temp }}/CHANGELOG.txt"
+
+      - name: Upload changelog artifact
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: actions/upload-artifact@v4
+        with:
+          name: changelog
+          path: ${{ runner.temp }}/CHANGELOG.txt
+          if-no-files-found: ignore
+
+  build:
+    name: Build (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: windows
+            name: windows-amd64
+          - os: macos-13
+            platform: darwin/amd64
+            name: macos-intel
+          - os: macos-latest
+            platform: darwin/arm64
+            name: macos-arm64
+          - os: ubuntu-22.04
+            platform: linux
+            name: linux-amd64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'pnpm'
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev pkg-config libfuse2
+
+      - name: Install Wails CLI
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0
+
+      - name: Build
+        run: wails build -platform ${{ matrix.platform }} -clean
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        run: 7z a "${{ runner.temp }}/AgentPack-windows-amd64.zip" "build/bin/AgentPack.exe"
+
+      - name: Package DMG (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          STAGING="dmg_staging"
+          mkdir -p "$STAGING"
+          cp -R "build/bin/AgentPack.app" "$STAGING/"
+          ln -s /Applications "$STAGING/Applications"
+          hdiutil create \
+            -volname "AgentPack" \
+            -srcfolder "$STAGING" \
+            -ov -format UDZO \
+            "${{ runner.temp }}/AgentPack-${{ matrix.name }}.dmg"
+          rm -rf "$STAGING"
+
+      - name: Package ZIP portable (macOS)
+        if: runner.os == 'macOS'
+        run: ditto -c -k --keepParent "build/bin/AgentPack.app" "${{ runner.temp }}/AgentPack-${{ matrix.name }}.zip"
+
+      - name: Package tar.gz (Linux)
+        if: runner.os == 'Linux'
+        run: tar -czf "${{ runner.temp }}/AgentPack-linux-amd64.tar.gz" -C build/bin AgentPack
+
+      - name: Package AppImage (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          wget -q https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x appimagetool-x86_64.AppImage
+          APPDIR="AgentPack.AppDir"
+          mkdir -p "$APPDIR/usr/bin"
+          cp build/bin/AgentPack "$APPDIR/usr/bin/"
+          cp build/linux/agentpack.desktop "$APPDIR/AgentPack.desktop"
+          cp build/appicon.png "$APPDIR/AgentPack.png"
+          cat > "$APPDIR/.AppRun" <<'EOF'
+          #!/bin/sh
+          SELF=$(readlink -f "$0")
+          HERE=${SELF%/*}
+          exec "${HERE}/usr/bin/AgentPack" "$@"
+          EOF
+          chmod +x "$APPDIR/.AppRun"
+          ARCH=x86_64 ./appimagetool-x86_64.AppImage "$APPDIR" "${{ runner.temp }}/AgentPack-linux-amd64.AppImage"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: AgentPack-${{ matrix.name }}
+          path: ${{ runner.temp }}/AgentPack-*
+          if-no-files-found: error
+
+  release:
+    name: Create Release
+    needs: [build, changelog]
+    if: always() && needs.build.result == 'success' && (startsWith(github.ref, 'refs/tags/v') || github.event.inputs.release == 'true')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Check for changelog
+        id: check_changelog
+        run: |
+          if [ -f artifacts/CHANGELOG.txt ] && [ -s artifacts/CHANGELOG.txt ]; then
+            echo "has_changelog=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_changelog=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create GitHub release (with changelog)
+        if: steps.check_changelog.outputs.has_changelog == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          body_path: artifacts/CHANGELOG.txt
+          files: |
+            artifacts/AgentPack-*
+
+      - name: Create GitHub release (auto-generated notes)
+        if: steps.check_changelog.outputs.has_changelog != 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            artifacts/AgentPack-*

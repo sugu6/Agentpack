@@ -1,0 +1,21 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "AgentPack",
+  "outputfilename": "AgentPack",
+  "frontend:install": "pnpm install",
+  "frontend:build": "pnpm run build",
+  "frontend:dev:watcher": "pnpm run dev",
+  "frontend:dev:serverUrl": "auto",
+  "author": {
+    "name": "sugu6",
+    "email": "3342113181@qq.com"
+  },
+  "info": {
+    "productName": "AgentPack",
+    "productVersion": "0.1.0",
+    "companyName": "sugu6",
+    "copyright": "Copyright © 2026 sugu6",
+    "comments": "Unified MCP / Skills / Agent management for AI coding tools"
+  },
+  "wailsjsdir": "./frontend"
+}
