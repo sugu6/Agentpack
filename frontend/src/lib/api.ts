@@ -4,6 +4,7 @@ import {
   ExportBackupToFile,
   GetAgent,
   GetAgentMcpServers,
+  GetAppVersion,
   GetMarketServer,
   GetMcpServer,
   GetSettings,
@@ -36,9 +37,13 @@ import {
   UninstallSkill,
   AddMcpServer,
   AddSkillRepo,
+  CancelDownload,
   CheckSkillUpdates,
+  CheckUpdate,
   DeleteMcpServer,
+  OpenDownloadedFile,
   RemoveSkillRepo,
+  StartDownloadUpdate,
   UpdateSkillRepo,
   UpdateMcpServer,
   UpdateSettings,
@@ -46,7 +51,6 @@ import {
   HideWindow,
   Quit,
   ShowWindow,
-  CheckUpdate,
 } from '../../wailsjs/go/main/App'
 import { EventsOn, EventsOff, EventsEmit, BrowserOpenURL } from '../../wailsjs/runtime/runtime'
 import type { agents as AgentsNS, config as ConfigNS, market as MarketNS, mcp as McpNS } from '../../wailsjs/go/models'
@@ -77,6 +81,9 @@ export interface UpdateCheckResult {
   message: string
   changelog: string
   releaseUrl: string
+  downloadUrl: string
+  downloadSize: number
+  downloadName: string
 }
 type Theme = Settings['theme']
 type WailsMcpServer = McpNS.Server
@@ -376,6 +383,18 @@ export const api = {
     showWindow: () => safeCall(() => ShowWindow()),
     checkUpdate: async (): Promise<UpdateCheckResult> => {
       return optimizeToPlainObject(await CheckUpdate()) as UpdateCheckResult
+    },
+    getAppVersion: async (): Promise<string> => {
+      return GetAppVersion()
+    },
+    startDownloadUpdate: async (url: string): Promise<void> => {
+      return safeCall(() => StartDownloadUpdate(url))
+    },
+    cancelDownload: async (): Promise<void> => {
+      return safeCall(() => CancelDownload())
+    },
+    openDownloadedFile: async (filePath: string): Promise<void> => {
+      return safeCall(() => OpenDownloadedFile(filePath))
     },
   },
 }

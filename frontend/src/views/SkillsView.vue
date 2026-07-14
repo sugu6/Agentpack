@@ -275,9 +275,8 @@ async function uninstallSkill(id: string) {
 
 // 检查更新：调用后端比对远程 GitHub Trees SHA
 // 首次检查仅记录基线，后续检查才报告更新
-const checkingUpdates = ref(false)
 async function onCheckUpdates() {
-  checkingUpdates.value = true
+  if (skills.checkingUpdates) return
   try {
     await skills.checkUpdates()
     const updatesCount = skills.updateStatuses.filter(s => s.hasUpdate).length
@@ -288,11 +287,13 @@ async function onCheckUpdates() {
     }
   } catch (e: unknown) {
     const apiError = ApiError.from(e)
-    toast.error(`检查更新失败：${apiError.message}`)
-  } finally {
-    // 至少旋转 800ms 让用户能看到动画
-    await new Promise(r => setTimeout(r, 800))
-    checkingUpdates.value = false
+    const msg = apiError.message
+    // 限流友好提示
+    if (msg.includes('rate limit') || msg.includes('403') || msg.includes('429') || msg.includes('too many') || msg.includes('限流')) {
+      toast.warning('GitHub API 请求过于频繁，请稍后再试')
+    } else {
+      toast.error(`检查更新失败：${msg}`)
+    }
   }
 }
 
@@ -351,9 +352,9 @@ async function scanSkills() {
             <PhMagnifyingGlass :size="14" :class="{ 'animate-pulse': scanning }" />
             <span>{{ scanning ? '扫描中...' : '扫描 Skills' }}</span>
           </Button>
-          <Button variant="outline" size="sm" :disabled="skills.checkingUpdates || checkingUpdates" @click="onCheckUpdates">
-            <PhArrowClockwise :size="14" :class="{ 'animate-spin': checkingUpdates }" />
-            <span>{{ checkingUpdates ? '检查中...' : '检查更新' }}</span>
+          <Button variant="outline" size="sm" :disabled="skills.checkingUpdates" @click="onCheckUpdates">
+            <PhArrowClockwise :size="14" :class="{ 'animate-spin': skills.checkingUpdates }" />
+            <span>{{ skills.checkingUpdates ? '检查中...' : '检查更新' }}</span>
           </Button>
         </div>
       </div>

@@ -49,6 +49,7 @@ type App struct {
 	startupErrors []string
 	inFlight      int
 	flightCond    *sync.Cond
+	downloadCancel context.CancelFunc
 }
 
 func NewApp(cfg *config.AppConfig) *App {

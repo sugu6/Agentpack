@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
-import { version } from '../../package.json'
 import { useSettingsStore } from '@/stores/settings'
 import { useAgentsStore } from '@/stores/agents'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription, Switch, Button, Separator, Input, Label, Tabs, TabsList, TabsTrigger, Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter, Checkbox, RadioGroup, RadioGroupItem } from '@/components/ui'
@@ -22,6 +21,19 @@ const updateResult = ref<UpdateCheckResult | null>(null)
 const changelogDialogOpen = ref(false)
 let saveDirty = false
 
+// 版本号（从后端 API 获取）
+const appVersion = ref('')
+
+// 下载状态
+const downloadStatus = ref<'idle' | 'downloading' | 'complete' | 'error'>('idle')
+const downloadProgress = ref(0)
+const downloadSpeed = ref('')
+const downloadedFilePath = ref('')
+const downloadedFileName = ref('')
+let offDownloadProgress: (() => void) | null = null
+let offDownloadComplete: (() => void) | null = null
+let offDownloadError: (() => void) | null = null
+
 // 导入确认弹窗状态
 const importDialog = ref({
   open: false,
@@ -39,9 +51,36 @@ onMounted(() => {
   })
   // 主动拉取一次设置，防止 store 在其他页面操作后陈旧
   void settings.fetch()
+  // 从后端获取版本号
+  api.system.getAppVersion().then(v => { appVersion.value = v }).catch(() => {})
+  // 监听下载进度事件
+  offDownloadProgress = events.on('update:download:progress', (data: any) => {
+    if (data && typeof data === 'object') {
+      downloadProgress.value = Math.round(data.percent || 0)
+      downloadSpeed.value = formatSpeed(data.speed)
+    }
+  })
+  offDownloadComplete = events.on('update:download:complete', (data: any) => {
+    if (data && typeof data === 'object') {
+      downloadStatus.value = 'complete'
+      downloadedFilePath.value = data.filePath || ''
+      downloadedFileName.value = data.fileName || ''
+    }
+  })
+  offDownloadError = events.on('update:download:error', (data: any) => {
+    if (data && typeof data === 'object') {
+      downloadStatus.value = 'error'
+      downloadProgress.value = 0
+      downloadSpeed.value = ''
+      toast.error(`下载失败：${data.message || '未知错误'}`)
+    }
+  })
 })
 onUnmounted(() => {
   if (offSettingsChanged) offSettingsChanged()
+  if (offDownloadProgress) offDownloadProgress()
+  if (offDownloadComplete) offDownloadComplete()
+  if (offDownloadError) offDownloadError()
 })
 
 const MIN_RETENTION = 1
@@ -231,6 +270,11 @@ async function checkUpdate() {
   updateChecking.value = true
   updateMessage.value = null
   updateResult.value = null
+  downloadStatus.value = 'idle'
+  downloadProgress.value = 0
+  downloadSpeed.value = ''
+  downloadedFilePath.value = ''
+  downloadedFileName.value = ''
   try {
     const result = await api.system.checkUpdate()
     updateResult.value = result
@@ -244,6 +288,55 @@ async function checkUpdate() {
     updateMessage.value = `检查更新失败：${apiError.message}`
   } finally {
     updateChecking.value = false
+  }
+}
+
+function formatSpeed(bytesPerSecond: number): string {
+  if (!bytesPerSecond || bytesPerSecond <= 0) return ''
+  const units = ['B/s', 'KB/s', 'MB/s', 'GB/s']
+  let i = 0
+  let speed = bytesPerSecond
+  while (speed >= 1024 && i < units.length - 1) {
+    speed /= 1024
+    i++
+  }
+  return `${speed.toFixed(i === 0 ? 0 : 1)} ${units[i]}`
+}
+
+async function startDownload() {
+  if (!updateResult.value?.downloadUrl) return
+  downloadStatus.value = 'downloading'
+  downloadProgress.value = 0
+  downloadSpeed.value = ''
+  downloadedFilePath.value = ''
+  downloadedFileName.value = ''
+  try {
+    await api.system.startDownloadUpdate(updateResult.value.downloadUrl)
+  } catch (e) {
+    downloadStatus.value = 'error'
+    const apiError = ApiError.from(e)
+    toast.error(`启动下载失败：${apiError.message}`)
+  }
+}
+
+async function cancelDownload() {
+  try {
+    await api.system.cancelDownload()
+    downloadStatus.value = 'idle'
+    downloadProgress.value = 0
+    downloadSpeed.value = ''
+  } catch (e) {
+    // ignore
+  }
+}
+
+async function openDownloadedFile() {
+  if (!downloadedFilePath.value) return
+  try {
+    await api.system.openDownloadedFile(downloadedFilePath.value)
+  } catch (e) {
+    const apiError = ApiError.from(e)
+    toast.error(`打开文件失败：${apiError.message}`)
   }
 }
 
@@ -744,7 +837,7 @@ const marketSourceList = computed(() => {
       <CardContent class="space-y-3">
         <div class="flex items-center justify-between">
           <Label>当前版本</Label>
-          <span class="font-mono text-sm text-muted-foreground">v{{ version }}</span>
+          <span class="font-mono text-sm text-muted-foreground">v{{ appVersion }}</span>
         </div>
         <Separator />
         <div class="flex items-center justify-between">
@@ -762,6 +855,64 @@ const marketSourceList = computed(() => {
             </Button>
           </div>
         </div>
+
+        <!-- 下载进度 -->
+        <template v-if="updateResult?.hasUpdate">
+          <Separator />
+          <div class="space-y-2">
+            <div class="flex items-center justify-between">
+              <Label>下载更新</Label>
+              <span v-if="updateResult.downloadName" class="text-xs text-muted-foreground">{{ updateResult.downloadName }}</span>
+            </div>
+
+            <!-- 空闲状态：显示下载按钮 -->
+            <div v-if="downloadStatus === 'idle'" class="flex gap-2">
+              <Button size="sm" variant="default" @click="startDownload">
+                <PhDownload :size="14" />
+                <span>下载安装包</span>
+              </Button>
+            </div>
+
+            <!-- 下载中：显示进度条 -->
+            <div v-if="downloadStatus === 'downloading'" class="space-y-1.5">
+              <div class="flex items-center gap-2">
+                <div class="h-2 flex-1 overflow-hidden rounded-full bg-muted">
+                  <div
+                    class="h-full rounded-full bg-primary transition-all duration-200"
+                    :style="{ width: downloadProgress + '%' }"
+                  />
+                </div>
+                <span class="w-14 text-right text-xs tabular-nums text-muted-foreground">{{ downloadProgress }}%</span>
+              </div>
+              <div class="flex items-center justify-between">
+                <span v-if="downloadSpeed" class="text-xs text-muted-foreground">{{ downloadSpeed }}</span>
+                <Button variant="ghost" size="sm" class="h-auto px-1 text-xs text-destructive" @click="cancelDownload">
+                  取消下载
+                </Button>
+              </div>
+            </div>
+
+            <!-- 下载完成 -->
+            <div v-if="downloadStatus === 'complete'" class="flex gap-2">
+              <Button size="sm" variant="default" @click="openDownloadedFile">
+                <PhFolderOpen :size="14" />
+                <span>打开文件位置</span>
+              </Button>
+              <Button size="sm" variant="outline" @click="checkUpdate">
+                <PhArrowsClockwise :size="14" />
+                <span>重新检查</span>
+              </Button>
+            </div>
+
+            <!-- 下载失败 -->
+            <div v-if="downloadStatus === 'error'" class="flex gap-2">
+              <Button size="sm" variant="outline" @click="startDownload">
+                <PhArrowsClockwise :size="14" />
+                <span>重试下载</span>
+              </Button>
+            </div>
+          </div>
+        </template>
       </CardContent>
     </Card>
 
@@ -832,7 +983,11 @@ const marketSourceList = computed(() => {
         <DialogFooter>
           <Button v-if="updateResult?.releaseUrl" variant="outline" size="sm" @click="api.system.openUrl(updateResult.releaseUrl)">
             <PhDownload :size="14" />
-            <span>前往下载</span>
+            <span>前往 Releases</span>
+          </Button>
+          <Button v-if="updateResult?.hasUpdate && downloadStatus === 'idle'" size="sm" @click="startDownload">
+            <PhDownload :size="14" />
+            <span>下载安装包</span>
           </Button>
           <Button variant="outline" size="sm" @click="changelogDialogOpen = false">
             <span>关闭</span>

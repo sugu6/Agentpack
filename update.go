@@ -6,10 +6,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
+
+	"agentpack/internal/config"
 )
 
 // GitHub 仓库地址（owner/repo），用于检查更新
@@ -157,6 +163,81 @@ func compareVersions(a, b string) int {
 		}
 	}
 	return 0
+}
+
+func (a *App) GetAppVersion() string {
+	return currentAppVersion()
+}
+
+func (a *App) StartDownloadUpdate(url string) error {
+	a.mu.Lock()
+	if a.downloadCancel != nil {
+		a.downloadCancel()
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	a.downloadCancel = cancel
+	a.mu.Unlock()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return fmt.Errorf("创建下载请求失败: %w", err)
+	}
+	req.Header.Set("User-Agent", fmt.Sprintf("AgentPack/%s", currentAppVersion()))
+
+	client := &http.Client{
+		Timeout: 30 * time.Minute,
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("下载请求失败: %w", err)
+	}
+	defer resp.Body.Close()
+
+	downloadDir := filepath.Join(config.AgentPackDir(), "downloads")
+	if err := os.MkdirAll(downloadDir, 0700); err != nil {
+		return fmt.Errorf("创建下载目录失败: %w", err)
+	}
+
+	fileName := "update"
+	if parts := strings.Split(url, "/"); len(parts) > 0 {
+		fileName = parts[len(parts)-1]
+	}
+	destPath := filepath.Join(downloadDir, fileName)
+
+	out, err := os.Create(destPath)
+	if err != nil {
+		return fmt.Errorf("创建文件失败: %w", err)
+	}
+	defer out.Close()
+
+	written, err := io.Copy(out, resp.Body)
+	if err != nil {
+		os.Remove(destPath)
+		return fmt.Errorf("下载失败: %w", err)
+	}
+	log.Printf("下载完成: %s (%d bytes)", destPath, written)
+	return nil
+}
+
+func (a *App) CancelDownload() error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.downloadCancel != nil {
+		a.downloadCancel()
+		a.downloadCancel = nil
+	}
+	return nil
+}
+
+func (a *App) OpenDownloadedFile(filePath string) error {
+	switch runtime.GOOS {
+	case "windows":
+		return exec.Command("explorer.exe", filePath).Start()
+	case "darwin":
+		return exec.Command("open", filePath).Start()
+	default:
+		return exec.Command("xdg-open", filePath).Start()
+	}
 }
 
 func parseVersionParts(v string) []int {
