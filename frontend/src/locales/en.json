@@ -1,0 +1,191 @@
+{
+  "nav": {
+    "settings": "Settings",
+    "market": "Market"
+  },
+  "common": {
+    "save": "Save",
+    "saving": "Saving…",
+    "cancel": "Cancel",
+    "delete": "Delete",
+    "edit": "Edit",
+    "confirm": "Confirm",
+    "retry": "Retry",
+    "loading": "Loading…",
+    "close": "Close",
+    "add": "Add",
+    "remove": "Remove",
+    "install": "Install",
+    "uninstall": "Uninstall",
+    "enable": "Enable",
+    "disable": "Disable",
+    "search": "Search",
+    "refresh": "Refresh",
+    "copy": "Copy",
+    "copied": "Copied",
+    "yes": "Yes",
+    "no": "No",
+    "all": "All",
+    "none": "None",
+    "ok": "OK"
+  },
+  "settings": {
+    "title": "Settings",
+    "appearance": "Appearance",
+    "theme": "Theme",
+    "themeOptions": {
+      "system": "System",
+      "light": "Light",
+      "dark": "Dark"
+    },
+    "language": "Language",
+    "languageOptions": {
+      "system": "System",
+      "zhCN": "中文",
+      "en": "English"
+    },
+    "window": {
+      "title": "Window close behavior",
+      "action": {
+        "minimize": "Minimize to tray",
+        "exit": "Exit application"
+      },
+      "noRemind": "Don't remind again"
+    },
+    "backup": {
+      "title": "Backup",
+      "autoBackup": "Auto backup",
+      "count": "Backup count",
+      "retention": "Retention count",
+      "create": "Create backup",
+      "export": "Export backup",
+      "import": "Import backup",
+      "restore": "Restore",
+      "delete": "Delete backup"
+    },
+    "skills": {
+      "title": "Skills management",
+      "storage": "Storage location",
+      "storageOptions": {
+        "agentpack": "AgentPack directory",
+        "unified": "Unified directory"
+      },
+      "syncMethod": "Sync method",
+      "syncOptions": {
+        "symlink": "Symlink",
+        "copy": "Copy"
+      },
+      "repos": "GitHub repositories"
+    },
+    "update": {
+      "title": "Updates",
+      "currentVersion": "Current version",
+      "checkUpdate": "Check for updates",
+      "checking": "Checking…",
+      "changelog": "Changelog",
+      "download": "Download installer",
+      "cancelDownload": "Cancel download",
+      "openFile": "Open file",
+      "downloading": "Downloading… {percent}%",
+      "downloadComplete": "Download complete",
+      "downloadFailed": "Download failed"
+    }
+  },
+  "agents": {
+    "title": "Agents",
+    "scan": "Scan",
+    "rescanning": "Scanning…",
+    "enabled": "Enabled",
+    "disabled": "Disabled",
+    "detected": "Detected",
+    "notFound": "Not found",
+    "configPath": "Config path",
+    "mcpCount": "MCP count",
+    "variant": {
+      "cli": "CLI",
+      "desktop": "Desktop",
+      "ide": "IDE",
+      "config": "Config file"
+    }
+  },
+  "mcp": {
+    "title": "MCP",
+    "add": "Add MCP",
+    "edit": "Edit MCP",
+    "scan": "Scan MCP",
+    "name": "Name",
+    "command": "Command",
+    "args": "Arguments",
+    "env": "Environment variables",
+    "transport": "Transport",
+    "boundAgents": "Bound agents",
+    "empty": "No MCP servers",
+    "scanResult": "Scan result"
+  },
+  "skills": {
+    "title": "Skills",
+    "install": "Install skill",
+    "uninstall": "Uninstall skill",
+    "installFromZip": "Install from ZIP",
+    "checkUpdates": "Check for updates",
+    "checkingUpdates": "Checking…",
+    "hasUpdate": "Update available",
+    "latest": "Latest",
+    "directory": "Directory",
+    "agents": "Bound agents",
+    "empty": "No skills"
+  },
+  "market": {
+    "title": "Market",
+    "search": "Search market",
+    "category": "Category",
+    "source": "Source",
+    "all": "All",
+    "official": "Official",
+    "community": "Community",
+    "install": "Install",
+    "installed": "Installed",
+    "installing": "Installing…",
+    "empty": "No results"
+  },
+  "update": {
+    "message": {
+      "hasUpdate": "Found new version v{version}",
+      "latest": "You're on the latest version v{version}",
+      "noRelease": "No releases published yet",
+      "rateLimited": "GitHub API rate limited, please try again later",
+      "networkFailed": "Network request failed: {error}"
+    }
+  },
+  "tray": {
+    "show": "Show main window",
+    "settings": "Settings",
+    "quit": "Quit"
+  },
+  "dialog": {
+    "confirm": {
+      "title": "Confirm",
+      "delete": "Are you sure to delete?",
+      "uninstall": "Are you sure to uninstall?"
+    },
+    "close": {
+      "title": "Close window",
+      "minimize": "Minimize to tray",
+      "exit": "Exit application"
+    }
+  },
+  "toast": {
+    "languageChanged": "Language switched",
+    "saveSuccess": "Saved successfully",
+    "saveFailed": "Save failed",
+    "deleteSuccess": "Deleted successfully",
+    "deleteFailed": "Delete failed",
+    "installSuccess": "Installed successfully",
+    "installFailed": "Install failed",
+    "uninstallSuccess": "Uninstalled successfully",
+    "uninstallFailed": "Uninstall failed"
+  },
+  "startup": {
+    "errors": "The following issues occurred during startup:"
+  }
+}

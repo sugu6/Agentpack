@@ -17,6 +17,17 @@
         document.documentElement.style.colorScheme = 'dark';
       }
     </script>
+    <script>
+      // Detect language before rendering to avoid flash
+      try {
+        var cachedLang = localStorage.getItem('agentpack-language');
+        var lang = cachedLang;
+        if (!cachedLang) {
+          lang = (navigator.language || '').toLowerCase().startsWith('zh') ? 'zh-CN' : 'en';
+        }
+        document.documentElement.lang = lang === 'zh-CN' ? 'zh-CN' : 'en';
+      } catch(e) {}
+    </script>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin />
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fontsource-variable/geist@5.2.5/index.min.css" />

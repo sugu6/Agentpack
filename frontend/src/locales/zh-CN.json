@@ -1,0 +1,191 @@
+{
+  "nav": {
+    "settings": "设置",
+    "market": "市场"
+  },
+  "common": {
+    "save": "保存",
+    "saving": "保存中…",
+    "cancel": "取消",
+    "delete": "删除",
+    "edit": "编辑",
+    "confirm": "确认",
+    "retry": "重试",
+    "loading": "加载中…",
+    "close": "关闭",
+    "add": "添加",
+    "remove": "移除",
+    "install": "安装",
+    "uninstall": "卸载",
+    "enable": "启用",
+    "disable": "禁用",
+    "search": "搜索",
+    "refresh": "刷新",
+    "copy": "复制",
+    "copied": "已复制",
+    "yes": "是",
+    "no": "否",
+    "all": "全部",
+    "none": "无",
+    "ok": "确定"
+  },
+  "settings": {
+    "title": "设置",
+    "appearance": "外观",
+    "theme": "主题",
+    "themeOptions": {
+      "system": "跟随系统",
+      "light": "浅色",
+      "dark": "深色"
+    },
+    "language": "语言",
+    "languageOptions": {
+      "system": "跟随系统",
+      "zhCN": "中文",
+      "en": "English"
+    },
+    "window": {
+      "title": "窗口关闭行为",
+      "action": {
+        "minimize": "最小化到托盘",
+        "exit": "退出应用"
+      },
+      "noRemind": "不再提醒"
+    },
+    "backup": {
+      "title": "备份",
+      "autoBackup": "自动备份",
+      "count": "备份数量",
+      "retention": "保留数量",
+      "create": "创建备份",
+      "export": "导出备份",
+      "import": "导入备份",
+      "restore": "恢复",
+      "delete": "删除备份"
+    },
+    "skills": {
+      "title": "Skills 管理",
+      "storage": "存储位置",
+      "storageOptions": {
+        "agentpack": "AgentPack 目录",
+        "unified": "统一目录"
+      },
+      "syncMethod": "同步方式",
+      "syncOptions": {
+        "symlink": "符号链接",
+        "copy": "复制"
+      },
+      "repos": "GitHub 仓库"
+    },
+    "update": {
+      "title": "版本更新",
+      "currentVersion": "当前版本",
+      "checkUpdate": "检查更新",
+      "checking": "检查中…",
+      "changelog": "更新日志",
+      "download": "下载安装包",
+      "cancelDownload": "取消下载",
+      "openFile": "打开文件",
+      "downloading": "下载中… {percent}%",
+      "downloadComplete": "下载完成",
+      "downloadFailed": "下载失败"
+    }
+  },
+  "agents": {
+    "title": "Agents",
+    "scan": "扫描",
+    "rescanning": "扫描中…",
+    "enabled": "已启用",
+    "disabled": "已禁用",
+    "detected": "已检测",
+    "notFound": "未找到",
+    "configPath": "配置路径",
+    "mcpCount": "MCP 数量",
+    "variant": {
+      "cli": "命令行",
+      "desktop": "桌面应用",
+      "ide": "IDE",
+      "config": "配置文件"
+    }
+  },
+  "mcp": {
+    "title": "MCP",
+    "add": "添加 MCP",
+    "edit": "编辑 MCP",
+    "scan": "扫描 MCP",
+    "name": "名称",
+    "command": "命令",
+    "args": "参数",
+    "env": "环境变量",
+    "transport": "传输方式",
+    "boundAgents": "绑定 Agent",
+    "empty": "暂无 MCP 服务器",
+    "scanResult": "扫描结果"
+  },
+  "skills": {
+    "title": "Skills",
+    "install": "安装 Skill",
+    "uninstall": "卸载 Skill",
+    "installFromZip": "从 ZIP 安装",
+    "checkUpdates": "检查更新",
+    "checkingUpdates": "检查中…",
+    "hasUpdate": "有更新",
+    "latest": "最新",
+    "directory": "目录",
+    "agents": "绑定 Agent",
+    "empty": "暂无 Skills"
+  },
+  "market": {
+    "title": "市场",
+    "search": "搜索市场",
+    "category": "分类",
+    "source": "来源",
+    "all": "全部",
+    "official": "官方",
+    "community": "社区",
+    "install": "安装",
+    "installed": "已安装",
+    "installing": "安装中…",
+    "empty": "暂无结果"
+  },
+  "update": {
+    "message": {
+      "hasUpdate": "发现新版本 v{version}",
+      "latest": "当前已是最新版本 v{version}",
+      "noRelease": "尚未发布任何版本",
+      "rateLimited": "GitHub API 请求过于频繁,请稍后再试",
+      "networkFailed": "网络请求失败: {error}"
+    }
+  },
+  "tray": {
+    "show": "显示主窗口",
+    "settings": "设置",
+    "quit": "退出"
+  },
+  "dialog": {
+    "confirm": {
+      "title": "确认",
+      "delete": "确定删除?",
+      "uninstall": "确定卸载?"
+    },
+    "close": {
+      "title": "关闭窗口",
+      "minimize": "最小化到托盘",
+      "exit": "退出应用"
+    }
+  },
+  "toast": {
+    "languageChanged": "语言已切换",
+    "saveSuccess": "保存成功",
+    "saveFailed": "保存失败",
+    "deleteSuccess": "删除成功",
+    "deleteFailed": "删除失败",
+    "installSuccess": "安装成功",
+    "installFailed": "安装失败",
+    "uninstallSuccess": "卸载成功",
+    "uninstallFailed": "卸载失败"
+  },
+  "startup": {
+    "errors": "启动时出现以下问题:"
+  }
+}
