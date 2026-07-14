@@ -147,6 +147,22 @@ func (a *App) startup(ctx context.Context) {
 	// 启动系统托盘（在 goroutine 中运行）
 	a.trayActive = true
 	go setupTray(a)
+
+	// 启动 5 秒后静默检查更新
+	go func() {
+		time.Sleep(5 * time.Second)
+		a.mu.RLock()
+		if a.closed {
+			a.mu.RUnlock()
+			return
+		}
+		ctx := a.ctx
+		a.mu.RUnlock()
+		result, err := a.CheckUpdate()
+		if err == nil && result.HasUpdate {
+			wruntime.EventsEmit(ctx, "app:update-available", result)
+		}
+	}()
 }
 
 func (a *App) shutdown(ctx context.Context) {
@@ -775,6 +791,11 @@ func (a *App) InstallMarketSkill(skill market.MarketSkill, agentIDs []string) (s
 	defer a.mu.Unlock()
 	a.emitAgentsChangedLocked()
 	a.emitLocked("skills:changed", ss.List())
+	// 安装成功后异步缓存 Tree SHA 作为更新检测基线
+	go func() {
+		_ = skills.CacheSkillTreeSHA(installed.ID, input.RepoOwner, input.RepoName,
+			input.RepoBranch, input.Directory)
+	}()
 	return installed, nil
 }
 
