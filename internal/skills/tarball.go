@@ -2,6 +2,7 @@ package skills
 
 import (
 	"agentpack/internal/agents"
+	"agentpack/internal/config"
 	"archive/tar"
 	"compress/gzip"
 	"context"
@@ -116,6 +117,9 @@ func isSafeGitHubIdent(s string) bool {
 
 // downloadAndExtractTarball 下载 tar.gz 并安全解压到目标目录
 func downloadAndExtractTarball(ctx context.Context, tarballURL, dest string) error {
+	if strings.HasPrefix(tarballURL, "https://codeload.github.com/") {
+		tarballURL = config.DefaultGitHubProxy + tarballURL
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, tarballURL, nil)
 	if err != nil {
 		return fmt.Errorf("create request: %w", err)
