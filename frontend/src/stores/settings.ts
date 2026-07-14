@@ -140,6 +140,9 @@ export const useSettingsStore = defineStore('settings', () => {
       config.value = next
       loaded.value = true
       await applyTheme(next.theme)
+      // 同步 i18n 语言(立即生效,不等 settings:changed 事件回环)
+      const { setLanguage, resolveLanguage } = await import('@/i18n')
+      setLanguage(resolveLanguage(next.language))
     } catch (e) {
       const apiError = ApiError.from(e)
       error.value = apiError.message

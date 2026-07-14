@@ -339,7 +339,7 @@ async function scanSkills() {
       <div class="mx-auto max-w-6xl flex items-end justify-between">
         <div>
           <h1 class="text-2xl font-semibold tracking-tight">Skills</h1>
-          <p class="mt-1 text-sm text-muted-foreground">{{ t('skills.subtitle') }}</p>
+          <p class="mt-1 text-sm text-muted-foreground whitespace-nowrap">{{ t('skills.subtitle') }}</p>
         </div>
         <div class="flex gap-2">
           <Button variant="outline" size="sm" :disabled="importingUnmanaged" @click="openImportExisting">

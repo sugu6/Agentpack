@@ -9,15 +9,15 @@ const { t } = useI18n()
 const title = computed(() => {
   switch (route.name as string) {
     case 'agents':
-      return 'Agent'
+      return 'Agents'
     case 'mcp':
-      return 'MCP Servers'
+      return 'MCP'
     case 'skills':
       return 'Skills'
     case 'market':
-      return t('market.title')
+      return t('nav.market')
     case 'settings':
-      return t('settings.title')
+      return t('nav.settings')
     default:
       return 'AgentPack'
   }
