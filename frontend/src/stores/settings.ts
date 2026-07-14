@@ -20,6 +20,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   skillRepos: [],
   windowAction: 'minimize',
   windowNoRemind: false,
+  language: '',
 }
 
 export const useSettingsStore = defineStore('settings', () => {
@@ -122,6 +123,9 @@ export const useSettingsStore = defineStore('settings', () => {
       config.value = migrated
       loaded.value = true
       await applyTheme(migrated.theme)
+      // 同步 i18n 语言
+      const { setLanguage, resolveLanguage } = await import('@/i18n')
+      setLanguage(resolveLanguage(migrated.language))
     } catch (e) {
       const apiError = ApiError.from(e)
       error.value = apiError.message

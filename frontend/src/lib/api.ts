@@ -67,6 +67,7 @@ export interface Settings {
   skillRepos: SkillRepo[]
   windowAction: 'minimize' | 'exit'
   windowNoRemind: boolean
+  language: string
 }
 
 export interface SkillRepo {

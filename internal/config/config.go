@@ -51,7 +51,8 @@ type Settings struct {
 	SkillSyncMethod string                  `json:"skillSyncMethod"` // "symlink" | "copy"
 	SkillRepos      []SkillRepo             `json:"skillRepos"`      // GitHub 仓库扫描列表（用户可配置）
 	WindowAction    string                  `json:"windowAction"`    // "minimize" | "exit"
-	WindowNoRemind  bool                    `json:"windowNoRemind"`  // 不在提醒，直接执行 windowAction
+	WindowNoRemind  bool                    `json:"windowNoRemind"`  // 不再提醒，直接执行 windowAction
+	Language        string                  `json:"language"`        // "" | "zh-CN" | "en"（空=跟随系统）
 }
 
 // SkillRepo 表示一个可扫描的 GitHub 仓库
@@ -85,6 +86,7 @@ func DefaultSettings() Settings {
 			{Owner: "ComposioHQ", Name: "awesome-claude-skills", Branch: ""},
 		},
 		WindowAction: "minimize",
+		Language:        "",
 	}
 }
 
@@ -175,7 +177,7 @@ func Load() *AppConfig {
 		cfg.Settings.WindowAction = defaults.WindowAction
 	}
 	if cfg.Settings.WindowAction == "ask" {
-		// 旧版本 "ask" 已废弃：默认行为改为 minimize + 不在提醒关闭
+		// 旧版本 "ask" 已废弃：默认行为改为 minimize + 不再提醒关闭
 		cfg.Settings.WindowAction = "minimize"
 	}
 	// AutoBackup default: older configs (version 0) predate this field, and bool's

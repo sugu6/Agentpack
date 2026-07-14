@@ -1074,6 +1074,9 @@ func (a *App) UpdateSettings(s config.Settings) error {
 		a.emit("skills:changed", skillsStore.List())
 	}
 
+	// emit settings:changed 让前端同步 i18n 语言 + 后端托盘重建
+	a.emit("settings:changed", newSettings)
+
 	return nil
 }
 
