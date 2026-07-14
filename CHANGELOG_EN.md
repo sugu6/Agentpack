@@ -12,6 +12,7 @@ versioned by [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Features
 
 - Sidebar Skills nav item now shows a badge with the installed skill count
+- Auto-prompt update changelog dialog when a new version is found, with in-dialog download button
 
 ### Changed
 
@@ -21,7 +22,13 @@ versioned by [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Fixed
 
 - Added missing `LocalHash` field to `UpdateStatus` struct for frontend local hash display
-- Tests decoupled from `config.DefaultGitHubProxy`; directory-not-found falls back to repo tree SHA instead of erroring
+- Tests restored save/restore of `config.DefaultGitHubProxy` to prevent global state pollution across tests
+- Windows incorrectly matching Linux packages: `matchPlatformAsset` used underscores (`windows_amd64`) but release assets use hyphens (`windows-amd64`), switched to hyphen-based matching; also added macOS alias (`darwin` → `macos`) and OS-only fallback logic
+- Download path changed from temp dir to system Downloads folder (XDG compliant), `XDG_DOWNLOAD_DIR` takes priority over `~/Downloads`
+- Windows auto-install now uses `cmd /c start` to fully detach child process, preventing installer termination on app exit; added UAC elevation support
+- Download writes to `.downloading` temp file first, then renames to final name on success, preventing concurrent download conflicts
+- Wait 1 second after download before quitting to ensure installer starts
+- Added `XDG_DOWNLOAD_DIR` env var support for macOS downloads
 
 ## [0.1.1] - 2026-07-15
 

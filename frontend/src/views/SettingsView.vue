@@ -286,24 +286,17 @@ async function openConfigFolder() {
 async function checkUpdate() {
   updateChecking.value = true
   updateResult.value = null
-  downloadStatus.value = 'idle'
-  downloadProgress.value = 0
-  downloadSpeed.value = ''
-  downloadedFilePath.value = ''
-  downloadedFileName.value = ''
   try {
     const result = await api.system.checkUpdate()
     updateResult.value = result
     if (result.hasUpdate) {
       toast.success(t('settings.toast.foundNewVersion', { latest: result.latestVersion, current: result.currentVersion }), {
         duration: 5000,
-        description: t('settings.toast.canDownloadBelow'),
       })
+      events.emit('app:update-available', result)
     } else if (result.changelog) {
-      // 成功获取 release 且版本相同 → 真正最新
       toast.success(result.message || t('update.message.latest', { version: result.currentVersion }))
     } else {
-      // changelog 为空说明限流/网络错误/无 release，如实显示后端 message
       toast.info(result.message || t('update.message.latest', { version: result.currentVersion }))
     }
   } catch (e) {
@@ -891,64 +884,7 @@ const marketSourceList = computed(() => {
           </div>
         </div>
 
-        <!-- 下载进度 -->
-        <template v-if="updateResult?.hasUpdate">
-          <Separator />
-          <div class="space-y-2">
-            <div class="flex items-center justify-between">
-              <Label>{{ t('settings.update.downloadSection') }}</Label>
-              <span v-if="updateResult.downloadName" class="text-xs text-muted-foreground">{{ updateResult.downloadName }}</span>
-            </div>
-
-            <!-- 空闲状态：显示下载按钮 -->
-            <div v-if="downloadStatus === 'idle'" class="flex gap-2">
-              <Button size="sm" variant="default" @click="startDownload">
-                <PhDownload :size="14" />
-                <span>{{ t('settings.update.download') }}</span>
-              </Button>
-            </div>
-
-            <!-- 下载中：显示进度条 -->
-            <div v-if="downloadStatus === 'downloading'" class="space-y-1.5">
-              <div class="flex items-center gap-2">
-                <div class="h-2 flex-1 overflow-hidden rounded-full bg-muted">
-                  <div
-                    class="h-full rounded-full bg-primary transition-all duration-200"
-                    :style="{ width: downloadProgress + '%' }"
-                  />
-                </div>
-                <span class="w-14 text-right text-xs tabular-nums text-muted-foreground">{{ downloadProgress }}%</span>
-              </div>
-              <div class="flex items-center justify-between">
-                <span v-if="downloadSpeed" class="text-xs text-muted-foreground">{{ downloadSpeed }}</span>
-                <Button variant="ghost" size="sm" class="h-auto px-1 text-xs text-destructive" @click="cancelDownload">
-                  {{ t('settings.update.cancelDownload') }}
-                </Button>
-              </div>
-            </div>
-
-            <!-- 下载完成 -->
-            <div v-if="downloadStatus === 'complete'" class="flex gap-2">
-              <Button size="sm" variant="default" @click="openDownloadedFile">
-                <PhFolderOpen :size="14" />
-                <span>{{ t('settings.update.openFile') }}</span>
-              </Button>
-              <Button size="sm" variant="outline" @click="checkUpdate">
-                <PhArrowsClockwise :size="14" />
-                <span>{{ t('settings.update.recheck') }}</span>
-              </Button>
-            </div>
-
-            <!-- 下载失败 -->
-            <div v-if="downloadStatus === 'error'" class="flex gap-2">
-              <Button size="sm" variant="outline" @click="startDownload">
-                <PhArrowsClockwise :size="14" />
-                <span>{{ t('settings.update.retryDownload') }}</span>
-              </Button>
-            </div>
-          </div>
-        </template>
-      </CardContent>
+        </CardContent>
     </Card>
 
     <!-- 导入确认弹窗 -->

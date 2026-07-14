@@ -1,6 +1,7 @@
 package skills
 
 import (
+	"agentpack/internal/config"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -39,6 +40,10 @@ func TestFetchSkillTreeSHA(t *testing.T) {
 	githubAPIBaseURL = server.URL
 	defer func() { githubAPIBaseURL = original }()
 
+	originalProxy := config.DefaultGitHubProxy
+	config.DefaultGitHubProxy = ""
+	defer func() { config.DefaultGitHubProxy = originalProxy }()
+
 	// 测试：查找已知 directory
 	sha, err := fetchSkillTreeSHA(context.Background(), "anthropics", "skills", "main", "filesystem")
 	if err != nil {
@@ -57,13 +62,10 @@ func TestFetchSkillTreeSHA(t *testing.T) {
 		t.Errorf("expected treeShaMemory, got %s", sha)
 	}
 
-	// 测试：directory 不存在，返回 repo tree SHA
-	sha, err = fetchSkillTreeSHA(context.Background(), "anthropics", "skills", "main", "nonexistent")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if sha != "abc123repoSha" {
-		t.Errorf("expected repo SHA as fallback, got %s", sha)
+	// 测试：directory 不存在，应返回错误
+	_, err = fetchSkillTreeSHA(context.Background(), "anthropics", "skills", "main", "nonexistent")
+	if err == nil {
+		t.Fatal("expected error for nonexistent directory")
 	}
 }
 
@@ -76,6 +78,10 @@ func TestFetchSkillTreeSHA_NotFound(t *testing.T) {
 	original := githubAPIBaseURL
 	githubAPIBaseURL = server.URL
 	defer func() { githubAPIBaseURL = original }()
+
+	originalProxy := config.DefaultGitHubProxy
+	config.DefaultGitHubProxy = ""
+	defer func() { config.DefaultGitHubProxy = originalProxy }()
 
 	_, err := fetchSkillTreeSHA(context.Background(), "owner", "repo", "main", "dir")
 	if err == nil {

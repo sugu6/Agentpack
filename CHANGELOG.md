@@ -12,6 +12,7 @@
 ### 特性
 
 - Sidebar Skills 导航项添加数量角标，显示已安装数量
+- 发现新版本时自动弹出更新日志弹窗，可直接在弹窗内下载安装包，不再需要到页面底部下载
 
 ### 变更
 
@@ -21,7 +22,13 @@
 ### 修复
 
 - `UpdateStatus` 结构体缺少 `LocalHash` 字段，补全以便前端展示本地哈希
-- 测试用例移除对 `config.DefaultGitHubProxy` 的耦合，directory 不存在时回退返回 repo tree SHA 而非报错
+- 测试用例恢复对 `config.DefaultGitHubProxy` 的保存和重置，防止全局变量修改污染其他测试
+- Windows 检测到 Linux 安装包的问题：`matchPlatformAsset` 使用了下划线（`windows_amd64`）但 release asset 名称使用连字符（`windows-amd64`），改回连字符匹配；同时处理 macOS 别名（`darwin` → `macos`）及 OS-only 兜底逻辑
+- 下载路径从临时目录改到系统默认 Downloads 文件夹（支持 XDG 规范），XDG_DOWNLOAD_DIR 优先级高于 `~/Downloads`
+- Windows 自动安装改用 `cmd /c start` 完全脱离父进程，避免应用退出后子进程被终止；增加 UAC 提权支持
+- 下载完成先写入 `.downloading` 临时文件，成功后再重命名为正式文件名，防止并发下载冲突
+- 下载完成后等待 1 秒再退出应用，确保安装程序启动完毕
+- macOS 下载增加 `XDG_DOWNLOAD_DIR` 环境变量支持
 
 ## [0.1.1] - 2026-07-15
 

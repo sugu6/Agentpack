@@ -10,6 +10,7 @@ import { api, events } from '@/lib/api'
 import { TooltipProvider, Toaster } from '@/components/ui'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import WindowCloseDialog from '@/components/WindowCloseDialog.vue'
+import UpdateDialog from '@/components/UpdateDialog.vue'
 
 const { t } = useI18n()
 const agents = useAgentsStore()
@@ -115,6 +116,7 @@ onBeforeUnmount(() => {
     <AppLayout />
     <ConfirmDialog />
     <WindowCloseDialog v-model:open="closeDialogOpen" />
+    <UpdateDialog />
     <Toaster position="top-center" :close-button="false" :theme="settings.theme" rich-colors />
   </TooltipProvider>
 </template>

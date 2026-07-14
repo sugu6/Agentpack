@@ -186,12 +186,39 @@ func (a *App) CheckUpdate() (*UpdateCheckResult, error) {
 func matchPlatformAsset(assets []releaseAsset) *releaseAsset {
 	goos := runtime.GOOS
 	goarch := runtime.GOARCH
-	platform := fmt.Sprintf("%s_%s", goos, goarch)
+	platform := fmt.Sprintf("%s-%s", goos, goarch)
+	// 精确匹配 goos-goarch（如 "windows-amd64"、"linux-arm64"）
 	for i := range assets {
 		if strings.Contains(assets[i].Name, platform) {
 			return &assets[i]
 		}
 	}
+	// OS 别名匹配（如 darwin → macos-universal）
+	alias := goos
+	switch goos {
+	case "darwin":
+		alias = "macos"
+	}
+	aliasPlatform := fmt.Sprintf("%s-%s", alias, goarch)
+	for i := range assets {
+		if strings.Contains(assets[i].Name, aliasPlatform) {
+			return &assets[i]
+		}
+	}
+	// OS-only 匹配（用于 universal 构建等场景）
+	osPrefix := goos + "-"
+	for i := range assets {
+		if strings.Contains(assets[i].Name, osPrefix) && !strings.Contains(assets[i].Name, "Source code") {
+			return &assets[i]
+		}
+	}
+	aliasPrefix := alias + "-"
+	for i := range assets {
+		if strings.Contains(assets[i].Name, aliasPrefix) && !strings.Contains(assets[i].Name, "Source code") {
+			return &assets[i]
+		}
+	}
+	// 最终兜底：第一个非 Source code 的 asset
 	for i := range assets {
 		if !strings.Contains(assets[i].Name, "Source code") {
 			return &assets[i]
@@ -227,6 +254,36 @@ func compareVersions(a, b string) int {
 
 func (a *App) GetAppVersion() string {
 	return currentAppVersion()
+}
+
+func downloadDir() string {
+	switch runtime.GOOS {
+	case "windows":
+		if home := os.Getenv("USERPROFILE"); home != "" {
+			if fi, err := os.Stat(filepath.Join(home, "Downloads")); err == nil && fi.IsDir() {
+				return filepath.Join(home, "Downloads")
+			}
+		}
+	case "darwin":
+		if xdg := os.Getenv("XDG_DOWNLOAD_DIR"); xdg != "" {
+			return xdg
+		}
+		if home, err := os.UserHomeDir(); err == nil {
+			if fi, err := os.Stat(filepath.Join(home, "Downloads")); err == nil && fi.IsDir() {
+				return filepath.Join(home, "Downloads")
+			}
+		}
+	default:
+		if xdg := os.Getenv("XDG_DOWNLOAD_DIR"); xdg != "" {
+			return xdg
+		}
+		if home, err := os.UserHomeDir(); err == nil {
+			if fi, err := os.Stat(filepath.Join(home, "Downloads")); err == nil && fi.IsDir() {
+				return filepath.Join(home, "Downloads")
+			}
+		}
+	}
+	return os.TempDir()
 }
 
 func (a *App) StartDownloadUpdate(url string) error {
@@ -273,15 +330,19 @@ func (a *App) StartDownloadUpdate(url string) error {
 		var lastBytes int64
 
 		fileName := filepath.Base(url)
-		tmpPath := filepath.Join(os.TempDir(), "agentpack-update-"+fileName)
-		f, err := os.Create(tmpPath)
+		dlDir := downloadDir()
+		dlPath := filepath.Join(dlDir, fileName)
+		dlTmpPath := dlPath + ".downloading"
+		// 如果临时文件已存在（上次中断的下载），先删除
+		os.Remove(dlTmpPath)
+		f, err := os.Create(dlTmpPath)
 		if err != nil {
 			a.emit("update:download:error", map[string]string{"message": i18n.T(lang, "update.download.failed", map[string]interface{}{"error": err.Error()})})
 			return
 		}
 		defer f.Close()
 
-		removeTmp := func() { os.Remove(tmpPath) }
+		removeTmp := func() { os.Remove(dlTmpPath) }
 		buf := make([]byte, 32*1024)
 		for {
 			select {
@@ -323,11 +384,31 @@ func (a *App) StartDownloadUpdate(url string) error {
 				return
 			}
 		}
+		f.Close()
+
+		// 下载完成后重命名: .downloading → 正式文件名
+		if err := os.Rename(dlTmpPath, dlPath); err != nil {
+			removeTmp()
+			a.emit("update:download:error", map[string]string{"message": i18n.T(lang, "update.download.failed", map[string]interface{}{"error": err.Error()})})
+			return
+		}
 
 		a.emit("update:download:complete", map[string]interface{}{
-			"filePath": tmpPath,
+			"filePath": dlPath,
 			"fileName": fileName,
 		})
+
+		// 自动运行安装程序，完全脱离父进程
+		switch runtime.GOOS {
+		case "windows":
+			exec.Command("cmd", "/c", "start", "", dlPath).Start()
+		case "darwin":
+			exec.Command("open", dlPath).Start()
+		default:
+			exec.Command("xdg-open", dlPath).Start()
+		}
+		time.Sleep(1 * time.Second)
+		a.Quit()
 	}()
 
 	return nil
