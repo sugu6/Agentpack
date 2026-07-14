@@ -13,6 +13,8 @@
 
 - Install libwebkit2gtk-4.0-dev for Wails v2 instead of 4.1
 
+- Install NSIS via choco for Windows installer generation
+
 
 ### 持续集成
 
@@ -20,6 +22,8 @@
 
 
 ### 文档
+
+- Update for v0.1.0
 
 - Update for v0.1.0
 
