@@ -1,8 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { PhStorefront, PhMagnifyingGlass, PhBooks, PhSparkle, PhFunnel } from '@phosphor-icons/vue'
-import { Button, Input, Spinner, Tabs, TabsList, TabsTrigger, TabsContent, Empty, EmptyHeader, EmptyTitle, EmptyDescription, Select, SelectTrigger, SelectValue, SelectContent, SelectItem, Checkbox } from '@/components/ui'
-import { SelectPortal } from 'reka-ui'
+import { Button, Input, Spinner, Tabs, TabsList, TabsTrigger, TabsContent, Empty, EmptyHeader, EmptyTitle, EmptyDescription, Select, SelectTrigger, SelectValue, SelectContent, SelectItem, SelectPortal, Checkbox } from '@/components/ui'
 import MarketCard from '@/components/market/MarketCard.vue'
 import SkillMarketCard from '@/components/market/SkillMarketCard.vue'
 import { useMarketStore } from '@/stores/market'

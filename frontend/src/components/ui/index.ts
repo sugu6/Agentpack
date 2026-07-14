@@ -48,7 +48,7 @@ export { Progress } from './progress'
 export { RadioGroup, RadioGroupItem } from './radio-group'
 
 export { ResizableHandle, ResizablePanel, ResizablePanelGroup } from './resizable'
-export { Select, SelectContent, SelectGroup, SelectItem, SelectItemText, SelectLabel, SelectScrollDownButton, SelectScrollUpButton, SelectSeparator, SelectTrigger, SelectValue } from './select'
+export { Select, SelectContent, SelectGroup, SelectItem, SelectItemText, SelectLabel, SelectPortal, SelectScrollDownButton, SelectScrollUpButton, SelectSeparator, SelectTrigger, SelectValue } from './select'
 export { Sheet, SheetClose, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle, SheetTrigger } from './sheet'
 export { Skeleton } from './skeleton'
 export { Slider } from './slider'
