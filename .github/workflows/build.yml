@@ -23,13 +23,26 @@ jobs:
         with:
           ref: ${{ github.event.repository.default_branch }}
 
-      - name: Extract latest release notes from CHANGELOG.md
+      - name: Extract latest release notes (Chinese + English)
         if: startsWith(github.ref, 'refs/tags/v')
         shell: bash
         run: |
-          # Extract the first version section (skipping [Unreleased]) from CHANGELOG.md
+          # Extract the first version section (skipping [Unreleased]) from both CHANGELOGs
           # awk: skip [Unreleased] header, print from first real version to next version
-          awk '/^## \[Unreleased\]/{next} /^## \[/{c++; if(c==2) exit} c==1' CHANGELOG.md > "${{ runner.temp }}/CHANGELOG.txt"
+          awk '/^## \[Unreleased\]/{next} /^## \[/{c++; if(c==2) exit} c==1' CHANGELOG.md > "${{ runner.temp }}/CHANGELOG_ZH.txt"
+          awk '/^## \[Unreleased\]/{next} /^## \[/{c++; if(c==2) exit} c==1' CHANGELOG_EN.md > "${{ runner.temp }}/CHANGELOG_EN.txt"
+
+          # Combine: cross-language header + Chinese + separator + English
+          {
+            echo "[简体中文](./CHANGELOG.md) | [English](./CHANGELOG_EN.md)"
+            echo ""
+            cat "${{ runner.temp }}/CHANGELOG_ZH.txt"
+            echo ""
+            echo "---"
+            echo ""
+            cat "${{ runner.temp }}/CHANGELOG_EN.txt"
+          } > "${{ runner.temp }}/CHANGELOG.txt"
+
           echo "=== Extracted release notes ==="
           cat "${{ runner.temp }}/CHANGELOG.txt"
 

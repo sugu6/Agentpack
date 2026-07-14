@@ -1,12 +1,17 @@
 # AgentPack
 
 <p align="center">
+  <img src="build/appicon.png" width="128" alt="AgentPack Logo" />
+</p>
+
+<p align="center">
   <strong>统一管理 AI 编码工具的 MCP / Skills / Agent 配置</strong>
 </p>
 
 <p align="center">
-  <a href="./LICENSE">License: MIT</a> ·
-  <a href="./CHANGELOG.md">更新日志</a>
+  <a href="./README_EN.md">English</a> | 简体中文
+  · <a href="./CHANGELOG.md">更新日志</a>
+  · <a href="./LICENSE">License: MIT</a>
 </p>
 
 ---
@@ -35,6 +40,7 @@ AgentPack 是一个基于 [Wails v2](https://wails.io)（Go + Vue 3 + TypeScript
 - **配置导入/导出**：支持配置备份与在多设备间迁移
 - **系统托盘**：轻量模式，窗口隐藏到托盘时暂停后台扫描，降低资源占用
 - **自动更新检查**：内置版本检查，对接 GitHub Releases，支持查看更新日志
+- **中英双语**：内置中英文切换，默认跟随系统语言
 - **跨平台**：支持 Windows、macOS（Intel / Apple Silicon）、Linux
 
 ## 技术栈
@@ -102,14 +108,15 @@ AgentPack/
 ├── tray.go                # 系统托盘实现
 ├── update.go              # 更新检查（GitHub Releases API）
 ├── wails.json             # Wails 项目配置
-├── cliff.toml             # git-cliff 更新日志生成配置
-├── CHANGELOG.md           # 更新日志
+├── CHANGELOG.md           # 更新日志（中文）
+├── CHANGELOG_EN.md        # 更新日志（英文）
 ├── internal/              # 后端业务逻辑
 │   ├── agents/            # Agent 检测与管理
 │   ├── backup/            # 备份与导入/导出
 │   ├── config/            # 配置管理
 │   ├── crypto/            # 环境变量加密
 │   ├── database/          # SQLite 数据库
+│   ├── i18n/              # 国际化（zh-CN / en）
 │   ├── market/            # 技能市场（Smithery / Official / skills.sh）
 │   ├── mcp/               # MCP 服务器存储
 │   └── skills/            # Skills 管理与更新检查
