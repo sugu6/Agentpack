@@ -30,6 +30,9 @@ type UpdateCheckResult struct {
 	Message        string `json:"message"`
 	Changelog      string `json:"changelog"`
 	ReleaseURL     string `json:"releaseUrl"`
+	DownloadURL    string `json:"downloadUrl"`
+	DownloadSize   int    `json:"downloadSize"`
+	DownloadName   string `json:"downloadName"`
 }
 
 // wailsJSON 通过 go:embed 在编译时嵌入 wails.json，用于读取版本号
@@ -56,85 +59,123 @@ func currentAppVersion() string {
 
 // githubRelease 对应 GitHub Releases API 的响应结构
 type githubRelease struct {
-	TagName     string `json:"tag_name"`
-	Name        string `json:"name"`
-	Body        string `json:"body"`
-	HTMLURL     string `json:"html_url"`
-	PreRelease  bool   `json:"prerelease"`
-	Draft       bool   `json:"draft"`
-	PublishedAt string `json:"published_at"`
+	TagName     string         `json:"tag_name"`
+	Name        string         `json:"name"`
+	Body        string         `json:"body"`
+	HTMLURL     string         `json:"html_url"`
+	PreRelease  bool           `json:"prerelease"`
+	Draft       bool           `json:"draft"`
+	PublishedAt string         `json:"published_at"`
+	Assets      []releaseAsset `json:"assets"`
+}
+
+type releaseAsset struct {
+	Name               string `json:"name"`
+	BrowserDownloadURL string `json:"browser_download_url"`
+	ContentType        string `json:"content_type"`
+	Size               int    `json:"size"`
 }
 
 // CheckUpdate 调用 GitHub Releases API 检查最新版本
 func (a *App) CheckUpdate() (*UpdateCheckResult, error) {
 	current := currentAppVersion()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	url := config.DefaultGitHubProxy + fmt.Sprintf("https://api.github.com/repos/%s/releases/latest", githubRepo)
 
-	url := fmt.Sprintf("https://api.github.com/repos/%s/releases/latest", githubRepo)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return nil, fmt.Errorf("创建请求失败: %w", err)
-	}
-	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("User-Agent", fmt.Sprintf("AgentPack/%s (%s; %s)", current, runtime.GOOS, runtime.GOARCH))
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 {
+			time.Sleep(1 * time.Second)
+		}
 
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err != nil {
+			cancel()
+			lastErr = err
+			continue
+		}
+		req.Header.Set("Accept", "application/vnd.github+json")
+		req.Header.Set("User-Agent", fmt.Sprintf("AgentPack/%s (%s; %s)", current, runtime.GOOS, runtime.GOARCH))
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			cancel()
+			lastErr = err
+			continue
+		}
+
+		if resp.StatusCode == http.StatusNotFound {
+			cancel()
+			resp.Body.Close()
+			return &UpdateCheckResult{
+				HasUpdate:      false,
+				CurrentVersion: current,
+				LatestVersion:  current,
+				Message:        "尚未发布任何版本",
+			}, nil
+		}
+
+		if resp.StatusCode == 403 || resp.StatusCode == 429 {
+			cancel()
+			resp.Body.Close()
+			return &UpdateCheckResult{
+				HasUpdate:      false,
+				CurrentVersion: current,
+				LatestVersion:  current,
+				Message:        "GitHub API 请求过于频繁，请稍后再试",
+			}, nil
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+			cancel()
+			resp.Body.Close()
+			lastErr = fmt.Errorf("GitHub API 返回 %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+			continue
+		}
+
+		var release githubRelease
+		if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
+			resp.Body.Close()
+			cancel()
+			lastErr = err
+			continue
+		}
+		resp.Body.Close()
+		cancel()
+
+		latest := strings.TrimPrefix(release.TagName, "v")
+		hasUpdate := compareVersions(current, latest) < 0
+
+		downloadURL, downloadName, downloadSize := "", "", 0
+		if hasUpdate {
+			downloadURL, downloadName, downloadSize = matchPlatformAsset(release.Assets)
+		}
+
+		message := fmt.Sprintf("当前已是最新版本 v%s", current)
+		if hasUpdate {
+			message = fmt.Sprintf("发现新版本 v%s", latest)
+		}
+
 		return &UpdateCheckResult{
-			HasUpdate:      false,
+			HasUpdate:      hasUpdate,
 			CurrentVersion: current,
-			LatestVersion:  current,
-			Message:        fmt.Sprintf("网络请求失败: %v", err),
+			LatestVersion:  latest,
+			Message:        message,
+			Changelog:      release.Body,
+			ReleaseURL:     release.HTMLURL,
+			DownloadURL:    downloadURL,
+			DownloadSize:   downloadSize,
+			DownloadName:   downloadName,
 		}, nil
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == http.StatusNotFound {
-		return &UpdateCheckResult{
-			HasUpdate:      false,
-			CurrentVersion: current,
-			LatestVersion:  current,
-			Message:        "尚未发布任何版本",
-		}, nil
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return &UpdateCheckResult{
-			HasUpdate:      false,
-			CurrentVersion: current,
-			LatestVersion:  current,
-			Message:        fmt.Sprintf("GitHub API 返回 %d: %s", resp.StatusCode, strings.TrimSpace(string(body))),
-		}, nil
-	}
-
-	var release githubRelease
-	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
-		return &UpdateCheckResult{
-			HasUpdate:      false,
-			CurrentVersion: current,
-			LatestVersion:  current,
-			Message:        fmt.Sprintf("解析响应失败: %v", err),
-		}, nil
-	}
-
-	latest := strings.TrimPrefix(release.TagName, "v")
-	hasUpdate := compareVersions(current, latest) < 0
-
-	message := fmt.Sprintf("当前已是最新版本 v%s", current)
-	if hasUpdate {
-		message = fmt.Sprintf("发现新版本 v%s", latest)
 	}
 
 	return &UpdateCheckResult{
-		HasUpdate:      hasUpdate,
+		HasUpdate:      false,
 		CurrentVersion: current,
-		LatestVersion:  latest,
-		Message:        message,
-		Changelog:      release.Body,
-		ReleaseURL:     release.HTMLURL,
+		LatestVersion:  current,
+		Message:        fmt.Sprintf("网络请求失败: %v", lastErr),
 	}, nil
 }
 
@@ -259,4 +300,15 @@ func parseVersionParts(v string) []int {
 		result = append(result, n)
 	}
 	return result
+}
+
+func matchPlatformAsset(assets []releaseAsset) (string, string, int) {
+	target := fmt.Sprintf("%s_%s", runtime.GOOS, runtime.GOARCH)
+	targetLower := strings.ToLower(target)
+	for _, a := range assets {
+		if strings.Contains(strings.ToLower(a.Name), targetLower) {
+			return config.DefaultGitHubProxy + a.BrowserDownloadURL, a.Name, a.Size
+		}
+	}
+	return "", "", 0
 }
