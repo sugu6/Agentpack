@@ -81,7 +81,7 @@ onMounted(() => {
       downloadStatus.value = 'error'
       downloadProgress.value = 0
       downloadSpeed.value = ''
-      toast.error(`下载失败：${data.message || '未知错误'}`)
+      toast.error(t('settings.toast.downloadFailedMsg', { message: data.message || t('settings.toast.unknownError') }))
     }
   })
 })
@@ -123,7 +123,7 @@ async function autoSave(previous?: ReturnType<typeof cloneConfig>) {
       settings.setConfig(previous)
       settings.applyTheme(previous.theme)
     }
-    toast.error(toast.fromError(e, '保存失败'))
+    toast.error(toast.fromError(e, t('toast.saveFailed')))
   } finally {
     saving.value = false
   }
@@ -195,21 +195,21 @@ function setBackupRetention(v: string | number) {
 async function toggleAgent(agentId: string, enabled: boolean) {
   try {
     await agents.toggle(agentId, enabled)
-    toast.success(`已${enabled ? '启用' : '禁用'} Agent`)
+    toast.success(enabled ? t('settings.toast.agentEnabled') : t('settings.toast.agentDisabled'))
   } catch (e) {
     const apiError = ApiError.from(e)
-    toast.error(`切换 Agent 状态失败：${apiError.message}`)
+    toast.error(t('settings.toast.toggleAgentFailed', { error: apiError.message }))
   }
 }
 
 async function createBackup() {
   backupLoading.value = 'create'
   try {
-    await api.backup.create('手动备份')
-    toast.success('已创建备份')
+    await api.backup.create(t('settings.toast.manualBackupLabel'))
+    toast.success(t('settings.toast.backupCreated'))
   } catch (e) {
     const apiError = ApiError.from(e)
-    toast.error(`备份失败：${apiError.message}`)
+    toast.error(t('settings.toast.backupFailed', { error: apiError.message }))
   } finally {
     backupLoading.value = null
   }
@@ -220,18 +220,18 @@ async function exportData() {
   try {
     const exportDir = await api.system.pickDirectory()
     if (!exportDir) return
-    const summary = await api.backup.create('导出备份')
+    const summary = await api.backup.create(t('settings.toast.exportBackupLabel'))
     const backupId = summary.id || ''
     if (!backupId) {
-      toast.error('创建备份失败：未返回备份 ID')
+      toast.error(t('settings.toast.createBackupFailedNoId'))
       return
     }
     const dest = `${exportDir}/agentpack-export-${Date.now()}.json`
     await api.export.exportData(backupId, dest)
-    toast.success(`已导出到 ${dest}`)
+    toast.success(t('settings.toast.exportSuccess', { dest }))
   } catch (e) {
     const apiError = ApiError.from(e)
-    toast.error(`导出失败：${apiError.message}`)
+    toast.error(t('settings.toast.exportFailed', { error: apiError.message }))
   } finally {
     backupLoading.value = null
   }
@@ -251,7 +251,7 @@ async function importData() {
     }
   } catch (e) {
     const apiError = ApiError.from(e)
-    toast.error(`选择文件失败：${apiError.message}`)
+    toast.error(t('settings.toast.pickFileFailed', { error: apiError.message }))
   }
 }
 
@@ -262,14 +262,14 @@ async function confirmImport() {
   try {
     const result = await api.export.importData(filePath, { overwrite, applyAgentStatus, applySettings })
     const parts: string[] = []
-    if (result.mcpApplied > 0) parts.push(`${result.mcpApplied} 个服务器已导入`)
-    if (result.mcpSkipped > 0) parts.push(`${result.mcpSkipped} 个已跳过`)
-    if (result.agentStatusApplied > 0) parts.push(`${result.agentStatusApplied} 个 Agent 状态已恢复`)
-    if (applySettings && result.exportedSettings) parts.push('应用设置已恢复')
-    toast.success(parts.length > 0 ? `导入完成：${parts.join('，')}` : '导入完成')
+    if (result.mcpApplied > 0) parts.push(t('settings.toast.importedServers', { count: result.mcpApplied }))
+    if (result.mcpSkipped > 0) parts.push(t('settings.toast.importedSkipped', { count: result.mcpSkipped }))
+    if (result.agentStatusApplied > 0) parts.push(t('settings.toast.agentStatusRestored', { count: result.agentStatusApplied }))
+    if (applySettings && result.exportedSettings) parts.push(t('settings.toast.appSettingsRestored'))
+    toast.success(parts.length > 0 ? t('settings.toast.importCompleteWithDetails', { details: parts.join(t('settings.toast.detailsSeparator')) }) : t('settings.toast.importComplete'))
   } catch (e) {
     const apiError = ApiError.from(e)
-    toast.error(`导入失败：${apiError.message}`)
+    toast.error(t('settings.toast.importFailed', { error: apiError.message }))
   } finally {
     backupLoading.value = null
   }
@@ -279,7 +279,7 @@ async function openConfigFolder() {
   try {
     await api.system.openConfigFolder()
   } catch (e: unknown) {
-    toast.error(toast.fromError(e, '无法打开数据目录'))
+    toast.error(toast.fromError(e, t('settings.toast.openDataFolderFailed')))
   }
 }
 
@@ -295,16 +295,16 @@ async function checkUpdate() {
     const result = await api.system.checkUpdate()
     updateResult.value = result
     if (result.hasUpdate) {
-      toast.success(`发现新版本 v${result.latestVersion}（当前 v${result.currentVersion}）`, {
+      toast.success(t('settings.toast.foundNewVersion', { latest: result.latestVersion, current: result.currentVersion }), {
         duration: 5000,
-        description: '可在下方下载安装包',
+        description: t('settings.toast.canDownloadBelow'),
       })
     } else {
-      toast.success(`当前已是最新版本 v${result.currentVersion}`)
+      toast.success(t('update.message.latest', { version: result.currentVersion }))
     }
   } catch (e) {
     const apiError = ApiError.from(e)
-    toast.error(`检查更新失败：${apiError.message}`, { duration: 5000 })
+    toast.error(t('settings.toast.checkUpdateFailed', { error: apiError.message }), { duration: 5000 })
   } finally {
     updateChecking.value = false
   }
@@ -334,7 +334,7 @@ async function startDownload() {
   } catch (e) {
     downloadStatus.value = 'error'
     const apiError = ApiError.from(e)
-    toast.error(`启动下载失败：${apiError.message}`)
+    toast.error(t('settings.toast.startDownloadFailed', { error: apiError.message }))
   }
 }
 
@@ -355,7 +355,7 @@ async function openDownloadedFile() {
     await api.system.openDownloadedFile(downloadedFilePath.value)
   } catch (e) {
     const apiError = ApiError.from(e)
-    toast.error(`打开文件失败：${apiError.message}`)
+    toast.error(t('settings.toast.openFileFailed', { error: apiError.message }))
   }
 }
 
@@ -412,7 +412,7 @@ async function refreshSkillRepos() {
 async function addSkillRepo() {
   const parsed = parseRepoUrl(newRepo.value.url)
   if (!parsed) {
-    repoError.value = '请输入有效的仓库地址，如 anthropics/skills'
+    repoError.value = t('settings.skills.invalidRepoUrl')
     return
   }
   repoError.value = null
@@ -462,7 +462,7 @@ async function saveEditRepo() {
   if (!editingRepo.value) return
   const parsed = parseRepoUrl(editForm.value.url)
   if (!parsed) {
-    repoError.value = '请输入有效的仓库地址，如 anthropics/skills'
+    repoError.value = t('settings.skills.invalidRepoUrl')
     return
   }
   repoError.value = null
@@ -484,22 +484,22 @@ async function saveEditRepo() {
 }
 
 // 市场来源的展示元数据：分为 MCP 和 Skills 两类
-const marketSourceTabs = {
+const marketSourceTabs = computed(() => ({
   mcp: {
     label: 'MCP',
     sources: [
-      { key: 'official', label: 'Official', description: '官方 MCP 注册表' },
-      { key: 'smithery', label: 'Smithery', description: 'Smithery Registry MCP 服务器' },
-    ] as const,
+      { key: 'official', label: 'Official', description: t('settings.market.officialDesc') },
+      { key: 'smithery', label: 'Smithery', description: t('settings.market.smitheryDesc') },
+    ],
   },
   skills: {
     label: 'Skills',
     sources: [
-      { key: 'github', label: 'GitHub Skills', description: 'GitHub 仓库扫描 Skills' },
-      { key: 'skills-sh', label: 'skills.sh', description: 'skills.sh Skills 市场' },
-    ] as const,
+      { key: 'github', label: 'GitHub Skills', description: t('settings.market.githubDesc') },
+      { key: 'skills-sh', label: 'skills.sh', description: t('settings.market.skillsShDesc') },
+    ],
   },
-}
+}))
 
 // 当前选中的市场来源类型 tab
 const activeMarketTab = ref<'mcp' | 'skills'>('mcp')
@@ -509,7 +509,7 @@ const skillRepos = computed(() => settings.config.skillRepos ?? [])
 // 获取当前 tab 下的来源列表
 const marketSourceList = computed(() => {
   const sources = settings.config.marketSources ?? {}
-  const tabSources = marketSourceTabs[activeMarketTab.value].sources
+  const tabSources = marketSourceTabs.value[activeMarketTab.value].sources
   return tabSources
     .filter(m => sources[m.key])
     .map(m => ({ ...m, enabled: sources[m.key]?.enabled ?? false }))
@@ -521,8 +521,8 @@ const marketSourceList = computed(() => {
     <!-- 固定头部 -->
     <div class="shrink-0 border-b border-border px-8 pt-8 pb-4">
       <div class="mx-auto max-w-4xl">
-        <h1 class="text-2xl font-semibold tracking-tight">设置</h1>
-        <p class="mt-1 text-sm text-muted-foreground">应用偏好设置与数据管理。</p>
+        <h1 class="text-2xl font-semibold tracking-tight">{{ t('settings.title') }}</h1>
+        <p class="mt-1 text-sm text-muted-foreground">{{ t('settings.subtitle') }}</p>
       </div>
     </div>
 
@@ -532,17 +532,17 @@ const marketSourceList = computed(() => {
 
     <Card>
       <CardHeader>
-        <CardTitle>外观</CardTitle>
-        <CardDescription>主题与视觉偏好。</CardDescription>
+        <CardTitle>{{ t('settings.appearance') }}</CardTitle>
+        <CardDescription>{{ t('settings.appearanceDesc') }}</CardDescription>
       </CardHeader>
       <CardContent class="space-y-3">
         <div class="flex items-center justify-between">
-          <Label>主题</Label>
+          <Label>{{ t('settings.theme') }}</Label>
           <Tabs :model-value="settings.config.theme" @update:model-value="(v: any) => setTheme(v)" class="w-fit">
             <TabsList>
-              <TabsTrigger value="light">浅色</TabsTrigger>
-              <TabsTrigger value="dark">深色</TabsTrigger>
-              <TabsTrigger value="system">跟随系统</TabsTrigger>
+              <TabsTrigger value="light">{{ t('settings.themeOptions.light') }}</TabsTrigger>
+              <TabsTrigger value="dark">{{ t('settings.themeOptions.dark') }}</TabsTrigger>
+              <TabsTrigger value="system">{{ t('settings.themeOptions.system') }}</TabsTrigger>
             </TabsList>
           </Tabs>
         </div>
@@ -561,17 +561,17 @@ const marketSourceList = computed(() => {
 
     <Card>
       <CardHeader>
-        <CardTitle>窗口行为</CardTitle>
-        <CardDescription>点击关闭按钮时的行为。</CardDescription>
+        <CardTitle>{{ t('settings.window.title') }}</CardTitle>
+        <CardDescription>{{ t('settings.window.desc') }}</CardDescription>
       </CardHeader>
       <CardContent class="space-y-3">
         <div class="flex items-start justify-between">
-          <Label class="mt-2">关闭按钮行为</Label>
+          <Label class="mt-2">{{ t('settings.window.behaviorLabel') }}</Label>
           <div class="flex flex-col items-center gap-1.5">
             <Tabs :model-value="settings.config.windowAction || 'minimize'" @update:model-value="(v: any) => setWindowAction(v)" class="w-fit">
               <TabsList>
-                <TabsTrigger value="minimize">最小化到托盘</TabsTrigger>
-                <TabsTrigger value="exit">退出</TabsTrigger>
+                <TabsTrigger value="minimize">{{ t('settings.window.action.minimize') }}</TabsTrigger>
+                <TabsTrigger value="exit">{{ t('settings.window.action.exit') }}</TabsTrigger>
               </TabsList>
             </Tabs>
             <label class="flex items-center gap-2 cursor-pointer select-none">
@@ -579,7 +579,7 @@ const marketSourceList = computed(() => {
                 :model-value="settings.config.windowNoRemind ?? false"
                 @update:model-value="(v) => setWindowNoRemind(v === true)"
               />
-              <span class="text-sm text-muted-foreground">不再提醒</span>
+              <span class="text-sm text-muted-foreground">{{ t('settings.window.noRemind') }}</span>
             </label>
           </div>
         </div>
@@ -589,13 +589,13 @@ const marketSourceList = computed(() => {
     <Card>
       <CardHeader>
         <CardTitle>Skills</CardTitle>
-        <CardDescription>Skills 存储位置与同步方式配置。</CardDescription>
+        <CardDescription>{{ t('settings.skills.desc') }}</CardDescription>
       </CardHeader>
       <CardContent class="space-y-4">
         <div class="flex items-center justify-between">
           <div>
-            <Label>存储位置</Label>
-            <p class="text-xs text-muted-foreground">选择 Skills 的 SSOT 目录</p>
+            <Label>{{ t('settings.skills.storage') }}</Label>
+            <p class="text-xs text-muted-foreground">{{ t('settings.skills.storageHint') }}</p>
           </div>
           <Tabs :model-value="settings.config.skillStorage" @update:model-value="(v: any) => setSkillStorage(v)" class="w-fit">
             <TabsList>
@@ -607,8 +607,8 @@ const marketSourceList = computed(() => {
         <Separator />
         <div class="flex items-center justify-between">
           <div>
-            <Label>同步方式</Label>
-            <p class="text-xs text-muted-foreground">Skills 同步到 Agent 目录的方式</p>
+            <Label>{{ t('settings.skills.syncMethod') }}</Label>
+            <p class="text-xs text-muted-foreground">{{ t('settings.skills.syncHint') }}</p>
           </div>
           <Tabs :model-value="settings.config.skillSyncMethod" @update:model-value="(v: any) => setSkillSyncMethod(v)" class="w-fit">
             <TabsList>
@@ -622,12 +622,12 @@ const marketSourceList = computed(() => {
 
     <Card>
       <CardHeader>
-        <CardTitle>Skills 仓库扫描</CardTitle>
-        <CardDescription>配置市场 Skills Tab 扫描的 GitHub 仓库列表。</CardDescription>
+        <CardTitle>{{ t('settings.skills.reposTitle') }}</CardTitle>
+        <CardDescription>{{ t('settings.skills.reposDesc') }}</CardDescription>
       </CardHeader>
       <CardContent class="space-y-4">
         <div v-if="skillRepos.length === 0" class="text-xs text-muted-foreground">
-          暂无扫描仓库。添加仓库后，市场 Skills Tab 会扫描其中含 SKILL.md 的目录。
+          {{ t('settings.skills.reposEmpty') }}
         </div>
         <div
           v-for="repo in skillRepos"
@@ -640,7 +640,7 @@ const marketSourceList = computed(() => {
                 {{ repo.owner }}/{{ repo.name }}
               </div>
               <div class="text-[11px] text-muted-foreground">
-                分支：{{ repo.branch || 'main' }}
+                {{ t('settings.skills.branch') }}：{{ repo.branch || 'main' }}
               </div>
             </div>
             <div class="flex items-center gap-2">
@@ -649,7 +649,7 @@ const marketSourceList = computed(() => {
                 size="icon"
                 class="h-7 w-7"
                 :disabled="repoBusy"
-                :aria-label="`编辑 ${repo.owner}/${repo.name}`"
+                :aria-label="t('settings.skills.editRepoAria', { name: `${repo.owner}/${repo.name}` })"
                 @click="startEditRepo(repo)"
               >
                 <PhPencilSimple :size="14" />
@@ -659,7 +659,7 @@ const marketSourceList = computed(() => {
                 size="icon"
                 class="h-7 w-7 border-destructive/40 text-destructive hover:bg-destructive/10"
                 :disabled="repoBusy"
-                :aria-label="`移除 ${repo.owner}/${repo.name}`"
+                :aria-label="t('settings.skills.removeRepoAria', { name: `${repo.owner}/${repo.name}` })"
                 @click="removeSkillRepo(repo)"
               >
                 <PhTrash :size="14" class="text-destructive" />
@@ -672,14 +672,14 @@ const marketSourceList = computed(() => {
                 v-model="editForm.url"
                 placeholder="anthropics/skills"
                 class="flex-1"
-                aria-label="仓库地址"
+                :aria-label="t('settings.skills.repoUrl')"
                 @keyup.enter="saveEditRepo"
               />
               <div class="w-28">
                 <Input
                   v-model="editForm.branch"
                   placeholder="main"
-                  aria-label="分支名称"
+                  :aria-label="t('settings.skills.branchName')"
                   @keyup.enter="saveEditRepo"
                 />
               </div>
@@ -689,7 +689,7 @@ const marketSourceList = computed(() => {
                 :disabled="repoBusy"
                 @click="saveEditRepo"
               >
-                保存
+                {{ t('common.save') }}
               </Button>
               <Button
                 size="sm"
@@ -697,7 +697,7 @@ const marketSourceList = computed(() => {
                 :disabled="repoBusy"
                 @click="cancelEditRepo"
               >
-                取消
+                {{ t('common.cancel') }}
               </Button>
             </div>
           </template>
@@ -706,20 +706,20 @@ const marketSourceList = computed(() => {
         <Separator />
 
         <div class="space-y-2">
-          <Label>添加仓库</Label>
+          <Label>{{ t('settings.skills.addRepo') }}</Label>
           <div class="flex gap-2">
             <Input
               v-model="newRepo.url"
-              placeholder="anthropics/skills 或 https://github.com/anthropics/skills"
+              :placeholder="t('settings.skills.repoUrlPlaceholder')"
               class="flex-1"
-              aria-label="仓库地址"
+              :aria-label="t('settings.skills.repoUrl')"
               @keyup.enter="addSkillRepo"
             />
             <div class="w-28">
               <Input
                 v-model="newRepo.branch"
                 placeholder="main"
-                aria-label="分支名称"
+                :aria-label="t('settings.skills.branchName')"
                 @keyup.enter="addSkillRepo"
               />
             </div>
@@ -730,10 +730,10 @@ const marketSourceList = computed(() => {
               @click="addSkillRepo"
             >
               <PhPlus :size="14" />
-              添加
+              {{ t('common.add') }}
             </Button>
           </div>
-          <p class="text-[11px] text-muted-foreground">支持 owner/name 或完整 GitHub URL，分支默认 main（URL 含 /tree/branch 时自动识别）</p>
+          <p class="text-[11px] text-muted-foreground">{{ t('settings.skills.repoHint') }}</p>
           <p v-if="repoError" class="text-xs text-destructive">{{ repoError }}</p>
         </div>
       </CardContent>
@@ -741,8 +741,8 @@ const marketSourceList = computed(() => {
 
     <Card>
       <CardHeader>
-        <CardTitle>Agents 管理</CardTitle>
-        <CardDescription>启用或禁用已检测 Agents 的配置管理。</CardDescription>
+        <CardTitle>{{ t('settings.agents.title') }}</CardTitle>
+        <CardDescription>{{ t('settings.agents.desc') }}</CardDescription>
       </CardHeader>
       <CardContent>
         <div v-if="agents.items.length > 0" class="flex flex-wrap items-center gap-2">
@@ -762,20 +762,20 @@ const marketSourceList = computed(() => {
           </div>
         </div>
         <div v-else class="py-2 text-center text-xs text-muted-foreground">
-          尚未检测到 Agents。
+          {{ t('settings.agents.empty') }}
         </div>
       </CardContent>
     </Card>
 
     <Card>
       <CardHeader>
-        <CardTitle>市场来源</CardTitle>
-        <CardDescription>启用或禁用各个市场集成。</CardDescription>
+        <CardTitle>{{ t('settings.market.title') }}</CardTitle>
+        <CardDescription>{{ t('settings.market.desc') }}</CardDescription>
       </CardHeader>
       <CardContent class="space-y-4">
         <!-- Tab 切换 -->
         <div class="flex items-center justify-between">
-          <Label>来源类型</Label>
+          <Label>{{ t('settings.market.sourceType') }}</Label>
           <Tabs v-model="activeMarketTab" class="w-fit">
             <TabsList>
               <TabsTrigger v-for="tab in (['mcp', 'skills'] as const)" :key="tab" :value="tab">
@@ -807,14 +807,14 @@ const marketSourceList = computed(() => {
 
     <Card>
       <CardHeader>
-        <CardTitle>备份</CardTitle>
-        <CardDescription>自动与手动备份配置。</CardDescription>
+        <CardTitle>{{ t('settings.backup.title') }}</CardTitle>
+        <CardDescription>{{ t('settings.backup.desc') }}</CardDescription>
       </CardHeader>
       <CardContent class="space-y-3">
         <div class="flex items-center justify-between">
           <div>
-            <Label>自动备份</Label>
-            <p class="text-xs text-muted-foreground">每次写入操作前创建备份。</p>
+            <Label>{{ t('settings.backup.autoBackup') }}</Label>
+            <p class="text-xs text-muted-foreground">{{ t('settings.backup.autoBackupDesc') }}</p>
           </div>
           <Switch
             :model-value="settings.config.autoBackup"
@@ -823,7 +823,7 @@ const marketSourceList = computed(() => {
         </div>
         <Separator />
         <div class="flex items-center justify-between">
-          <Label>保留备份数</Label>
+          <Label>{{ t('settings.backup.retention') }}</Label>
           <Input
             :model-value="String(settings.config.backupRetention || settings.config.backupCount)"
             type="number"
@@ -834,11 +834,11 @@ const marketSourceList = computed(() => {
         <div class="flex gap-2">
           <Button variant="outline" size="sm" :disabled="backupLoading !== null" @click="createBackup">
             <PhArrowsClockwise :size="14" :class="{ 'animate-spin': backupLoading === 'create' }" />
-            <span>{{ backupLoading === 'create' ? '创建中...' : '立即创建备份' }}</span>
+            <span>{{ backupLoading === 'create' ? t('settings.backup.creating') : t('settings.backup.createNow') }}</span>
           </Button>
           <Button variant="outline" size="sm" @click="openConfigFolder">
             <PhFolderOpen :size="14" />
-            <span>打开数据文件夹</span>
+            <span>{{ t('settings.backup.openDataFolder') }}</span>
           </Button>
         </div>
       </CardContent>
@@ -846,18 +846,18 @@ const marketSourceList = computed(() => {
 
     <Card>
       <CardHeader>
-        <CardTitle>导入 / 导出</CardTitle>
-        <CardDescription>在 AgentPack 安装之间传输数据。</CardDescription>
+        <CardTitle>{{ t('settings.backup.importExportTitle') }}</CardTitle>
+        <CardDescription>{{ t('settings.backup.importExportDesc') }}</CardDescription>
       </CardHeader>
       <CardContent class="space-y-3">
         <div class="flex gap-2">
           <Button variant="outline" size="sm" :disabled="backupLoading !== null" @click="exportData">
             <PhUpload :size="14" :class="{ 'animate-pulse': backupLoading === 'export' }" />
-            <span>{{ backupLoading === 'export' ? '导出中...' : '导出到文件' }}</span>
+            <span>{{ backupLoading === 'export' ? t('settings.backup.exporting') : t('settings.backup.exportToFile') }}</span>
           </Button>
           <Button variant="outline" size="sm" :disabled="backupLoading !== null" @click="importData">
             <PhDownload :size="14" :class="{ 'animate-pulse': backupLoading === 'import' }" />
-            <span>{{ backupLoading === 'import' ? '导入中...' : '从文件导入' }}</span>
+            <span>{{ backupLoading === 'import' ? t('settings.backup.importing') : t('settings.backup.importFromFile') }}</span>
           </Button>
         </div>
       </CardContent>
@@ -865,24 +865,24 @@ const marketSourceList = computed(() => {
 
     <Card>
       <CardHeader>
-        <CardTitle>关于</CardTitle>
-        <CardDescription>应用版本与更新检查。</CardDescription>
+        <CardTitle>{{ t('settings.about.title') }}</CardTitle>
+        <CardDescription>{{ t('settings.about.desc') }}</CardDescription>
       </CardHeader>
       <CardContent class="space-y-3">
         <div class="flex items-center justify-between">
-          <Label>当前版本</Label>
+          <Label>{{ t('settings.update.currentVersion') }}</Label>
           <span class="font-mono text-sm text-muted-foreground">v{{ appVersion }}</span>
         </div>
         <Separator />
         <div class="flex items-center justify-between">
-          <Label>检查更新</Label>
+          <Label>{{ t('settings.update.checkUpdate') }}</Label>
           <div class="flex gap-2">
             <Button v-if="updateResult?.changelog" variant="outline" size="sm" @click="changelogDialogOpen = true">
-              <span>更新日志</span>
+              <span>{{ t('settings.update.changelog') }}</span>
             </Button>
             <Button variant="outline" size="sm" :disabled="updateChecking" @click="checkUpdate">
               <PhArrowsClockwise :size="14" :class="{ 'animate-spin': updateChecking }" />
-              <span>{{ updateChecking ? '检查中...' : '检查更新' }}</span>
+              <span>{{ updateChecking ? t('settings.update.checking') : t('settings.update.checkUpdate') }}</span>
             </Button>
           </div>
         </div>
@@ -892,7 +892,7 @@ const marketSourceList = computed(() => {
           <Separator />
           <div class="space-y-2">
             <div class="flex items-center justify-between">
-              <Label>下载更新</Label>
+              <Label>{{ t('settings.update.downloadSection') }}</Label>
               <span v-if="updateResult.downloadName" class="text-xs text-muted-foreground">{{ updateResult.downloadName }}</span>
             </div>
 
@@ -900,7 +900,7 @@ const marketSourceList = computed(() => {
             <div v-if="downloadStatus === 'idle'" class="flex gap-2">
               <Button size="sm" variant="default" @click="startDownload">
                 <PhDownload :size="14" />
-                <span>下载安装包</span>
+                <span>{{ t('settings.update.download') }}</span>
               </Button>
             </div>
 
@@ -918,7 +918,7 @@ const marketSourceList = computed(() => {
               <div class="flex items-center justify-between">
                 <span v-if="downloadSpeed" class="text-xs text-muted-foreground">{{ downloadSpeed }}</span>
                 <Button variant="ghost" size="sm" class="h-auto px-1 text-xs text-destructive" @click="cancelDownload">
-                  取消下载
+                  {{ t('settings.update.cancelDownload') }}
                 </Button>
               </div>
             </div>
@@ -927,11 +927,11 @@ const marketSourceList = computed(() => {
             <div v-if="downloadStatus === 'complete'" class="flex gap-2">
               <Button size="sm" variant="default" @click="openDownloadedFile">
                 <PhFolderOpen :size="14" />
-                <span>打开文件位置</span>
+                <span>{{ t('settings.update.openFile') }}</span>
               </Button>
               <Button size="sm" variant="outline" @click="checkUpdate">
                 <PhArrowsClockwise :size="14" />
-                <span>重新检查</span>
+                <span>{{ t('settings.update.recheck') }}</span>
               </Button>
             </div>
 
@@ -939,7 +939,7 @@ const marketSourceList = computed(() => {
             <div v-if="downloadStatus === 'error'" class="flex gap-2">
               <Button size="sm" variant="outline" @click="startDownload">
                 <PhArrowsClockwise :size="14" />
-                <span>重试下载</span>
+                <span>{{ t('settings.update.retryDownload') }}</span>
               </Button>
             </div>
           </div>
@@ -951,8 +951,8 @@ const marketSourceList = computed(() => {
     <Dialog v-model:open="importDialog.open">
       <DialogContent class="max-w-md">
         <DialogHeader>
-          <DialogTitle>确认导入</DialogTitle>
-          <DialogDescription>选择导入选项后点击"导入"按钮执行。</DialogDescription>
+          <DialogTitle>{{ t('settings.importDialog.title') }}</DialogTitle>
+          <DialogDescription>{{ t('settings.importDialog.desc') }}</DialogDescription>
         </DialogHeader>
         <div class="space-y-4 py-2">
           <div class="rounded-md border border-border bg-muted/30 px-3 py-2 text-xs text-muted-foreground break-all">
@@ -964,36 +964,36 @@ const marketSourceList = computed(() => {
                 :model-value="importDialog.applyAgentStatus"
                 @update:model-value="(v) => importDialog.applyAgentStatus = v === true"
               />
-              <span class="text-sm">恢复 Agent 启用/禁用状态</span>
+              <span class="text-sm">{{ t('settings.importDialog.restoreAgentStatus') }}</span>
             </label>
             <label class="flex items-center gap-2 cursor-pointer">
               <Checkbox
                 :model-value="importDialog.applySettings"
                 @update:model-value="(v) => importDialog.applySettings = v === true"
               />
-              <span class="text-sm">恢复应用设置（主题、备份配置等）</span>
+              <span class="text-sm">{{ t('settings.importDialog.restoreAppSettings') }}</span>
             </label>
           </div>
           <div class="space-y-2">
-            <Label class="text-sm">MCP 服务器导入策略</Label>
+            <Label class="text-sm">{{ t('settings.importDialog.mcpStrategy') }}</Label>
             <RadioGroup
               :model-value="importDialog.overwrite ? 'overwrite' : 'skip'"
               @update:model-value="(v) => importDialog.overwrite = String(v) === 'overwrite'"
             >
               <div class="flex items-center gap-2">
                 <RadioGroupItem value="skip" />
-                <span class="text-sm">跳过已存在的服务器</span>
+                <span class="text-sm">{{ t('settings.importDialog.skipExisting') }}</span>
               </div>
               <div class="flex items-center gap-2">
                 <RadioGroupItem value="overwrite" />
-                <span class="text-sm">覆盖已存在的服务器</span>
+                <span class="text-sm">{{ t('settings.importDialog.overwriteExisting') }}</span>
               </div>
             </RadioGroup>
           </div>
         </div>
         <DialogFooter>
-          <Button variant="outline" size="sm" @click="importDialog.open = false">取消</Button>
-          <Button size="sm" @click="confirmImport">导入</Button>
+          <Button variant="outline" size="sm" @click="importDialog.open = false">{{ t('common.cancel') }}</Button>
+          <Button size="sm" @click="confirmImport">{{ t('settings.importDialog.importBtn') }}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -1002,7 +1002,7 @@ const marketSourceList = computed(() => {
     <Dialog v-model:open="changelogDialogOpen">
       <DialogContent class="max-w-2xl max-h-[80vh] flex flex-col">
         <DialogHeader>
-          <DialogTitle>更新日志</DialogTitle>
+          <DialogTitle>{{ t('settings.update.changelog') }}</DialogTitle>
           <DialogDescription v-if="updateResult">
             v{{ updateResult.currentVersion }}
             <span v-if="updateResult.hasUpdate"> → v{{ updateResult.latestVersion }}</span>
@@ -1014,14 +1014,14 @@ const marketSourceList = computed(() => {
         <DialogFooter>
           <Button v-if="updateResult?.releaseUrl" variant="outline" size="sm" @click="api.system.openUrl(updateResult.releaseUrl)">
             <PhDownload :size="14" />
-            <span>前往 Releases</span>
+            <span>{{ t('settings.update.goToReleases') }}</span>
           </Button>
           <Button v-if="updateResult?.hasUpdate && downloadStatus === 'idle'" size="sm" @click="startDownload">
             <PhDownload :size="14" />
-            <span>下载安装包</span>
+            <span>{{ t('settings.update.download') }}</span>
           </Button>
           <Button variant="outline" size="sm" @click="changelogDialogOpen = false">
-            <span>关闭</span>
+            <span>{{ t('common.close') }}</span>
           </Button>
         </DialogFooter>
       </DialogContent>

@@ -44,7 +44,9 @@
   },
   "settings": {
     "title": "Settings",
+    "subtitle": "App preferences and data management.",
     "appearance": "Appearance",
+    "appearanceDesc": "Theme and visual preferences.",
     "theme": "Theme",
     "themeOptions": {
       "system": "System",
@@ -59,6 +61,8 @@
     },
     "window": {
       "title": "Window close behavior",
+      "desc": "Behavior when clicking the close button.",
+      "behaviorLabel": "Close button behavior",
       "action": {
         "minimize": "Minimize to tray",
         "exit": "Exit application"
@@ -67,28 +71,72 @@
     },
     "backup": {
       "title": "Backup",
+      "desc": "Automatic and manual backup configuration.",
       "autoBackup": "Auto backup",
+      "autoBackupDesc": "Create a backup before each write operation.",
       "count": "Backup count",
       "retention": "Retention count",
       "create": "Create backup",
+      "creating": "Creating...",
+      "createNow": "Create backup now",
+      "openDataFolder": "Open data folder",
       "export": "Export backup",
       "import": "Import backup",
       "restore": "Restore",
-      "delete": "Delete backup"
+      "delete": "Delete backup",
+      "importExportTitle": "Import / Export",
+      "importExportDesc": "Transfer data between AgentPack installations.",
+      "exporting": "Exporting...",
+      "exportToFile": "Export to file",
+      "importing": "Importing...",
+      "importFromFile": "Import from file"
     },
     "skills": {
       "title": "Skills management",
+      "desc": "Skills storage location and sync method configuration.",
       "storage": "Storage location",
+      "storageHint": "Choose the SSOT directory for Skills",
       "storageOptions": {
         "agentpack": "AgentPack directory",
         "unified": "Unified directory"
       },
       "syncMethod": "Sync method",
+      "syncHint": "How Skills are synced to the Agent directory",
       "syncOptions": {
         "symlink": "Symlink",
         "copy": "Copy"
       },
-      "repos": "GitHub repositories"
+      "repos": "GitHub repositories",
+      "reposTitle": "Skills repository scan",
+      "reposDesc": "Configure the GitHub repositories scanned by the market Skills tab.",
+      "reposEmpty": "No scan repositories yet. After adding a repository, the market Skills tab will scan directories containing SKILL.md.",
+      "branch": "Branch",
+      "branchName": "Branch name",
+      "repoUrl": "Repository URL",
+      "repoUrlPlaceholder": "anthropics/skills or https://github.com/anthropics/skills",
+      "addRepo": "Add repository",
+      "repoHint": "Supports owner/name or full GitHub URL. Branch defaults to main (auto-detected from /tree/branch in URL).",
+      "editRepoAria": "Edit {name}",
+      "removeRepoAria": "Remove {name}",
+      "invalidRepoUrl": "Please enter a valid repository URL, e.g. anthropics/skills"
+    },
+    "agents": {
+      "title": "Agents management",
+      "desc": "Enable or disable detected Agents configuration management.",
+      "empty": "No Agents detected yet."
+    },
+    "market": {
+      "title": "Market sources",
+      "desc": "Enable or disable various market integrations.",
+      "sourceType": "Source type",
+      "officialDesc": "Official MCP registry",
+      "smitheryDesc": "Smithery Registry MCP servers",
+      "githubDesc": "GitHub repository scan Skills",
+      "skillsShDesc": "skills.sh Skills market"
+    },
+    "about": {
+      "title": "About",
+      "desc": "App version and update check."
     },
     "update": {
       "title": "Updates",
@@ -101,7 +149,50 @@
       "openFile": "Open file",
       "downloading": "Downloading… {percent}%",
       "downloadComplete": "Download complete",
-      "downloadFailed": "Download failed"
+      "downloadFailed": "Download failed",
+      "downloadSection": "Download update",
+      "recheck": "Recheck",
+      "retryDownload": "Retry download",
+      "goToReleases": "Go to Releases"
+    },
+    "importDialog": {
+      "title": "Confirm import",
+      "desc": "Select import options then click \"Import\" to proceed.",
+      "restoreAgentStatus": "Restore Agent enable/disable status",
+      "restoreAppSettings": "Restore app settings (theme, backup config, etc.)",
+      "mcpStrategy": "MCP server import strategy",
+      "skipExisting": "Skip existing servers",
+      "overwriteExisting": "Overwrite existing servers",
+      "importBtn": "Import"
+    },
+    "toast": {
+      "downloadFailedMsg": "Download failed: {message}",
+      "unknownError": "Unknown error",
+      "agentEnabled": "Agent enabled",
+      "agentDisabled": "Agent disabled",
+      "toggleAgentFailed": "Failed to toggle Agent status: {error}",
+      "backupCreated": "Backup created",
+      "backupFailed": "Backup failed: {error}",
+      "createBackupFailedNoId": "Failed to create backup: no backup ID returned",
+      "exportSuccess": "Exported to {dest}",
+      "exportFailed": "Export failed: {error}",
+      "pickFileFailed": "Failed to select file: {error}",
+      "importedServers": "{count} servers imported",
+      "importedSkipped": "{count} skipped",
+      "agentStatusRestored": "{count} Agent statuses restored",
+      "appSettingsRestored": "App settings restored",
+      "importCompleteWithDetails": "Import complete: {details}",
+      "importComplete": "Import complete",
+      "importFailed": "Import failed: {error}",
+      "openDataFolderFailed": "Cannot open data directory",
+      "foundNewVersion": "New version v{latest} found (current v{current})",
+      "canDownloadBelow": "You can download the installer below",
+      "checkUpdateFailed": "Update check failed: {error}",
+      "startDownloadFailed": "Failed to start download: {error}",
+      "openFileFailed": "Failed to open file: {error}",
+      "manualBackupLabel": "Manual backup",
+      "exportBackupLabel": "Export backup",
+      "detailsSeparator": ", "
     }
   },
   "agents": {

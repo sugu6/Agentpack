@@ -44,7 +44,9 @@
   },
   "settings": {
     "title": "设置",
+    "subtitle": "应用偏好设置与数据管理。",
     "appearance": "外观",
+    "appearanceDesc": "主题与视觉偏好。",
     "theme": "主题",
     "themeOptions": {
       "system": "跟随系统",
@@ -59,6 +61,8 @@
     },
     "window": {
       "title": "窗口关闭行为",
+      "desc": "点击关闭按钮时的行为。",
+      "behaviorLabel": "关闭按钮行为",
       "action": {
         "minimize": "最小化到托盘",
         "exit": "退出应用"
@@ -67,28 +71,72 @@
     },
     "backup": {
       "title": "备份",
+      "desc": "自动与手动备份配置。",
       "autoBackup": "自动备份",
+      "autoBackupDesc": "每次写入操作前创建备份。",
       "count": "备份数量",
       "retention": "保留数量",
       "create": "创建备份",
+      "creating": "创建中...",
+      "createNow": "立即创建备份",
+      "openDataFolder": "打开数据文件夹",
       "export": "导出备份",
       "import": "导入备份",
       "restore": "恢复",
-      "delete": "删除备份"
+      "delete": "删除备份",
+      "importExportTitle": "导入 / 导出",
+      "importExportDesc": "在 AgentPack 安装之间传输数据。",
+      "exporting": "导出中...",
+      "exportToFile": "导出到文件",
+      "importing": "导入中...",
+      "importFromFile": "从文件导入"
     },
     "skills": {
       "title": "Skills 管理",
+      "desc": "Skills 存储位置与同步方式配置。",
       "storage": "存储位置",
+      "storageHint": "选择 Skills 的 SSOT 目录",
       "storageOptions": {
         "agentpack": "AgentPack 目录",
         "unified": "统一目录"
       },
       "syncMethod": "同步方式",
+      "syncHint": "Skills 同步到 Agent 目录的方式",
       "syncOptions": {
         "symlink": "符号链接",
         "copy": "复制"
       },
-      "repos": "GitHub 仓库"
+      "repos": "GitHub 仓库",
+      "reposTitle": "Skills 仓库扫描",
+      "reposDesc": "配置市场 Skills Tab 扫描的 GitHub 仓库列表。",
+      "reposEmpty": "暂无扫描仓库。添加仓库后，市场 Skills Tab 会扫描其中含 SKILL.md 的目录。",
+      "branch": "分支",
+      "branchName": "分支名称",
+      "repoUrl": "仓库地址",
+      "repoUrlPlaceholder": "anthropics/skills 或 https://github.com/anthropics/skills",
+      "addRepo": "添加仓库",
+      "repoHint": "支持 owner/name 或完整 GitHub URL，分支默认 main（URL 含 /tree/branch 时自动识别）",
+      "editRepoAria": "编辑 {name}",
+      "removeRepoAria": "移除 {name}",
+      "invalidRepoUrl": "请输入有效的仓库地址，如 anthropics/skills"
+    },
+    "agents": {
+      "title": "Agents 管理",
+      "desc": "启用或禁用已检测 Agents 的配置管理。",
+      "empty": "尚未检测到 Agents。"
+    },
+    "market": {
+      "title": "市场来源",
+      "desc": "启用或禁用各个市场集成。",
+      "sourceType": "来源类型",
+      "officialDesc": "官方 MCP 注册表",
+      "smitheryDesc": "Smithery Registry MCP 服务器",
+      "githubDesc": "GitHub 仓库扫描 Skills",
+      "skillsShDesc": "skills.sh Skills 市场"
+    },
+    "about": {
+      "title": "关于",
+      "desc": "应用版本与更新检查。"
     },
     "update": {
       "title": "版本更新",
@@ -101,7 +149,50 @@
       "openFile": "打开文件",
       "downloading": "下载中… {percent}%",
       "downloadComplete": "下载完成",
-      "downloadFailed": "下载失败"
+      "downloadFailed": "下载失败",
+      "downloadSection": "下载更新",
+      "recheck": "重新检查",
+      "retryDownload": "重试下载",
+      "goToReleases": "前往 Releases"
+    },
+    "importDialog": {
+      "title": "确认导入",
+      "desc": "选择导入选项后点击\"导入\"按钮执行。",
+      "restoreAgentStatus": "恢复 Agent 启用/禁用状态",
+      "restoreAppSettings": "恢复应用设置（主题、备份配置等）",
+      "mcpStrategy": "MCP 服务器导入策略",
+      "skipExisting": "跳过已存在的服务器",
+      "overwriteExisting": "覆盖已存在的服务器",
+      "importBtn": "导入"
+    },
+    "toast": {
+      "downloadFailedMsg": "下载失败：{message}",
+      "unknownError": "未知错误",
+      "agentEnabled": "已启用 Agent",
+      "agentDisabled": "已禁用 Agent",
+      "toggleAgentFailed": "切换 Agent 状态失败：{error}",
+      "backupCreated": "已创建备份",
+      "backupFailed": "备份失败：{error}",
+      "createBackupFailedNoId": "创建备份失败：未返回备份 ID",
+      "exportSuccess": "已导出到 {dest}",
+      "exportFailed": "导出失败：{error}",
+      "pickFileFailed": "选择文件失败：{error}",
+      "importedServers": "{count} 个服务器已导入",
+      "importedSkipped": "{count} 个已跳过",
+      "agentStatusRestored": "{count} 个 Agent 状态已恢复",
+      "appSettingsRestored": "应用设置已恢复",
+      "importCompleteWithDetails": "导入完成：{details}",
+      "importComplete": "导入完成",
+      "importFailed": "导入失败：{error}",
+      "openDataFolderFailed": "无法打开数据目录",
+      "foundNewVersion": "发现新版本 v{latest}（当前 v{current}）",
+      "canDownloadBelow": "可在下方下载安装包",
+      "checkUpdateFailed": "检查更新失败：{error}",
+      "startDownloadFailed": "启动下载失败：{error}",
+      "openFileFailed": "打开文件失败：{error}",
+      "manualBackupLabel": "手动备份",
+      "exportBackupLabel": "导出备份",
+      "detailsSeparator": "，"
     }
   },
   "agents": {
