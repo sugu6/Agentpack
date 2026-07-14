@@ -75,12 +75,9 @@ jobs:
           - os: windows-11-arm
             platform: windows/arm64
             name: windows-arm64
-          - os: macos-13
-            platform: darwin/amd64
-            name: macos-intel
           - os: macos-latest
-            platform: darwin/arm64
-            name: macos-arm64
+            platform: darwin/universal
+            name: macos-universal
           - os: ubuntu-22.04
             platform: linux
             name: linux-amd64
