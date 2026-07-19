@@ -117,8 +117,9 @@ func (a *App) startup(ctx context.Context) {
 	}
 
 	a.marketStore = market.NewStore("")
-	a.marketStore.RegisterServer(market.NewOfficialFetcher())
-	a.marketStore.RegisterServer(market.NewSmitheryFetcher())
+
+	// 注册 MCP Server fetcher
+	a.marketStore.RegisterServer(market.NewRegistryFetcher())
 
 	// 注册 Skill fetchers
 	a.marketStore.RegisterSkillFetcher(market.NewGitHubSkillFetcher(func() []market.RepoRef {
