@@ -122,8 +122,16 @@ func (f *RegistryFetcher) Source() Source { return SourceOfficial }
 
 // Get retrieves a single server from the registry by its exact name.
 func (f *RegistryFetcher) Get(ctx context.Context, sourceID string) (*MarketServer, error) {
-	u := fmt.Sprintf("%s/v0/servers?search=%s&limit=10", f.baseURL, url.QueryEscape(sourceID))
-	resp, err := f.hc.Get(ctx, u)
+	u, err := url.Parse(f.baseURL)
+	if err != nil {
+		return nil, fmt.Errorf("parse registry base: %w", err)
+	}
+	u.Path = "/v0/servers"
+	q := u.Query()
+	q.Set("search", sourceID)
+	q.Set("limit", "10")
+	u.RawQuery = q.Encode()
+	resp, err := f.hc.Get(ctx, u.String())
 	if err != nil {
 		return nil, fmt.Errorf("registry get: %w", err)
 	}
@@ -156,17 +164,30 @@ func (f *RegistryFetcher) Search(ctx context.Context, opts SearchOptions) (*Sear
 	cursor := ""
 
 	for {
-		u := fmt.Sprintf("%s/v0/servers?limit=100", f.baseURL)
+		u, err := url.Parse(f.baseURL)
+		if err != nil {
+			return nil, fmt.Errorf("parse registry base: %w", err)
+		}
+		u.Path = "/v0/servers"
+		query := u.Query()
+		query.Set("limit", "100")
 		if cursor != "" {
-			u += "&cursor=" + url.QueryEscape(cursor)
+			query.Set("cursor", cursor)
 		}
-		if q := strings.TrimSpace(opts.Query); q != "" {
-			u += "&search=" + url.QueryEscape(q)
+		if qs := strings.TrimSpace(opts.Query); qs != "" {
+			query.Set("search", qs)
 		}
+		u.RawQuery = query.Encode()
 
-		resp, err := f.hc.Get(ctx, u)
+		resp, err := f.hc.Get(ctx, u.String())
 		if err != nil {
 			return nil, fmt.Errorf("registry search: %w", err)
+		}
+
+		if resp.StatusCode != 200 {
+			drainBody(resp.Body)
+			resp.Body.Close()
+			return nil, fmt.Errorf("registry search: status %d", resp.StatusCode)
 		}
 
 		var listResp registryListResponse
@@ -214,6 +235,11 @@ func convertRegistryEntry(entry registryServerEntry) *MarketServer {
 		Tags:        append(append([]string{}, s.Categories...), s.Tags...),
 		UpdatedAt:   entry.Meta.Official.UpdatedAt,
 		Source:      SourceOfficial,
+	}
+
+	// Repository URL as docs
+	if s.Repository != nil && s.Repository.URL != "" {
+		ms.Docs = s.Repository.URL
 	}
 
 	// Use Title if available, otherwise last segment of the name

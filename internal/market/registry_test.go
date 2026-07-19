@@ -135,3 +135,99 @@ func TestRegistryFetcher_Search_IsLatestFilter(t *testing.T) {
 		t.Fatalf("expected new-server, got %q", result.Items[0].SourceID)
 	}
 }
+
+func TestRegistryFetcher_Search_Pagination(t *testing.T) {
+	pageCalls := 0
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		pageCalls++
+		if pageCalls == 1 {
+			json.NewEncoder(w).Encode(registryListResponse{
+				Servers: []registryServerEntry{
+					{
+						Server: registryServer{
+							Name:        "io.github.test/server-a",
+							Description: "Server A",
+							Version:     "1.0.0",
+							Packages: []registryPackage{{
+								RegistryType: "npm", Identifier: "server-a", Version: "1.0.0",
+								RuntimeHint: "npx", Transport: registryTransport{Type: "stdio"},
+							}},
+						},
+						Meta: registryMetaWrapper{
+							Official: registryMeta{Status: "active", IsLatest: true, UpdatedAt: "2026-06-01T00:00:00Z"},
+						},
+					},
+				},
+				Metadata: registryMetadata{NextCursor: "page2", Count: 1},
+			})
+		} else {
+			json.NewEncoder(w).Encode(registryListResponse{
+				Servers: []registryServerEntry{
+					{
+						Server: registryServer{
+							Name:        "io.github.test/server-b",
+							Description: "Server B",
+							Version:     "2.0.0",
+							Remotes:     []registryRemote{{Type: "streamable-http", URL: "https://example.com/mcp"}},
+						},
+						Meta: registryMetaWrapper{
+							Official: registryMeta{Status: "active", IsLatest: true, UpdatedAt: "2026-06-15T00:00:00Z"},
+						},
+					},
+				},
+				Metadata: registryMetadata{Count: 1},
+			})
+		}
+	}))
+	defer ts.Close()
+
+	f := &RegistryFetcher{hc: NewHTTPClient(), baseURL: ts.URL}
+	result, err := f.Search(context.Background(), SearchOptions{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result.Items) != 2 {
+		t.Fatalf("expected 2 items (2 pages), got %d", len(result.Items))
+	}
+	if pageCalls != 2 {
+		t.Fatalf("expected 2 API calls, got %d", pageCalls)
+	}
+}
+
+func TestRegistryFetcher_Search_RemoteServer(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(registryListResponse{
+			Servers: []registryServerEntry{
+				{
+					Server: registryServer{
+						Name:        "com.example/remote-server",
+						Description: "A remote MCP server",
+						Version:     "1.0.0",
+						Remotes:     []registryRemote{{Type: "streamable-http", URL: "https://example.com/mcp"}},
+					},
+					Meta: registryMetaWrapper{
+						Official: registryMeta{Status: "active", IsLatest: true, UpdatedAt: "2026-06-01T00:00:00Z"},
+					},
+				},
+			},
+			Metadata: registryMetadata{Count: 1},
+		})
+	}))
+	defer ts.Close()
+
+	f := &RegistryFetcher{hc: NewHTTPClient(), baseURL: ts.URL}
+	result, err := f.Search(context.Background(), SearchOptions{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result.Items) != 1 {
+		t.Fatalf("expected 1 item, got %d", len(result.Items))
+	}
+	server := result.Items[0]
+	if server.Transport != "sse" {
+		t.Fatalf("expected transport 'sse' for remote server, got %q", server.Transport)
+	}
+	if server.URL != "https://example.com/mcp" {
+		t.Fatalf("expected URL 'https://example.com/mcp', got %q", server.URL)
+	}
+}
