@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sync"
@@ -225,4 +226,106 @@ func (s *Store) CheckUpdates(reg *agents.Registry) []UpdateStatus {
 	}
 
 	return results
+}
+
+// UpdateSkill updates a single skill to the latest remote version
+func (s *Store) UpdateSkill(skillID string, reg *agents.Registry) (Skill, error) {
+	s.mu.RLock()
+	sk, ok := s.skills[skillID]
+	if !ok {
+		s.mu.RUnlock()
+		return Skill{}, fmt.Errorf("skill %s not found", skillID)
+	}
+	if sk.RepoOwner == "" || sk.RepoName == "" {
+		s.mu.RUnlock()
+		return Skill{}, fmt.Errorf("skill %s has no repo info", skillID)
+	}
+	// Copy needed fields before releasing lock
+	boundAgents := copySlice(sk.BoundAgents)
+	s.mu.RUnlock()
+
+	branch := sk.RepoBranch
+	if branch == "" {
+		branch = "main"
+	}
+
+	// Get FullPath from skill or lock file
+	fullPath := sk.FullPath
+	if fullPath == "" {
+		if lk, ok := ParseAgentsLock()[sk.Directory]; ok {
+			fullPath = lk.FullPath
+		}
+	}
+
+	// Build tarball URL
+	tarballURL := fmt.Sprintf("https://codeload.github.com/%s/%s/tar.gz/refs/heads/%s",
+		url.PathEscape(sk.RepoOwner), url.PathEscape(sk.RepoName), url.PathEscape(branch))
+
+	input := TarballInstallInput{
+		TarballURL: tarballURL,
+		Directory:  sk.Directory,
+		FullPath:   fullPath,
+		RepoOwner:  sk.RepoOwner,
+		RepoName:   sk.RepoName,
+		RepoBranch: branch,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	// Remove old version from SSOT
+	ssotPath := filepath.Join(s.ssotDir, sk.Directory)
+	if err := RemovePath(ssotPath); err != nil {
+		return Skill{}, fmt.Errorf("remove old skill dir: %w", err)
+	}
+
+	// Install new version
+	updated, err := s.InstallFromTarball(ctx, input, boundAgents, reg)
+	if err != nil {
+		return Skill{}, fmt.Errorf("install updated skill: %w", err)
+	}
+
+	// Update commit SHA cache
+	if err := CacheSkillCommitSHA(skillID, sk.RepoOwner, sk.RepoName, branch); err != nil {
+		log.Printf("warning: cache commit SHA after update: %v", err)
+	}
+
+	return updated, nil
+}
+
+// UpdateSkills batch-updates multiple skills
+func (s *Store) UpdateSkills(skillIDs []string, reg *agents.Registry) ([]Skill, []UpdateError) {
+	if len(skillIDs) == 0 {
+		return nil, nil
+	}
+
+	var successes []Skill
+	var errors []UpdateError
+	sem := make(chan struct{}, 3)
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+
+	for _, id := range skillIDs {
+		wg.Add(1)
+		go func(skillID string) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			updated, err := s.UpdateSkill(skillID, reg)
+			mu.Lock()
+			defer mu.Unlock()
+			if err != nil {
+				errors = append(errors, UpdateError{
+					SkillID: skillID,
+					Error:   err.Error(),
+				})
+			} else {
+				successes = append(successes, updated)
+			}
+		}(id)
+	}
+
+	wg.Wait()
+	return successes, errors
 }

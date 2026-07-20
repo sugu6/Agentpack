@@ -951,6 +951,59 @@ func (a *App) CheckSkillUpdates() ([]skills.UpdateStatus, error) {
 	return ss.CheckUpdates(a.registry), nil
 }
 
+// UpdateSkill updates a single skill to the latest remote version
+func (a *App) UpdateSkill(skillID string) (skills.Skill, error) {
+	if err := a.assertInit(); err != nil {
+		return skills.Skill{}, err
+	}
+	if err := a.beginInFlight(); err != nil {
+		return skills.Skill{}, err
+	}
+	defer a.endInFlight()
+	a.storeOpMu.Lock()
+	defer a.storeOpMu.Unlock()
+
+	_, _, _, ss, _, _ := a.snapshot()
+	if ss == nil {
+		return skills.Skill{}, fmt.Errorf("skills store not initialized")
+	}
+	updated, err := ss.UpdateSkill(skillID, a.registry)
+	if err != nil {
+		return skills.Skill{}, err
+	}
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.emitAgentsChangedLocked()
+	a.emitLocked("skills:changed", ss.List())
+	return updated, nil
+}
+
+// UpdateSkills batch-updates multiple skills
+func (a *App) UpdateSkills(skillIDs []string) ([]skills.Skill, []skills.UpdateError, error) {
+	if err := a.assertInit(); err != nil {
+		return nil, nil, err
+	}
+	if err := a.beginInFlight(); err != nil {
+		return nil, nil, err
+	}
+	defer a.endInFlight()
+	a.storeOpMu.Lock()
+	defer a.storeOpMu.Unlock()
+
+	_, _, _, ss, _, _ := a.snapshot()
+	if ss == nil {
+		return nil, nil, fmt.Errorf("skills store not initialized")
+	}
+	successes, errs := ss.UpdateSkills(skillIDs, a.registry)
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.emitAgentsChangedLocked()
+	a.emitLocked("skills:changed", ss.List())
+	return successes, errs, nil
+}
+
 func (a *App) OpenConfigFolder() error {
 	dir := config.AgentPackDir()
 	if err := os.MkdirAll(dir, 0700); err != nil {

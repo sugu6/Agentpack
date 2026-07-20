@@ -95,3 +95,10 @@ type UpdateStatus struct {
 	CheckedAt  string `json:"checkedAt"`
 	Error      string `json:"error,omitempty"` // 检查失败时的错误信息
 }
+
+// UpdateError records a single skill update failure
+type UpdateError struct {
+	SkillID   string `json:"skillId"`
+	Directory string `json:"directory"`
+	Error     string `json:"error"`
+}
