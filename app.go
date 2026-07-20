@@ -767,6 +767,7 @@ func (a *App) InstallMarketSkill(skill market.MarketSkill, agentIDs []string) (s
 		SourceURL:  "https://github.com/" + skill.RepoOwner + "/" + skill.RepoName,
 		SkillPath:  filepath.Join(ss.SSOTDir(), skill.Directory),
 		Branch:     branch,
+		FullPath:   skill.FullPath,
 	}
 	if err := skills.WriteAgentsLock(lockEntry); err != nil {
 		// 锁文件写入失败不阻断安装，仅记录日志

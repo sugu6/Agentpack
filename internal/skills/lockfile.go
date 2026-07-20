@@ -23,13 +23,15 @@ type AgentsLockSkill struct {
 	SkillPath    string `json:"skillPath"`
 	Branch       string `json:"branch"`
 	SourceBranch string `json:"sourceBranch"`
+	FullPath     string `json:"fullPath,omitempty"`
 }
 
 // LockRepoInfo 从 lock 文件解析出的仓库信息
 type LockRepoInfo struct {
-	Owner  string
-	Repo   string
-	Branch string
+	Owner    string
+	Repo     string
+	Branch   string
+	FullPath string
 }
 
 // ParseAgentsLock 解析 ~/.agents/.skill-lock.json，返回 skill_name -> 仓库信息。
@@ -69,14 +71,15 @@ func ParseAgentsLock() map[string]LockRepoInfo {
 				branch = parseBranchFromURL(skill.SourceURL)
 			}
 			result[name] = LockRepoInfo{
-				Owner:  owner,
-				Repo:   repo,
-				Branch: branch,
+				Owner:    owner,
+				Repo:     repo,
+				Branch:   branch,
+				FullPath: skill.FullPath,
 			}
 			log.Printf("ParseAgentsLock: entry %q -> owner=%q repo=%q branch=%q", name, owner, repo, branch)
 		} else {
 			// 存根记录或非 github 源：返回空字段，表示来源未知
-			result[name] = LockRepoInfo{}
+			result[name] = LockRepoInfo{FullPath: skill.FullPath}
 			log.Printf("ParseAgentsLock: stub entry %q (sourceType=%q, source=%q)", name, skill.SourceType, skill.Source)
 		}
 	}
@@ -150,6 +153,7 @@ type AgentsLockEntry struct {
 	SourceURL  string // GitHub 仓库 URL
 	SkillPath  string // SSOT 中的路径
 	Branch     string // 分支名
+	FullPath   string // skill 在仓库中的完整相对路径（如 "skills/pdf"）
 }
 
 // WriteDefaultLockEntries 扫描 SSOT 目录，为所有缺少锁文件记录的 skill 写入存根记录。
@@ -278,6 +282,7 @@ func WriteAgentsLock(entry AgentsLockEntry) error {
 		SkillPath:    entry.SkillPath,
 		Branch:       branch,
 		SourceBranch: branch,
+		FullPath:     entry.FullPath,
 	}
 
 	// 3. 原子写入（权限 0600）

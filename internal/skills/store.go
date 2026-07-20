@@ -183,6 +183,7 @@ func (s *Store) scanFilesystem(reg *agents.Registry) (map[string]Skill, map[stri
 			RepoOwner:   lockSkill.Owner,
 			RepoName:    lockSkill.Repo,
 			RepoBranch:  lockSkill.Branch,
+			FullPath:    lockSkill.FullPath,
 		}
 
 		// Infer bindings: check each unique skills directory.
@@ -235,6 +236,9 @@ func (s *Store) List() []Skill {
 				sk.RepoOwner = lk.Owner
 				sk.RepoName = lk.Repo
 				sk.RepoBranch = lk.Branch
+				if sk.FullPath == "" {
+					sk.FullPath = lk.FullPath
+				}
 				log.Printf("List: injected repo info for skill %q (dir=%q): owner=%q repo=%q", id, sk.Directory, lk.Owner, lk.Repo)
 			} else {
 				log.Printf("List: skill %q (dir=%q) has empty RepoOwner and NOT found in lockData", id, sk.Directory)

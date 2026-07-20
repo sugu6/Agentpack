@@ -13,6 +13,7 @@ type Skill struct {
 	RepoOwner  string `json:"repoOwner,omitempty"`
 	RepoName   string `json:"repoName,omitempty"`
 	RepoBranch string `json:"repoBranch,omitempty"`
+	FullPath   string `json:"fullPath,omitempty"`
 }
 
 type SyncMethod string
