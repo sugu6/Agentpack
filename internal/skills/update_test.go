@@ -1,7 +1,6 @@
 package skills
 
 import (
-	"agentpack/internal/config"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -11,25 +10,17 @@ import (
 	"testing"
 )
 
-func TestFetchSkillTreeSHA(t *testing.T) {
-	// 模拟 GitHub Trees API
+func TestFetchSkillCommitSHA(t *testing.T) {
+	// 模拟 GitHub Commits API
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// 验证 URL 路径
-		if r.URL.Path != "/repos/anthropics/skills/git/trees/main" {
+		if r.URL.Path != "/repos/anthropics/skills/commits/main" {
 			http.NotFound(w, r)
 			return
 		}
-		// 返回模拟的 tree 响应
-		resp := githubTreeResponse{
-			SHA: "abc123repoSha",
-			Tree: []githubTreeItem{
-				{Path: "README.md", Type: "blob", SHA: "sha1"},
-				{Path: "filesystem", Type: "tree", SHA: "treeShaFileSystem"},
-				{Path: "filesystem/SKILL.md", Type: "blob", SHA: "sha2"},
-				{Path: "filesystem/utils.py", Type: "blob", SHA: "sha3"},
-				{Path: "memory", Type: "tree", SHA: "treeShaMemory"},
-				{Path: "memory/SKILL.md", Type: "blob", SHA: "sha4"},
-			},
+		// 返回模拟的 commits 响应
+		resp := []githubCommitItem{
+			{SHA: "commitShaMain"},
 		}
 		_ = json.NewEncoder(w).Encode(resp)
 	})
@@ -40,36 +31,17 @@ func TestFetchSkillTreeSHA(t *testing.T) {
 	githubAPIBaseURL = server.URL
 	defer func() { githubAPIBaseURL = original }()
 
-	originalProxy := config.DefaultGitHubProxy
-	config.DefaultGitHubProxy = ""
-	defer func() { config.DefaultGitHubProxy = originalProxy }()
-
-	// 测试：查找已知 directory
-	sha, err := fetchSkillTreeSHA(context.Background(), "anthropics", "skills", "main", "filesystem")
+	// 测试：获取已知分支的 commit SHA
+	sha, err := fetchSkillCommitSHA(context.Background(), "anthropics", "skills", "main")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if sha != "treeShaFileSystem" {
-		t.Errorf("expected treeShaFileSystem, got %s", sha)
-	}
-
-	// 测试：查找另一个 directory
-	sha, err = fetchSkillTreeSHA(context.Background(), "anthropics", "skills", "main", "memory")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if sha != "treeShaMemory" {
-		t.Errorf("expected treeShaMemory, got %s", sha)
-	}
-
-	// 测试：directory 不存在，应返回错误
-	_, err = fetchSkillTreeSHA(context.Background(), "anthropics", "skills", "main", "nonexistent")
-	if err == nil {
-		t.Fatal("expected error for nonexistent directory")
+	if sha != "commitShaMain" {
+		t.Errorf("expected commitShaMain, got %s", sha)
 	}
 }
 
-func TestFetchSkillTreeSHA_NotFound(t *testing.T) {
+func TestFetchSkillCommitSHA_NotFound(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 	}))
@@ -79,11 +51,7 @@ func TestFetchSkillTreeSHA_NotFound(t *testing.T) {
 	githubAPIBaseURL = server.URL
 	defer func() { githubAPIBaseURL = original }()
 
-	originalProxy := config.DefaultGitHubProxy
-	config.DefaultGitHubProxy = ""
-	defer func() { config.DefaultGitHubProxy = originalProxy }()
-
-	_, err := fetchSkillTreeSHA(context.Background(), "owner", "repo", "main", "dir")
+	_, err := fetchSkillCommitSHA(context.Background(), "owner", "repo", "main")
 	if err == nil {
 		t.Fatal("expected error for 404")
 	}
@@ -118,11 +86,11 @@ func TestWriteAndReadUpdateCache(t *testing.T) {
 
 	data := map[string]updateCacheEntry{
 		"skill:filesystem": {
-			TreeSHA:   "sha123",
+			CommitSHA: "sha123",
 			CheckedAt: "2026-07-12T00:00:00Z",
 		},
 		"skill:memory": {
-			TreeSHA:   "sha456",
+			CommitSHA: "sha456",
 			CheckedAt: "2026-07-12T00:00:01Z",
 		},
 	}
@@ -149,8 +117,8 @@ func TestWriteAndReadUpdateCache(t *testing.T) {
 	if len(result) != 2 {
 		t.Fatalf("expected 2 entries, got %d", len(result))
 	}
-	if result["skill:filesystem"].TreeSHA != "sha123" {
-		t.Errorf("expected sha123, got %s", result["skill:filesystem"].TreeSHA)
+	if result["skill:filesystem"].CommitSHA != "sha123" {
+		t.Errorf("expected sha123, got %s", result["skill:filesystem"].CommitSHA)
 	}
 }
 

@@ -8,10 +8,8 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 
@@ -30,7 +28,7 @@ func updateCachePath() (string, error) {
 
 // updateCacheEntry 是缓存中单个 skill 的条目
 type updateCacheEntry struct {
-	TreeSHA   string `json:"treeSha"`
+	CommitSHA string `json:"commitSha"`
 	CheckedAt string `json:"checkedAt"`
 }
 
@@ -73,41 +71,32 @@ func writeUpdateCache(skills map[string]updateCacheEntry) error {
 	return iowriter.WriteAtomic(path, data, 0600)
 }
 
-// githubTreesClient 是更新检测专用的 HTTP client（避免依赖 market 包）
-var githubTreesClient = &http.Client{Timeout: 15 * time.Second}
+// githubAPIClient 是更新检测专用的 HTTP client（避免依赖 market 包）
+var githubAPIClient = &http.Client{Timeout: 15 * time.Second}
 
-// githubTreeResponse 是 GitHub Trees API 的响应结构（仅含更新检测所需字段）
-type githubTreeResponse struct {
-	SHA  string           `json:"sha"`
-	Tree []githubTreeItem `json:"tree"`
-}
-
-type githubTreeItem struct {
-	Path string `json:"path"`
-	Mode string `json:"mode"`
-	Type string `json:"type"` // "blob" | "tree" | "commit"
-	SHA  string `json:"sha"`
+// githubCommitItem 是 GitHub Commits API 响应中单个 commit 的结构
+type githubCommitItem struct {
+	SHA string `json:"sha"`
 }
 
 var githubAPIBaseURL = "https://api.github.com"
 
-// fetchSkillTreeSHA 获取指定 skill 目录的远程 tree SHA
-// 返回 (treeSHA, error)
-func fetchSkillTreeSHA(ctx context.Context, owner, repo, branch, directory string) (string, error) {
-	treeURL := fmt.Sprintf("%s/repos/%s/%s/git/trees/%s?recursive=1",
-		githubAPIBaseURL, url.PathEscape(owner), url.PathEscape(repo), url.PathEscape(branch))
-	treeURL = config.DefaultGitHubProxy + strings.TrimPrefix(treeURL, "https://")
+// fetchSkillCommitSHA 获取指定 repo 分支的最新 commit SHA
+// 返回 (commitSHA, error)
+func fetchSkillCommitSHA(ctx context.Context, owner, repo, branch string) (string, error) {
+	commitsURL := fmt.Sprintf("%s/repos/%s/%s/commits/%s?per_page=1",
+		githubAPIBaseURL, owner, repo, branch)
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, treeURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, commitsURL, nil)
 	if err != nil {
 		return "", err
 	}
 	req.Header.Set("User-Agent", "AgentPack/0.1 (+https://github.com/anomalyco/agentpack)")
 	req.Header.Set("Accept", "application/json")
 
-	resp, err := githubTreesClient.Do(req)
+	resp, err := githubAPIClient.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("github trees api: %w", err)
+		return "", fmt.Errorf("github commits api: %w", err)
 	}
 	defer resp.Body.Close()
 
@@ -115,37 +104,26 @@ func fetchSkillTreeSHA(ctx context.Context, owner, repo, branch, directory strin
 		return "", fmt.Errorf("repo %s/%s branch %s not found", owner, repo, branch)
 	}
 	if resp.StatusCode != 200 {
-		return "", fmt.Errorf("github trees api: status %d", resp.StatusCode)
+		return "", fmt.Errorf("github commits api: status %d", resp.StatusCode)
 	}
 
-	var body githubTreeResponse
+	var body []githubCommitItem
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 5*1024*1024)).Decode(&body); err != nil {
-		return "", fmt.Errorf("decode trees response: %w", err)
+		return "", fmt.Errorf("decode commits response: %w", err)
 	}
 
-	// 在 tree 中查找匹配 directory 的条目
-	// directory 是 skill 的目录名（如 "filesystem"）
-	// tree 中的 path 格式可能是 "filesystem/SKILL.md", "filesystem/utils.py" 等
-	// 我们需要找到 type=="tree" 且 path==directory 的条目
-	// 或 path 的第一段 == directory 的 tree 条目
-	for _, item := range body.Tree {
-		if item.Type != "tree" {
-			continue
-		}
-		// 精确匹配：path == directory
-		if item.Path == directory {
-			return item.SHA, nil
-		}
+	if len(body) == 0 {
+		return "", fmt.Errorf("no commits found in repository %s/%s branch %s", owner, repo, branch)
 	}
 
-	return "", fmt.Errorf("directory %q not found in repository %s/%s", directory, owner, repo)
+	return body[0].SHA, nil
 }
 
-// CacheSkillTreeSHA 为指定 skill 获取并缓存远程 tree SHA
-func CacheSkillTreeSHA(skillID, owner, repo, branch, directory string) error {
+// CacheSkillCommitSHA 为指定 skill 获取并缓存远程 commit SHA
+func CacheSkillCommitSHA(skillID, owner, repo, branch string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	sha, err := fetchSkillTreeSHA(ctx, owner, repo, branch, directory)
+	sha, err := fetchSkillCommitSHA(ctx, owner, repo, branch)
 	if err != nil {
 		return err
 	}
@@ -154,7 +132,7 @@ func CacheSkillTreeSHA(skillID, owner, repo, branch, directory string) error {
 		cache = make(map[string]updateCacheEntry)
 	}
 	cache[skillID] = updateCacheEntry{
-		TreeSHA:   sha,
+		CommitSHA: sha,
 		CheckedAt: time.Now().UTC().Format(time.RFC3339),
 	}
 	return writeUpdateCache(cache)
@@ -209,7 +187,7 @@ func (s *Store) CheckUpdates(reg *agents.Registry) []UpdateStatus {
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
 
-			remoteSHA, err := fetchSkillTreeSHA(ctx, skill.RepoOwner, skill.RepoName, branch, skill.Directory)
+			remoteSHA, err := fetchSkillCommitSHA(ctx, skill.RepoOwner, skill.RepoName, branch)
 			if err != nil {
 				status.Error = err.Error()
 				results[idx] = status
@@ -221,7 +199,7 @@ func (s *Store) CheckUpdates(reg *agents.Registry) []UpdateStatus {
 			// 与缓存中的基线对比
 			cacheKey := skill.ID
 			if cached, ok := cache[cacheKey]; ok {
-				if cached.TreeSHA != "" && cached.TreeSHA != remoteSHA {
+				if cached.CommitSHA != "" && cached.CommitSHA != remoteSHA {
 					status.HasUpdate = true
 				}
 			}
@@ -230,7 +208,7 @@ func (s *Store) CheckUpdates(reg *agents.Registry) []UpdateStatus {
 			// 更新缓存
 			cacheMu.Lock()
 			cache[cacheKey] = updateCacheEntry{
-				TreeSHA:   remoteSHA,
+				CommitSHA: remoteSHA,
 				CheckedAt: status.CheckedAt,
 			}
 			cacheMu.Unlock()

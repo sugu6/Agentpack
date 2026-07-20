@@ -589,7 +589,7 @@ func (a *App) SearchMarketServers(source, query, cursor string, pageSize int) (*
 	if mks == nil {
 		return nil, fmt.Errorf("market store not initialized")
 	}
-	ctx, cancel := market.ContextWithTimeout(15 * time.Second)
+	ctx, cancel := market.ContextWithTimeout(120 * time.Second)
 	defer cancel()
 	return mks.Search(ctx, market.Source(source), market.SearchOptions{
 		Query:    query,
@@ -777,10 +777,10 @@ func (a *App) InstallMarketSkill(skill market.MarketSkill, agentIDs []string) (s
 	defer a.mu.Unlock()
 	a.emitAgentsChangedLocked()
 	a.emitLocked("skills:changed", ss.List())
-	// 安装成功后异步缓存 Tree SHA 作为更新检测基线
+	// 安装成功后异步缓存 Commit SHA 作为更新检测基线
 	go func() {
-		_ = skills.CacheSkillTreeSHA(installed.ID, input.RepoOwner, input.RepoName,
-			input.RepoBranch, input.Directory)
+		_ = skills.CacheSkillCommitSHA(installed.ID, input.RepoOwner, input.RepoName,
+			input.RepoBranch)
 	}()
 	return installed, nil
 }
