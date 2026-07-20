@@ -14,6 +14,8 @@ export const useSkillsStore = defineStore('skills', () => {
   const updateStatuses = ref<UpdateStatus[]>([])
   const checkingUpdates = ref(false)
   const lastCheckedAt = ref<string | null>(null)
+  const updatingSkillIds = ref<Set<string>>(new Set())
+  const updatingAll = ref(false)
 
   async function fetchList(force = false) {
     if (!force && loading.value) return
@@ -144,6 +146,57 @@ export const useSkillsStore = defineStore('skills', () => {
     }
   }
 
+  async function updateSkill(skillId: string) {
+    if (updatingSkillIds.value.has(skillId)) return
+    const next = new Set(updatingSkillIds.value)
+    next.add(skillId)
+    updatingSkillIds.value = next
+    error.value = null
+    try {
+      await api.skills.updateSkill(skillId)
+      await fetchList(true)
+      updateStatuses.value = updateStatuses.value.map(s =>
+        s.skillId === skillId ? { ...s, hasUpdate: false } : s
+      )
+    } catch (e) {
+      const apiError = ApiError.from(e)
+      error.value = apiError.message
+      throw apiError
+    } finally {
+      const nextIds = new Set(updatingSkillIds.value)
+      nextIds.delete(skillId)
+      updatingSkillIds.value = nextIds
+    }
+  }
+
+  async function updateAllSkills() {
+    const updatableIds = updateStatuses.value
+      .filter(s => s.hasUpdate)
+      .map(s => s.skillId)
+    if (updatableIds.length === 0) return
+
+    updatingAll.value = true
+    error.value = null
+    try {
+      const result = await api.skills.updateSkills(updatableIds)
+      await fetchList(true)
+      const updatedIds = new Set((result.updated ?? []).map((s: any) => s.id))
+      const errorIds = new Set((result.errors ?? []).map((e: any) => e.skillId))
+      updateStatuses.value = updateStatuses.value.map(s => {
+        if (updatedIds.has(s.skillId)) return { ...s, hasUpdate: false }
+        if (errorIds.has(s.skillId)) return s
+        return s
+      })
+      return result
+    } catch (e) {
+      const apiError = ApiError.from(e)
+      error.value = apiError.message
+      throw apiError
+    } finally {
+      updatingAll.value = false
+    }
+  }
+
   // 根据 skillId 查询其更新状态
   function updateStatusOf(skillId: string): UpdateStatus | undefined {
     return updateStatuses.value.find(s => s.skillId === skillId)
@@ -165,6 +218,8 @@ export const useSkillsStore = defineStore('skills', () => {
     updateStatuses,
     checkingUpdates,
     lastCheckedAt,
+    updatingSkillIds,
+    updatingAll,
     load,
     reload,
     importSkill,
@@ -176,6 +231,8 @@ export const useSkillsStore = defineStore('skills', () => {
     importUnmanaged,
     installFromZip,
     checkUpdates,
+    updateSkill,
+    updateAllSkills,
     updateStatusOf,
     clearCache,
   }

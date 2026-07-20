@@ -102,3 +102,9 @@ type UpdateError struct {
 	Directory string `json:"directory"`
 	Error     string `json:"error"`
 }
+
+// UpdateSkillsResult is the result of a batch skill update
+type UpdateSkillsResult struct {
+	Updated []Skill       `json:"updated"`
+	Errors  []UpdateError `json:"errors"`
+}

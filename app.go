@@ -980,12 +980,12 @@ func (a *App) UpdateSkill(skillID string) (skills.Skill, error) {
 }
 
 // UpdateSkills batch-updates multiple skills
-func (a *App) UpdateSkills(skillIDs []string) ([]skills.Skill, []skills.UpdateError, error) {
+func (a *App) UpdateSkills(skillIDs []string) (skills.UpdateSkillsResult, error) {
 	if err := a.assertInit(); err != nil {
-		return nil, nil, err
+		return skills.UpdateSkillsResult{}, err
 	}
 	if err := a.beginInFlight(); err != nil {
-		return nil, nil, err
+		return skills.UpdateSkillsResult{}, err
 	}
 	defer a.endInFlight()
 	a.storeOpMu.Lock()
@@ -993,15 +993,15 @@ func (a *App) UpdateSkills(skillIDs []string) ([]skills.Skill, []skills.UpdateEr
 
 	_, _, _, ss, _, _ := a.snapshot()
 	if ss == nil {
-		return nil, nil, fmt.Errorf("skills store not initialized")
+		return skills.UpdateSkillsResult{}, fmt.Errorf("skills store not initialized")
 	}
-	successes, errs := ss.UpdateSkills(skillIDs, a.registry)
+	result := ss.UpdateSkills(skillIDs, a.registry)
 
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.emitAgentsChangedLocked()
 	a.emitLocked("skills:changed", ss.List())
-	return successes, errs, nil
+	return result, nil
 }
 
 func (a *App) OpenConfigFolder() error {

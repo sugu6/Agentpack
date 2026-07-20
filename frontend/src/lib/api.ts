@@ -46,6 +46,8 @@ import {
   UpdateSkillRepo,
   UpdateMcpServer,
   UpdateSettings,
+  UpdateSkill,
+  UpdateSkills,
   SetTheme,
   HideWindow,
   Quit,
@@ -154,12 +156,19 @@ export interface McpServer {
   updatedAt: string
 }
 
+export interface ScanSource {
+  agentId: string
+  agentName: string
+  configPath: string
+}
+
 export interface ScanItem {
   server: McpServer
   managed: boolean
   agentId: string
   agentName: string
   configPath: string
+  sources: ScanSource[]
 }
 
 export interface ScanResult {
@@ -189,11 +198,6 @@ export interface MarketServer {
   installs?: number
   stars?: number
   updatedAt: string
-  /** Smithery 特有字段（仅 source='smithery' 时填充，用于前端筛选） */
-  bySmithery?: boolean
-  isDeployed?: boolean
-  isVerified?: boolean
-  isRemote?: boolean
   /** Official 特有字段（仅 source='official' 时填充，用于前端筛选） */
   registry?: string
 }
@@ -223,6 +227,7 @@ export interface MarketSkill {
   repoBranch: string
   readmeUrl?: string
   updatedAt: string
+  contentHash?: string
 }
 
 export interface SourceStatus {
@@ -275,6 +280,12 @@ export interface UpdateStatus {
   hasUpdate: boolean
   checkedAt: string
   error?: string
+}
+
+export interface UpdateError {
+  skillId: string
+  directory: string
+  error: string
 }
 
 function normalizeTheme(theme: string): Theme {
@@ -345,6 +356,15 @@ export const api = {
     migrateStorage: (target: string) => safeCall(async () => MigrateSkillStorage(target)),
     scanUnmanaged: async () => optimizeToPlainObject(await ScanUnmanagedSkills()) as UnmanagedSkill[],
     checkUpdates: async () => optimizeToPlainObject(await CheckSkillUpdates()) as UpdateStatus[],
+    updateSkill: async (skillId: string) => optimizeToPlainObject(await UpdateSkill(skillId)) as Skill,
+    updateSkills: async (skillIds: string[]) => {
+      const result = await UpdateSkills(skillIds)
+      const plain = optimizeToPlainObject(result) as { updated?: Skill[]; errors?: UpdateError[] } | null
+      return {
+        updated: (plain?.updated ?? []) as Skill[],
+        errors: (plain?.errors ?? []) as UpdateError[],
+      }
+    },
   },
   settings: {
     get: async () => normalizeSettings(await GetSettings()),

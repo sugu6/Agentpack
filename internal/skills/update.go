@@ -5,12 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
-	"net/http"
-	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -72,59 +71,47 @@ func writeUpdateCache(skills map[string]updateCacheEntry) error {
 	return iowriter.WriteAtomic(path, data, 0600)
 }
 
-// githubAPIClient 是更新检测专用的 HTTP client（避免依赖 market 包）
-var githubAPIClient = &http.Client{Timeout: 15 * time.Second}
+// fetchSkillCommitSHAFunc 是获取远程 commit SHA 的函数，可被测试替换
+var fetchSkillCommitSHAFunc = fetchSkillCommitSHAImpl
 
-// githubCommitItem 是 GitHub Commits API 响应中单个 commit 的结构
-type githubCommitItem struct {
-	SHA string `json:"sha"`
-}
+// fetchSkillCommitSHAImpl 使用 git ls-remote 获取指定 repo 分支的最新 commit SHA
+// 不受 GitHub REST API rate limit 限制
+func fetchSkillCommitSHAImpl(ctx context.Context, owner, repo, branch string) (string, error) {
+	repoURL := fmt.Sprintf("https://github.com/%s/%s.git", owner, repo)
+	// 如果配置了 gh-proxy，使用代理 URL
+	if proxy := config.DefaultGitHubProxy; proxy != "" {
+		repoURL = proxy + repoURL
+	}
+	ref := fmt.Sprintf("refs/heads/%s", branch)
 
-var githubAPIBaseURL = "https://api.github.com"
-
-// fetchSkillCommitSHA 获取指定 repo 分支的最新 commit SHA
-// 返回 (commitSHA, error)
-func fetchSkillCommitSHA(ctx context.Context, owner, repo, branch string) (string, error) {
-	commitsURL := fmt.Sprintf("%s/repos/%s/%s/commits/%s?per_page=1",
-		githubAPIBaseURL, owner, repo, branch)
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, commitsURL, nil)
+	cmd := exec.CommandContext(ctx, "git", "ls-remote", repoURL, ref)
+	out, err := cmd.Output()
 	if err != nil {
-		return "", err
-	}
-	req.Header.Set("User-Agent", "AgentPack/0.1 (+https://github.com/anomalyco/agentpack)")
-	req.Header.Set("Accept", "application/json")
-
-	resp, err := githubAPIClient.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("github commits api: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == 404 {
-		return "", fmt.Errorf("repo %s/%s branch %s not found", owner, repo, branch)
-	}
-	if resp.StatusCode != 200 {
-		return "", fmt.Errorf("github commits api: status %d", resp.StatusCode)
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			return "", fmt.Errorf("git ls-remote failed: %s", strings.TrimSpace(string(exitErr.Stderr)))
+		}
+		return "", fmt.Errorf("git ls-remote: %w", err)
 	}
 
-	var body []githubCommitItem
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 5*1024*1024)).Decode(&body); err != nil {
-		return "", fmt.Errorf("decode commits response: %w", err)
+	// 输出格式: "abc123...\trefs/heads/main\n"
+	line := strings.TrimSpace(string(out))
+	if line == "" {
+		return "", fmt.Errorf("no ref %s found in %s/%s", ref, owner, repo)
 	}
 
-	if len(body) == 0 {
-		return "", fmt.Errorf("no commits found in repository %s/%s branch %s", owner, repo, branch)
+	parts := strings.SplitN(line, "\t", 2)
+	if len(parts) < 2 || parts[0] == "" {
+		return "", fmt.Errorf("unexpected git ls-remote output: %q", line)
 	}
 
-	return body[0].SHA, nil
+	return parts[0], nil
 }
 
 // CacheSkillCommitSHA 为指定 skill 获取并缓存远程 commit SHA
 func CacheSkillCommitSHA(skillID, owner, repo, branch string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	sha, err := fetchSkillCommitSHA(ctx, owner, repo, branch)
+	sha, err := fetchSkillCommitSHAFunc(ctx, owner, repo, branch)
 	if err != nil {
 		return err
 	}
@@ -141,7 +128,7 @@ func CacheSkillCommitSHA(skillID, owner, repo, branch string) error {
 
 // CheckUpdates 检查所有已安装 skills 的远程更新
 // 仅检查 RepoOwner/RepoName 非空的条目（从 GitHub 安装的 skills）
-// 并发限制为 5，避免触发 GitHub API rate limit
+// 按 (owner, repo, branch) 去重，同一仓库只查一次 commit SHA
 func (s *Store) CheckUpdates(reg *agents.Registry) []UpdateStatus {
 	s.mu.RLock()
 	skillsList := make([]Skill, 0, len(s.skills))
@@ -162,67 +149,96 @@ func (s *Store) CheckUpdates(reg *agents.Registry) []UpdateStatus {
 		cache = make(map[string]updateCacheEntry)
 	}
 
-	results := make([]UpdateStatus, len(skillsList))
+	// 按 (owner, repo, branch) 去重，只查一次 API
+	type repoKey struct {
+		owner, repo, branch string
+	}
+	repoSHAs := make(map[repoKey]string)   // repo -> commit SHA
+	repoErrors := make(map[repoKey]string)  // repo -> error
+	repoChecked := make(map[repoKey]bool)   // 是否已查询
+	var repoMu sync.Mutex
 	sem := make(chan struct{}, 5) // 并发限制
-	var wg sync.WaitGroup
-	var cacheMu sync.Mutex
 
-	for i, sk := range skillsList {
+	// 收集所有唯一的 repo key
+	var uniqueRepos []repoKey
+	seen := make(map[repoKey]bool)
+	for _, sk := range skillsList {
+		branch := sk.RepoBranch
+		if branch == "" {
+			branch = "main"
+		}
+		rk := repoKey{sk.RepoOwner, sk.RepoName, branch}
+		if !seen[rk] {
+			seen[rk] = true
+			uniqueRepos = append(uniqueRepos, rk)
+		}
+	}
+
+	// 并发查询每个唯一仓库的 commit SHA
+	var wg sync.WaitGroup
+	for _, rk := range uniqueRepos {
 		wg.Add(1)
-		go func(idx int, skill Skill) {
+		go func(key repoKey) {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
-			status := UpdateStatus{
-				SkillID:   skill.ID,
-				Directory: skill.Directory,
-				CheckedAt: time.Now().UTC().Format(time.RFC3339),
-			}
-
-			branch := skill.RepoBranch
-			if branch == "" {
-				branch = "main"
-			}
-
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
 
-			remoteSHA, err := fetchSkillCommitSHA(ctx, skill.RepoOwner, skill.RepoName, branch)
+			sha, err := fetchSkillCommitSHAFunc(ctx, key.owner, key.repo, key.branch)
+			repoMu.Lock()
+			defer repoMu.Unlock()
 			if err != nil {
-				status.Error = err.Error()
-				results[idx] = status
-				return
+				repoErrors[key] = err.Error()
+			} else {
+				repoSHAs[key] = sha
 			}
+			repoChecked[key] = true
+		}(rk)
+	}
+	wg.Wait()
 
-			status.RemoteHash = remoteSHA
+	// 为每个 skill 生成 UpdateStatus
+	results := make([]UpdateStatus, len(skillsList))
+	for i, sk := range skillsList {
+		branch := sk.RepoBranch
+		if branch == "" {
+			branch = "main"
+		}
+		rk := repoKey{sk.RepoOwner, sk.RepoName, branch}
 
+		status := UpdateStatus{
+			SkillID:   sk.ID,
+			Directory: sk.Directory,
+			CheckedAt: time.Now().UTC().Format(time.RFC3339),
+		}
+
+		if errMsg, hasErr := repoErrors[rk]; hasErr {
+			status.Error = errMsg
+		} else if sha, ok := repoSHAs[rk]; ok {
+			status.RemoteHash = sha
 			// 与缓存中的基线对比
-			cacheKey := skill.ID
-			if cached, ok := cache[cacheKey]; ok {
-				if cached.CommitSHA != "" && cached.CommitSHA != remoteSHA {
+			if cached, ok := cache[sk.ID]; ok {
+				if cached.CommitSHA != "" && cached.CommitSHA != sha {
 					status.HasUpdate = true
 				}
 			}
-			// 首次检查（无缓存）时 HasUpdate=false，仅记录基线
-
 			// 更新缓存
-			cacheMu.Lock()
-			cache[cacheKey] = updateCacheEntry{
-				CommitSHA: remoteSHA,
+			cache[sk.ID] = updateCacheEntry{
+				CommitSHA: sha,
 				CheckedAt: status.CheckedAt,
 			}
-			cacheMu.Unlock()
+		}
 
-			results[idx] = status
-		}(i, sk)
+		results[i] = status
 	}
 
-	wg.Wait()
-
-	// 持久化更新后的缓存（失败不影响返回结果，但记录日志以便排查）
-	if err := writeUpdateCache(cache); err != nil {
-		log.Printf("warning: write update cache: %v", err)
+	// 持久化更新后的缓存（仅在有成功查询时写入，避免错误覆盖基线）
+	if len(repoSHAs) > 0 {
+		if err := writeUpdateCache(cache); err != nil {
+			log.Printf("warning: write update cache: %v", err)
+		}
 	}
 
 	return results
@@ -259,7 +275,7 @@ func (s *Store) UpdateSkill(skillID string, reg *agents.Registry) (Skill, error)
 
 	// Build tarball URL
 	tarballURL := fmt.Sprintf("https://codeload.github.com/%s/%s/tar.gz/refs/heads/%s",
-		url.PathEscape(sk.RepoOwner), url.PathEscape(sk.RepoName), url.PathEscape(branch))
+		sk.RepoOwner, sk.RepoName, branch)
 
 	input := TarballInstallInput{
 		TarballURL: tarballURL,
@@ -294,13 +310,13 @@ func (s *Store) UpdateSkill(skillID string, reg *agents.Registry) (Skill, error)
 }
 
 // UpdateSkills batch-updates multiple skills
-func (s *Store) UpdateSkills(skillIDs []string, reg *agents.Registry) ([]Skill, []UpdateError) {
+func (s *Store) UpdateSkills(skillIDs []string, reg *agents.Registry) UpdateSkillsResult {
 	if len(skillIDs) == 0 {
-		return nil, nil
+		return UpdateSkillsResult{}
 	}
 
 	var successes []Skill
-	var errors []UpdateError
+	var errs []UpdateError
 	sem := make(chan struct{}, 3)
 	var mu sync.Mutex
 	var wg sync.WaitGroup
@@ -316,7 +332,7 @@ func (s *Store) UpdateSkills(skillIDs []string, reg *agents.Registry) ([]Skill, 
 			mu.Lock()
 			defer mu.Unlock()
 			if err != nil {
-				errors = append(errors, UpdateError{
+				errs = append(errs, UpdateError{
 					SkillID: skillID,
 					Error:   err.Error(),
 				})
@@ -327,5 +343,5 @@ func (s *Store) UpdateSkills(skillIDs []string, reg *agents.Registry) ([]Skill, 
 	}
 
 	wg.Wait()
-	return successes, errors
+	return UpdateSkillsResult{Updated: successes, Errors: errs}
 }

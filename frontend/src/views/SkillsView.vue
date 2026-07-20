@@ -5,8 +5,8 @@ import { useSkillsStore } from '@/stores/skills'
 import { useAgentsStore } from '@/stores/agents'
 import { Card, CardContent, Button, Badge, Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui'
 import { PhTrash, PhSparkle, PhMagnifyingGlass, PhFileArchive, PhFolderOpen, PhArrowClockwise, PhArrowSquareOut } from '@phosphor-icons/vue'
-import { getVariantFromId, variantLabel, variantToBadge, agentDisplayName } from '@/composables/useAgentHelpers'
 import { api, events, ApiError } from '@/lib/api'
+import { normalizeVariant, variantToBadge, agentDisplayName } from '@/composables/useAgentHelpers'
 import AgentToggleButton from '@/components/agent/AgentToggleButton.vue'
 import { useConfirm } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
@@ -46,7 +46,7 @@ const updatesCount = computed(() =>
 )
 
 // 默认全选所有支持 Skills 的 Agent
-const allCapableAgentIds = computed(() => skills.skillCapableAgents.map(a => a.id))
+const allCapableAgentIds = computed(() => skillCapableGroups.value.flatMap(g => g.ids))
 
 // agent ID → name 映射
 const agentNameMap = computed(() => {
@@ -125,6 +125,26 @@ function toggleImportAgentExplicit(path: string, agentId: string, enabled: boole
   importConfig.value = next
 }
 
+function toggleImportGroup(path: string, group: { ids: string[] }, enabled: boolean, defaultAgentIds: string[]) {
+  const next = new Map(importConfig.value)
+  let current = next.get(path)
+  if (!current) {
+    current = new Set(defaultAgentIds)
+    next.set(path, current)
+  }
+  const updated = new Set(current)
+  for (const id of group.ids) {
+    if (enabled) updated.add(id)
+    else updated.delete(id)
+  }
+  if (updated.size === 0) {
+    next.delete(path)
+  } else {
+    next.set(path, updated)
+  }
+  importConfig.value = next
+}
+
 function toggleSelectAll(checked: boolean) {
   if (checked) {
     selectedAgentIds.value = new Set(allCapableAgentIds.value)
@@ -137,6 +157,15 @@ function toggleAgentSelect(id: string) {
   const next = new Set(selectedAgentIds.value)
   if (next.has(id)) next.delete(id)
   else next.add(id)
+  selectedAgentIds.value = next
+}
+
+function toggleGroupSelect(group: { ids: string[] }, enabled: boolean) {
+  const next = new Set(selectedAgentIds.value)
+  for (const id of group.ids) {
+    if (enabled) next.add(id)
+    else next.delete(id)
+  }
   selectedAgentIds.value = next
 }
 
@@ -282,8 +311,14 @@ async function onCheckUpdates() {
   try {
     await skills.checkUpdates()
     const updatesCount = skills.updateStatuses.filter(s => s.hasUpdate).length
+    const errorCount = skills.updateStatuses.filter(s => s.error).length
     if (updatesCount > 0) {
       toast.success(t('skills.toast.updatesFound', { count: updatesCount }))
+    } else if (errorCount > 0 && errorCount === skills.updateStatuses.length) {
+      // 所有 skill 都检测失败，可能是 rate limit
+      toast.warning(t('update.message.rateLimited'))
+    } else if (errorCount > 0) {
+      toast.info(t('skills.toast.partialCheckFailed', { count: errorCount }))
     } else {
       toast.info(t('skills.toast.allUpToDate'))
     }
@@ -296,6 +331,43 @@ async function onCheckUpdates() {
     } else {
       toast.error(t('skills.toast.checkUpdatesFailed', { error: msg }))
     }
+  }
+}
+
+async function onUpdateSkill(skillId: string) {
+  try {
+    await skills.updateSkill(skillId)
+    toast.success(t('skills.toast.updateSuccess'))
+  } catch (e: unknown) {
+    const apiError = ApiError.from(e)
+    toast.error(t('skills.toast.updateFailed', { error: apiError.message }))
+  }
+}
+
+async function onUpdateAll() {
+  const updatableCount = skills.updateStatuses.filter(s => s.hasUpdate).length
+  if (updatableCount === 0) return
+
+  const ok = await confirm.confirm({
+    title: t('skills.updateAll'),
+    message: t('skills.confirmUpdateAll', { count: updatableCount }),
+    confirmText: t('skills.update'),
+    variant: 'default',
+  })
+  if (!ok) return
+
+  try {
+    const result = await skills.updateAllSkills()
+    const successCount = result?.updated?.length ?? 0
+    const errorCount = result?.errors?.length ?? 0
+    if (errorCount > 0) {
+      toast.warning(t('skills.toast.updateAllPartial', { success: successCount, failed: errorCount }))
+    } else {
+      toast.success(t('skills.toast.updateAllSuccess', { count: successCount }))
+    }
+  } catch (e: unknown) {
+    const apiError = ApiError.from(e)
+    toast.error(t('skills.toast.updateFailed', { error: apiError.message }))
   }
 }
 
@@ -357,6 +429,16 @@ async function scanSkills() {
           <Button variant="outline" size="sm" :disabled="skills.checkingUpdates" @click="onCheckUpdates">
             <PhArrowClockwise :size="14" :class="{ 'animate-spin': skills.checkingUpdates }" />
             <span>{{ skills.checkingUpdates ? t('skills.checkingUpdates') : t('skills.checkUpdates') }}</span>
+          </Button>
+          <Button
+            v-if="skills.updateStatuses.some(s => s.hasUpdate)"
+            variant="outline"
+            size="sm"
+            :disabled="skills.updatingAll"
+            @click="onUpdateAll"
+          >
+            <PhArrowClockwise :size="14" :class="{ 'animate-spin': skills.updatingAll }" />
+            <span>{{ skills.updatingAll ? t('skills.updatingAll') : t('skills.updateAll') }}</span>
           </Button>
         </div>
       </div>
@@ -422,10 +504,10 @@ async function scanSkills() {
                   >
                     <AgentToggleButton
                       :agent-id="group.id"
-                      :agent-name="agentDisplayName({ name: group.name, id: group.id })"
+                      :agent-name="group.ids.length > 1 ? group.name : agentDisplayName({ name: group.name, id: group.id })"
                       :model-value="isGroupBound(skill.boundAgents, group)"
                       :disabled="group.status !== 'enabled'"
-                      :badge="variantToBadge(getVariantFromId(group.id))"
+                      :badge="group.ids.length > 1 ? null : variantToBadge(normalizeVariant(undefined, group.id))"
                       @update:model-value="(v: boolean) => toggleGroup(skill.id, group, v)"
                     />
                   </div>
@@ -435,6 +517,17 @@ async function scanSkills() {
                 </div>
               </div>
               <div class="flex shrink-0 gap-2">
+                <Button
+                  v-if="skills.updateStatusOf(skill.id)?.hasUpdate"
+                  variant="outline"
+                  size="icon"
+                  :disabled="skills.updatingSkillIds.has(skill.id)"
+                  :aria-label="t('skills.update')"
+                  :title="t('skills.update')"
+                  @click="onUpdateSkill(skill.id)"
+                >
+                  <PhArrowClockwise :size="14" :class="{ 'animate-spin': skills.updatingSkillIds.has(skill.id) }" />
+                </Button>
                 <Button
                   v-if="repoUrl(skill)"
                   variant="ghost"
@@ -510,27 +603,31 @@ async function scanSkills() {
                   <span class="text-sm font-semibold">{{ u.name }}</span>
                   <Badge variant="outline" class="text-[10px]">{{ u.directory }}</Badge>
                 </div>
-                <p class="mt-0.5 text-[10px] text-muted-foreground/70">
+                <p v-if="u.agentIds.length > 1" class="mt-0.5 text-[10px] text-muted-foreground/70">
+                  {{ u.agentIds.map(id => agentNameMap.get(id) || id).join(', ') }}
+                </p>
+                <p v-else class="mt-0.5 text-[10px] text-muted-foreground/70">
                   {{ t('skills.sourceLine', { agents: u.agentIds.length > 0 ? u.agentIds.map(id => agentNameMap.get(id) || id).join(', ') : t('common.unknown') }) }}
                 </p>
               </div>
             </div>
 
-            <!-- Agent 开关（始终显示） -->
+            <!-- Agent 开关（始终显示，合并同组 Agent） -->
             <div class="mt-3 flex flex-wrap items-center gap-2 border-t border-border/50 pt-2 pl-7">
               <div
-                v-for="ag in skills.skillCapableAgents"
-                :key="ag.id"
+                v-for="group in skillCapableGroups"
+                :key="group.id"
                 class="flex items-center gap-1.5"
               >
                 <AgentToggleButton
-                  :agent-id="ag.id"
-                  :agent-name="agentDisplayName(ag)"
-                  :model-value="importConfig.get(u.path)?.has(ag.id) || false"
-                  :badge="variantToBadge(getVariantFromId(ag.id))"
-                  @update:model-value="(v: boolean) => toggleImportAgentExplicit(u.path, ag.id, v, u.agentIds)"
+                  :agent-id="group.id"
+                  :agent-name="group.ids.length > 1 ? group.name : agentDisplayName({ name: group.name, id: group.id })"
+                  :model-value="group.ids.some(id => importConfig.get(u.path)?.has(id))"
+                  :disabled="group.status !== 'enabled'"
+                  :badge="group.ids.length > 1 ? null : variantToBadge(normalizeVariant(undefined, group.id))"
+                  @update:model-value="(v: boolean) => toggleImportGroup(u.path, group, v, u.agentIds)"
                 />
-                <Badge v-if="u.agentIds.includes(ag.id)" variant="secondary" class="text-[9px] px-1 py-0">{{ t('skills.source') }}</Badge>
+                <Badge v-if="u.agentIds.length <= 1 && group.ids.some(id => u.agentIds.includes(id))" variant="secondary" class="text-[9px] px-1 py-0">{{ t('skills.source') }}</Badge>
               </div>
             </div>
           </div>
@@ -564,13 +661,14 @@ async function scanSkills() {
             {{ t('common.toggleAll') }}
           </label>
           <div class="flex flex-wrap items-center gap-2 pt-1">
-            <div v-for="ag in skills.skillCapableAgents" :key="ag.id" class="flex items-center">
+            <div v-for="group in skillCapableGroups" :key="group.id" class="flex items-center">
               <AgentToggleButton
-                :agent-id="ag.id"
-                :agent-name="agentDisplayName(ag)"
-                :model-value="selectedAgentIds.has(ag.id)"
-                :badge="variantToBadge(getVariantFromId(ag.id))"
-                @update:model-value="() => toggleAgentSelect(ag.id)"
+                :agent-id="group.id"
+                :agent-name="group.ids.length > 1 ? group.name : agentDisplayName({ name: group.name, id: group.id })"
+                :model-value="group.ids.some(id => selectedAgentIds.has(id))"
+                :disabled="group.status !== 'enabled'"
+                :badge="group.ids.length > 1 ? null : variantToBadge(normalizeVariant(undefined, group.id))"
+                @update:model-value="(v: boolean) => toggleGroupSelect(group, v)"
               />
             </div>
           </div>
