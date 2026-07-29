@@ -16,7 +16,24 @@ import (
 // 用于解决中国地区无法直接访问 GitHub 的问题
 var DefaultGitHubProxy = "https://gh-proxy.com/"
 
-const currentVersion = 1
+const (
+	currentVersion = 1
+
+	liteDelayDefault = 5
+	liteDelayMin     = 1
+	liteDelayMax     = 120
+)
+
+// ClampLiteDelay 将轻量模式空闲时长钳制到合法区间，非法值回落到默认值
+func ClampLiteDelay(v int) int {
+	if v < liteDelayMin {
+		return liteDelayDefault
+	}
+	if v > liteDelayMax {
+		return liteDelayMax
+	}
+	return v
+}
 
 var (
 	lastLoadErrMu sync.RWMutex
@@ -53,6 +70,9 @@ type Settings struct {
 	WindowAction    string                  `json:"windowAction"`    // "minimize" | "exit"
 	WindowNoRemind  bool                    `json:"windowNoRemind"`  // 不再提醒，直接执行 windowAction
 	Language        string                  `json:"language"`        // "" | "zh-CN" | "en"（空=跟随系统）
+
+	LiteAutoEnabled bool `json:"liteAutoEnabled"` // 空闲后自动进入轻量模式
+	LiteAutoDelay   int  `json:"liteAutoDelay"`   // 空闲时长（分钟）
 }
 
 // SkillRepo 表示一个可扫描的 GitHub 仓库
@@ -84,8 +104,10 @@ func DefaultSettings() Settings {
 			{Owner: "anthropics", Name: "skills", Branch: ""},
 			{Owner: "ComposioHQ", Name: "awesome-claude-skills", Branch: ""},
 		},
-		WindowAction: "minimize",
+		WindowAction:    "minimize",
 		Language:        "",
+		LiteAutoEnabled: false,
+		LiteAutoDelay:   liteDelayDefault,
 	}
 }
 
@@ -179,6 +201,7 @@ func Load() *AppConfig {
 		// 旧版本 "ask" 已废弃：默认行为改为 minimize + 不再提醒关闭
 		cfg.Settings.WindowAction = "minimize"
 	}
+	cfg.Settings.LiteAutoDelay = ClampLiteDelay(cfg.Settings.LiteAutoDelay)
 	// AutoBackup default: older configs (version 0) predate this field, and bool's
 	// zero value cannot distinguish "unset" from "explicit false" — enable on migration.
 	if wasOldConfig && !cfg.Settings.AutoBackup {

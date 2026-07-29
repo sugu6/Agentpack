@@ -7,6 +7,20 @@
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-07-30
+
+### 特性
+
+- **轻量模式**：托盘菜单新增「轻量模式」复选框，勾选后隐藏主窗口并主动归还内存（`debug.FreeOSMemory` + Windows `EmptyWorkingSet` 压缩工作集），取消勾选或点击「显示主界面」即可恢复
+- 设置页新增「轻量模式」卡片：该开关只负责自动计时（空闲多久后自动进入，默认 5 分钟，范围 1–120 分钟），托盘菜单则始终可手动进出轻量模式。前端监听鼠标/键盘活动并按 30 秒节流上报，空闲计时随每次交互重置；点击「显示主界面」或取消托盘勾选会停用计时器，直到下一次用户活动重新拉起
+
+### 变更
+
+- 托盘菜单「显示主窗口」改名为「显示主界面」
+- 版本号配置统一到 `build/config.yml`，移除 `wails.json`（Go embed、CI、发版脚本全部迁移到 `build/config.yml` 读取版本）
+- 移除移动端构建配置（`build/android/`、`build/ios/`）和 Docker 交叉编译配置（`build/docker/`），清理 Taskfile 中相关任务
+- README 更新：Wails v3 文档链接修正、Agent 表格补全变体与检测方式、下载安装文件名与 CI 构建产物对齐、项目结构同步
+
 ## [0.2.1] - 2026-07-29
 
 ### 特性
@@ -184,5 +198,6 @@ AgentPack 的初始版本，一款面向 AI 编码工具的统一 MCP / Skills /
 [0.1.2]: https://github.com/sugu6/Agentpack/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/sugu6/Agentpack/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/sugu6/Agentpack/releases/tag/v0.1.0
-[Unreleased]: https://github.com/sugu6/Agentpack/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/sugu6/Agentpack/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/sugu6/Agentpack/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/sugu6/Agentpack/compare/v0.2.0...v0.2.1

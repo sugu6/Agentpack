@@ -48,8 +48,8 @@ jobs:
         run: |
           git diff
           echo "---"
-          echo "wails.json version:"
-          grep -o '"productVersion"[[:space:]]*:[[:space:]]*"[^"]*"' wails.json
+          echo "build/config.yml version:"
+          grep -E '^\s+version:\s*"[0-9]+\.[0-9]+\.[0-9]+"' build/config.yml
           echo "frontend/package.json version:"
           grep -o '"version"[[:space:]]*:[[:space:]]*"[^"]*"' frontend/package.json | head -1
 
@@ -58,7 +58,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add wails.json build/config.yml frontend/package.json CHANGELOG.md CHANGELOG_EN.md
+          git add build/config.yml frontend/package.json CHANGELOG.md CHANGELOG_EN.md
           git commit -m "chore: release v${VERSION}"
           git tag -a "v${VERSION}" -m "Release v${VERSION}"
           git push origin "HEAD:${{ github.event.repository.default_branch }}"
@@ -69,7 +69,7 @@ jobs:
         run: |
           echo "### Release v${VERSION} prepared" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- Updated wails.json and frontend/package.json to ${VERSION}" >> $GITHUB_STEP_SUMMARY
+          echo "- Updated build/config.yml and frontend/package.json to ${VERSION}" >> $GITHUB_STEP_SUMMARY
           echo "- Converted CHANGELOG [Unreleased] to [${VERSION}]" >> $GITHUB_STEP_SUMMARY
           echo "- Created tag v${VERSION}" >> $GITHUB_STEP_SUMMARY
           echo "- Pushed to ${{ github.event.repository.default_branch }}" >> $GITHUB_STEP_SUMMARY

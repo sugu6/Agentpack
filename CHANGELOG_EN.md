@@ -7,6 +7,20 @@ versioned by [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-07-30
+
+### Features
+
+- **Lite mode**: a new "Lite mode" checkbox in the tray menu hides the main window and proactively returns memory to the OS (`debug.FreeOSMemory` plus `EmptyWorkingSet` working-set trimming on Windows). Unchecking it or clicking "Show main window" restores the window
+- Settings page: new "Lite mode" card. The toggle only governs the idle timer (how long before lite mode is entered automatically — default 5 minutes, range 1–120), while the tray menu can always enter or leave lite mode manually. The frontend watches mouse/keyboard activity with a 30-second throttle so the countdown resets on every interaction; clicking "Show main window" or unchecking the tray item stops the timer until the next user activity starts it again
+
+### Changed
+
+- Tray menu item "Show main window" was renamed in the Chinese locale (显示主窗口 → 显示主界面)
+- Unified version source to `build/config.yml`, removed `wails.json` (Go embed, CI, and release script all migrated to read version from `build/config.yml`)
+- Removed mobile build configs (`build/android/`, `build/ios/`) and Docker cross-compilation configs (`build/docker/`), cleaned up related Taskfile tasks
+- README updates: corrected Wails v3 doc links, complete agent variant table with detection methods, download filenames aligned with CI build artifacts, project structure updated
+
 ## [0.2.1] - 2026-07-29
 
 ### Features
@@ -185,5 +199,6 @@ Initial release of AgentPack — a unified MCP / Skills / Agent management deskt
 [0.1.2]: https://github.com/sugu6/Agentpack/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/sugu6/Agentpack/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/sugu6/Agentpack/releases/tag/v0.1.0
-[Unreleased]: https://github.com/sugu6/Agentpack/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/sugu6/Agentpack/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/sugu6/Agentpack/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/sugu6/Agentpack/compare/v0.2.0...v0.2.1

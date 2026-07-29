@@ -18,19 +18,22 @@
 
 ## Introduction
 
-AgentPack is a cross-platform desktop application built with [Wails v3](https://wails.io)
+AgentPack is a cross-platform desktop application built with [Wails v3](https://v3.wails.io)
 (Go + Vue 3 + TypeScript) for unified management of MCP servers, Skills, and Agent
 configurations across various AI coding tools.
 
 Supported agents:
 
-| Agent | Type | Config Format |
+| Agent | Variant | Config Format |
 | --- | --- | --- |
-| Claude Code | CLI | JSON |
-| Codex | CLI | TOML |
+| Claude Code | CLI / Desktop | JSON |
+| Codex (OpenAI) | CLI / Desktop | TOML |
 | Cursor | IDE | JSON |
 | OpenCode | CLI / Desktop | JSON |
-| Trae | IDE / CN | JSON |
+| Trae | IDE | JSON |
+| Trae CN | IDE | JSON |
+
+> Desktop variants are detected on Windows only (via registry / UWP package detection); CLI variants via npm global packages or PATH commands; IDE variants via registry / application directory detection.
 
 ## Features
 
@@ -40,7 +43,8 @@ Supported agents:
 - **Marketplace**: Integrated Official Registry, skills.sh, GitHub skill marketplaces with infinite scroll
 - **Config Import/Export**: Backup configurations and migrate across devices
 - **System Tray**: Wails v3 native tray with language change menu updates
-- **Auto Update Check**: Built-in version check via GitHub Releases with changelog preview
+- **Lite Mode**: One-click tray toggle to hide window and free memory; supports auto-entry on idle (configurable 1–120 min)
+- **Auto Update Check**: Built-in version check via GitHub Releases with pause/resume download
 - **i18n**: Built-in Chinese/English toggle, defaults to system language
 - **Cross-Platform**: Windows, macOS (Intel / Apple Silicon), Linux
 
@@ -56,7 +60,7 @@ Supported agents:
 - [Go](https://go.dev/dl/) 1.25 or higher
 - [Node.js](https://nodejs.org/) 20+
 - [pnpm](https://pnpm.io/) 9+
-- [Wails3 CLI](https://wails.io/docs/next/gettingstarted/installation)
+- [Wails3 CLI](https://v3.wails.io/quick-start/installation)
 
 **Platform-specific:**
 
@@ -117,11 +121,12 @@ AgentPack/
 ├── app.go                 # Wails app entry, methods exposed to frontend
 ├── main.go                # Program entry
 ├── tray.go                # System tray implementation
+├── lite.go                # Lite mode core logic (idle timer, memory release)
 ├── update.go              # Update check (GitHub Releases API)
 ├── winbridge.go           # Windows theme bridge (Mica / dark mode)
+├── winbridge_stub.go      # Stub for non-Windows platforms
 ├── devmode_dev.go         # Dev mode configuration
 ├── devmode_prod.go        # Production mode configuration
-├── wails.json             # Wails project config (v2 compat)
 ├── Taskfile.yml           # Wails v3 build task definitions
 ├── CHANGELOG.md           # Changelog (Chinese)
 ├── CHANGELOG_EN.md        # Changelog (English)
@@ -153,8 +158,7 @@ AgentPack/
 │   ├── config.yml         # Wails v3 build config
 │   ├── windows/           # Windows installer resources
 │   ├── darwin/            # macOS build resources
-│   ├── linux/             # Linux build resources
-│   └── docker/            # Cross-compilation Docker images
+│   └── linux/             # Linux build resources
 └── scripts/               # Build and release scripts
 ```
 
@@ -162,10 +166,21 @@ AgentPack/
 
 Visit the [Releases page](https://github.com/sugu6/AgentPack/releases) to download the installer for your platform:
 
-- **Windows**: `AgentPack-windows-amd64.zip` or `AgentPack-windows-amd64-installer.exe` (NSIS installer)
-- **macOS (Intel)**: `AgentPack-macos-intel.dmg`
-- **macOS (Apple Silicon)**: `AgentPack-macos-arm64.dmg`
-- **Linux**: `AgentPack-linux-amd64.tar.gz` or `AppImage`
+**Windows**
+- `AgentPack-{version}-windows-amd64.zip` — Portable
+- `AgentPack-{version}-windows-amd64-installer.exe` — NSIS installer
+- `AgentPack-{version}-windows-arm64.zip` — ARM64 portable
+- `AgentPack-{version}-windows-arm64-installer.exe` — ARM64 NSIS installer
+
+**macOS**
+- `AgentPack-{version}-macos-universal.dmg` — Universal (Intel + Apple Silicon)
+- `AgentPack-{version}-macos-universal.zip` — Portable
+
+**Linux**
+- `AgentPack-{version}-linux-amd64.tar.gz` — Portable
+- `AgentPack-{version}-linux-amd64.AppImage` — AppImage
+- `AgentPack-{version}-linux-arm64.tar.gz` — ARM64 portable
+- `AgentPack-{version}-linux-arm64.AppImage` — ARM64 AppImage
 
 > macOS users: if you see an "unverified developer" warning on first launch, go to
 > "System Settings → Privacy & Security" and click "Open Anyway".

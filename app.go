@@ -37,20 +37,20 @@ type App struct {
 	//   2. storeOpMu
 	//   3. a.mu
 	// Go vet 建议：新增方法若需要多种锁，请严格遵循此顺序。
-	cfg           *config.AppConfig
-	registry      *agents.Registry
-	mcpStore      *mcp.Store
-	mcpStoreReady bool
-	mcpStoreErr   string
-	skillsStore   *skills.Store
-	marketStore   *market.Store
-	backups       *backup.Manager
-	exporter      *backup.Exporter
-	closed        bool
-	allowClose    bool
-	startupErrors []string
-	inFlight      int
-	flightCond    *sync.Cond
+	cfg                *config.AppConfig
+	registry           *agents.Registry
+	mcpStore           *mcp.Store
+	mcpStoreReady      bool
+	mcpStoreErr        string
+	skillsStore        *skills.Store
+	marketStore        *market.Store
+	backups            *backup.Manager
+	exporter           *backup.Exporter
+	closed             bool
+	allowClose         bool
+	startupErrors      []string
+	inFlight           int
+	flightCond         *sync.Cond
 	downloadCtx        context.Context
 	downloadCancel     context.CancelFunc
 	downloadPausedFile string        // 暂停时保存的临时文件路径
@@ -59,7 +59,11 @@ type App struct {
 	downloadedFile     string        // 下载完成的安装包路径（供 InstallUpdate 使用）
 	downloadState      DownloadState // 下载状态（受 mu 保护）
 	paused             int32         // 暂停标志（原子操作，0=否，1=是）
-	tray           *application.SystemTray
+	tray               *application.SystemTray
+	liteMu             sync.Mutex // 保护 liteMode / liteTimer，禁止在持有时获取 a.mu
+	liteMode           bool
+	liteTimer          *time.Timer
+	liteUnit           time.Duration // 计时单位，生产为 time.Minute，测试可覆盖
 }
 
 // DownloadState 下载状态
@@ -171,10 +175,15 @@ func (a *App) ServiceStartup(ctx context.Context, options application.ServiceOpt
 	a.refreshBackupHooksLocked()
 
 	a.startupErrors = errs
+	// ServiceStartup 持有 a.mu，restartLiteTimer 内部需要 a.mu.RLock，
+	// 因此异步启动首个计时器以避免自死锁
+	go a.restartLiteTimer()
 	return nil
 }
 
 func (a *App) ServiceShutdown() error {
+	// 停止轻量模式空闲计时器，防止 ServiceShutdown 完成后 timer 回调触发
+	a.stopLiteTimer()
 	// v3: 系统托盘由 application.App 统一管理生命周期，无需手动清理
 	a.mu.Lock()
 	a.closed = true
@@ -1087,9 +1096,12 @@ func (a *App) UpdateSettings(s config.Settings) error {
 	if s.BackupCount <= 0 {
 		s.BackupCount = s.BackupRetention
 	}
+	s.LiteAutoDelay = config.ClampLiteDelay(s.LiteAutoDelay)
 	newCfg := *a.cfg
 	newCfg.Settings = s
 	newSettings := newCfg.Settings
+	oldLiteEnabled := a.cfg.Settings.LiteAutoEnabled
+	oldLiteDelay := a.cfg.Settings.LiteAutoDelay
 	oldSkillStorage = a.cfg.Settings.SkillStorage
 	oldSkillSyncMethod = a.cfg.Settings.SkillSyncMethod
 	skillsStore = a.skillsStore
@@ -1144,6 +1156,14 @@ func (a *App) UpdateSettings(s config.Settings) error {
 		rebuildTrayMenu(tray, newLang)
 	}
 
+	if s.LiteAutoEnabled != oldLiteEnabled || s.LiteAutoDelay != oldLiteDelay {
+		if s.LiteAutoEnabled {
+			a.restartLiteTimer()
+		} else {
+			a.stopLiteTimer()
+		}
+	}
+
 	// emit settings:changed 让前端同步 i18n 语言 + 后端托盘重建
 	a.emit("settings:changed", newSettings)
 
@@ -1186,8 +1206,24 @@ func (a *App) HideWindow() {
 	a.wailsApp.Window.Current().Hide()
 }
 
-// ShowWindow 显示窗口（从系统托盘恢复）。
+// ShowWindow 显示窗口（从系统托盘恢复）。同时退出轻量模式并停用空闲计时器，
+// 计时器由前端上报的用户活动（NotifyActivity）重新拉起。
 func (a *App) ShowWindow() {
+	a.liteMu.Lock()
+	wasLite := a.liteMode
+	a.liteMode = false
+	a.stopLiteTimerLocked()
+	a.liteMu.Unlock()
+
+	a.showWindowRaw()
+
+	if wasLite && onLiteModeChanged != nil {
+		onLiteModeChanged(false)
+	}
+}
+
+// showWindowRaw 仅执行窗口显示，不触碰轻量模式状态。
+func (a *App) showWindowRaw() {
 	a.mu.RLock()
 	closed := a.closed
 	a.mu.RUnlock()

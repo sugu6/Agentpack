@@ -6,7 +6,7 @@
 //
 // 功能:
 // 1. 验证版本号格式 (X.Y.Z)
-// 2. 更新 wails.json 的 productVersion
+// 2. 更新 build/config.yml 的 version
 // 3. 更新 frontend/package.json 的 version
 // 4. 处理 CHANGELOG.md 和 CHANGELOG_EN.md:
 //    a. 如果 [Unreleased] 有内容: 转换为新版本节 + 添加新 [Unreleased]
@@ -51,20 +51,7 @@ if (!repoUrl) {
 
 const today = new Date().toISOString().slice(0, 10)
 
-// --- 1. 更新 wails.json ---
-function updateWailsJson() {
-  const wails = JSON.parse(readFileSync('wails.json', 'utf8'))
-  const oldVersion = wails.info.productVersion
-  if (oldVersion === version) {
-    console.log(`wails.json: already ${version}, skipping`)
-    return
-  }
-  wails.info.productVersion = version
-  writeFileSync('wails.json', JSON.stringify(wails, null, 2) + '\n')
-  console.log(`wails.json: ${oldVersion} -> ${version}`)
-}
-
-// --- 2. 更新 build/config.yml (Wails v3) ---
+// --- 1. 更新 build/config.yml (Wails v3) ---
 function updateBuildConfig() {
   let content = readFileSync('build/config.yml', 'utf8')
   const pattern = /^(  version:\s*")[^"]*(")/m
@@ -83,7 +70,7 @@ function updateBuildConfig() {
   console.log(`build/config.yml: ${oldVersion} -> ${version}`)
 }
 
-// --- 3. 更新 frontend/package.json ---
+// --- 2. 更新 frontend/package.json ---
 function updatePackageJson() {
   const pkg = JSON.parse(readFileSync('frontend/package.json', 'utf8'))
   const oldVersion = pkg.version
@@ -96,7 +83,7 @@ function updatePackageJson() {
   console.log(`frontend/package.json: ${oldVersion} -> ${version}`)
 }
 
-// --- 4. 处理 CHANGELOG ---
+// --- 3. 处理 CHANGELOG ---
 function updateChangelog(file) {
   let content = readFileSync(file, 'utf8')
   let modified = false
@@ -185,7 +172,6 @@ function updateChangelog(file) {
 
 // --- 执行 ---
 console.log(`\n=== Release v${version} ===\n`)
-updateWailsJson()
 updateBuildConfig()
 updatePackageJson()
 updateChangelog('CHANGELOG.md')

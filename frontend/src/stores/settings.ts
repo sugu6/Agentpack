@@ -21,6 +21,8 @@ const DEFAULT_SETTINGS: AppSettings = {
   windowAction: 'minimize',
   windowNoRemind: false,
   language: '',
+  liteAutoEnabled: false,
+  liteAutoDelay: 5,
 }
 
 export const useSettingsStore = defineStore('settings', () => {

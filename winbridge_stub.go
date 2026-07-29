@@ -22,3 +22,6 @@ func isDarkMode() bool {
 func WndProcHook(hwnd uintptr, msg uint32, wParam, lParam uintptr) (uintptr, bool) {
 	return 0, false
 }
+
+// TrimWorkingSet 在非 Windows 平台为空操作。
+func TrimWorkingSet() {}

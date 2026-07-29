@@ -5,6 +5,7 @@ package i18n
 var MessagesEn = map[string]string{
 	// tray - system tray menu
 	"tray.show":      "Show main window",
+	"tray.lite":      "Lite mode",
 	"tray.settings":  "Settings",
 	"tray.quit":      "Quit",
 	"tray.tooltip":   "AgentPack - Agent management tool",

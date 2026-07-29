@@ -24,6 +24,14 @@ var (
 	procDwmSetWindowAttr  = dwmapiProc.NewProc("DwmSetWindowAttribute")
 )
 
+// EmptyWorkingSet 位于 psapi.dll，GetCurrentProcess 位于 kernel32.dll
+var (
+	psapiProc             = syscall.NewLazyDLL("psapi.dll")
+	kernel32Proc          = syscall.NewLazyDLL("kernel32.dll")
+	procEmptyWorkingSet   = psapiProc.NewProc("EmptyWorkingSet")
+	procGetCurrentProcess = kernel32Proc.NewProc("GetCurrentProcess")
+)
+
 const (
 	// GCLP_HBRBACKGROUND = -10 用二进制补码表示
 	gclpHbrBackground = ^uintptr(10)
@@ -153,4 +161,14 @@ func isDarkMode() bool {
 		return false
 	}
 	return val == 0
+}
+
+// TrimWorkingSet 将当前进程的工作集页面换出，降低任务管理器中显示的内存占用。
+// EmptyWorkingSet 只是提示操作系统回收物理页，进程再次活动时会自动重新换入。
+func TrimWorkingSet() {
+	handle, _, _ := procGetCurrentProcess.Call()
+	if handle == 0 {
+		return
+	}
+	procEmptyWorkingSet.Call(handle)
 }

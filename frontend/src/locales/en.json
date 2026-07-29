@@ -72,6 +72,14 @@
       },
       "noRemind": "Don't remind again"
     },
+    "lite": {
+      "title": "Lite mode",
+      "desc": "This toggle only controls the idle timer; lite mode can always be entered manually from the tray menu.",
+      "autoLabel": "Enter lite mode when idle",
+      "autoHint": "After the configured idle time, the window is hidden and memory is released. Clicking \"Show main window\" in the tray exits lite mode and stops the timer; any mouse or keyboard activity starts it again.",
+      "delayLabel": "Idle time",
+      "delayUnit": "minutes"
+    },
     "backup": {
       "title": "Backup",
       "desc": "Automatic and manual backup configuration.",
@@ -446,6 +454,7 @@
   },
   "tray": {
     "show": "Show main window",
+    "lite": "Lite mode",
     "settings": "Settings",
     "quit": "Quit"
   },

@@ -4,7 +4,8 @@ package i18n
 // 注意: 新增键必须同步更新 messages_en.go,TestMessagesKeyConsistency 会校验键集一致
 var MessagesZh = map[string]string{
 	// tray - 系统托盘菜单
-	"tray.show":      "显示主窗口",
+	"tray.show":      "显示主界面",
+	"tray.lite":      "轻量模式",
 	"tray.settings":  "设置",
 	"tray.quit":      "退出",
 	"tray.tooltip":   "AgentPack - Agent 管理工具",

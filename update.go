@@ -36,23 +36,29 @@ type UpdateCheckResult struct {
 	DownloadName   string `json:"downloadName"`
 }
 
-//go:embed wails.json
-var wailsJSON []byte
+//go:embed build/config.yml
+var buildConfigYML []byte
 
 func currentAppVersion() string {
-	var cfg struct {
-		Info struct {
-			ProductVersion string `json:"productVersion"`
-		} `json:"info"`
+	// 从 build/config.yml 的 info.version 字段提取版本号
+	// 格式: version: "x.y.z" 或 version: 'x.y.z'
+	for _, line := range strings.Split(string(buildConfigYML), "\n") {
+		trimmed := strings.TrimSpace(line)
+		// 匹配 info 块下的 version 字段（跳过顶层 version: '3'）
+		if strings.HasPrefix(trimmed, "version:") {
+			val := strings.TrimPrefix(trimmed, "version:")
+			val = strings.TrimSpace(val)
+			val = strings.Trim(val, "\"'")
+			// 格式化版本号，只取 X.Y.Z 部分
+			if idx := strings.IndexAny(val, " \t"); idx > 0 {
+				val = val[:idx]
+			}
+			if strings.Count(val, ".") >= 2 {
+				return val
+			}
+		}
 	}
-	if err := json.Unmarshal(wailsJSON, &cfg); err != nil {
-		return "0.0.0"
-	}
-	v := strings.TrimSpace(cfg.Info.ProductVersion)
-	if v == "" {
-		return "0.0.0"
-	}
-	return v
+	return "0.0.0"
 }
 
 type githubRelease struct {

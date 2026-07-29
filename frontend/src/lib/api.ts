@@ -56,6 +56,7 @@ import {
   OpenURL,
   Quit,
   ShowWindow,
+  NotifyActivity,
 } from '../../bindings/agentpack/app'
 import { Events } from '@wailsio/runtime'
 import type * as AgentsNS from '../../bindings/agentpack/internal/agents/models'
@@ -76,6 +77,8 @@ export interface Settings {
   windowAction: 'minimize' | 'exit'
   windowNoRemind: boolean
   language: string
+  liteAutoEnabled: boolean
+  liteAutoDelay: number
 }
 
 export interface SkillRepo {
@@ -409,6 +412,7 @@ export const api = {
     quit: () => safeCall(() => Quit()),
     hideWindow: () => safeCall(() => HideWindow()),
     showWindow: () => safeCall(() => ShowWindow()),
+    notifyActivity: () => safeCall(() => NotifyActivity()),
     checkUpdate: async (): Promise<UpdateCheckResult> => {
       return optimizeToPlainObject(await CheckUpdate()) as UpdateCheckResult
     },

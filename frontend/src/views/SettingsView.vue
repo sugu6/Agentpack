@@ -55,6 +55,8 @@ onUnmounted(() => {
 
 const MIN_RETENTION = 1
 const MAX_RETENTION = 100
+const MIN_LITE_DELAY = 1
+const MAX_LITE_DELAY = 120
 
 // Skills 仓库扫描表单
 // 支持 "owner/name" 或 "https://github.com/owner/name[/tree/branch]"
@@ -119,6 +121,18 @@ function setWindowAction(v: string) {
 
 function setWindowNoRemind(v: boolean) {
   withAutoSave(cfg => { cfg.windowNoRemind = v })
+}
+
+function setLiteAutoEnabled(v: boolean) {
+  withAutoSave(cfg => { cfg.liteAutoEnabled = v })
+}
+
+function setLiteAutoDelay(v: string | number) {
+  const parsed = Number(v)
+  const value = Number.isFinite(parsed)
+    ? Math.min(Math.max(Math.trunc(parsed), MIN_LITE_DELAY), MAX_LITE_DELAY)
+    : MIN_LITE_DELAY
+  withAutoSave(cfg => { cfg.liteAutoDelay = value })
 }
 
 function setMarketSource(key: string, v: boolean) {
@@ -539,6 +553,43 @@ const marketSourceList = computed(() => {
             </label>
           </div>
         </div>
+      </CardContent>
+    </Card>
+
+    <Card>
+      <CardHeader>
+        <CardTitle>{{ t('settings.lite.title') }}</CardTitle>
+        <CardDescription>{{ t('settings.lite.desc') }}</CardDescription>
+      </CardHeader>
+      <CardContent class="space-y-3">
+        <div class="flex items-center justify-between">
+          <div>
+            <Label>{{ t('settings.lite.autoLabel') }}</Label>
+            <p class="text-xs text-muted-foreground">{{ t('settings.lite.autoHint') }}</p>
+          </div>
+          <Switch
+            :model-value="settings.config.liteAutoEnabled ?? false"
+            @update:model-value="setLiteAutoEnabled"
+          />
+        </div>
+        <template v-if="settings.config.liteAutoEnabled">
+          <Separator />
+          <div class="flex items-center justify-between">
+            <Label for="lite-delay">{{ t('settings.lite.delayLabel') }}</Label>
+            <div class="flex items-center gap-2">
+              <Input
+                id="lite-delay"
+                :model-value="String(settings.config.liteAutoDelay ?? 5)"
+                type="number"
+                :min="MIN_LITE_DELAY"
+                :max="MAX_LITE_DELAY"
+                class="w-20"
+                @update:model-value="setLiteAutoDelay"
+              />
+              <span class="text-sm text-muted-foreground">{{ t('settings.lite.delayUnit') }}</span>
+            </div>
+          </div>
+        </template>
       </CardContent>
     </Card>
 

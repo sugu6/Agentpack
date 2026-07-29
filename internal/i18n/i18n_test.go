@@ -6,11 +6,17 @@ import (
 )
 
 func TestT_Basic(t *testing.T) {
-	if got := T("zh-CN", "tray.show"); got != "显示主窗口" {
-		t.Errorf("zh-CN tray.show = %q, want %q", got, "显示主窗口")
+	if got := T("zh-CN", "tray.show"); got != "显示主界面" {
+		t.Errorf("zh-CN tray.show = %q, want %q", got, "显示主界面")
 	}
 	if got := T("en", "tray.show"); got != "Show main window" {
 		t.Errorf("en tray.show = %q, want %q", got, "Show main window")
+	}
+	if got := T("zh-CN", "tray.lite"); got != "轻量模式" {
+		t.Errorf("zh-CN tray.lite = %q, want %q", got, "轻量模式")
+	}
+	if got := T("en", "tray.lite"); got != "Lite mode" {
+		t.Errorf("en tray.lite = %q, want %q", got, "Lite mode")
 	}
 }
 

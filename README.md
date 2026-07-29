@@ -18,18 +18,21 @@
 
 ## 简介
 
-AgentPack 是一个基于 [Wails v3](https://wails.io)（Go + Vue 3 + TypeScript）构建的跨平台桌面应用，
+AgentPack 是一个基于 [Wails v3](https://v3.wails.io)（Go + Vue 3 + TypeScript）构建的跨平台桌面应用，
 用于统一管理各类 AI 编码工具的 MCP 服务器、Skills 和 Agent 配置。
 
 支持检测并管理以下 Agent：
 
-| Agent | 类型 | 配置格式 |
+| Agent | 变体 | 配置格式 |
 | --- | --- | --- |
-| Claude Code | CLI | JSON |
-| Codex | CLI | TOML |
+| Claude Code | CLI / Desktop | JSON |
+| Codex (OpenAI) | CLI / Desktop | TOML |
 | Cursor | IDE | JSON |
 | OpenCode | CLI / Desktop | JSON |
-| Trae | IDE / CN | JSON |
+| Trae | IDE | JSON |
+| Trae CN | IDE | JSON |
+
+> Desktop 变体仅在 Windows 上检测（通过注册表 / UWP 包检测）；CLI 变体通过 npm 全局包或 PATH 命令检测；IDE 变体通过注册表 / 应用目录检测。
 
 ## 功能特性
 
@@ -39,7 +42,8 @@ AgentPack 是一个基于 [Wails v3](https://wails.io)（Go + Vue 3 + TypeScript
 - **市场浏览**：集成 Official Registry、skills.sh、GitHub 多个技能市场，支持无限滚动加载
 - **配置导入/导出**：支持配置备份与在多设备间迁移
 - **系统托盘**：Wails v3 原生托盘，支持语言切换时更新托盘文案
-- **自动更新检查**：内置版本检查，对接 GitHub Releases，支持查看更新日志
+- **轻量模式**：托盘一键隐藏窗口并释放内存，支持空闲自动进入（可配置 1–120 分钟）
+- **自动更新检查**：内置版本检查，对接 GitHub Releases，支持暂停/续传下载
 - **中英双语**：内置中英文切换，默认跟随系统语言
 - **跨平台**：支持 Windows、macOS（Intel / Apple Silicon）、Linux
 
@@ -55,7 +59,7 @@ AgentPack 是一个基于 [Wails v3](https://wails.io)（Go + Vue 3 + TypeScript
 - [Go](https://go.dev/dl/) 1.25 或更高版本
 - [Node.js](https://nodejs.org/) 20+
 - [pnpm](https://pnpm.io/) 9+
-- [Wails3 CLI](https://wails.io/docs/next/gettingstarted/installation)
+- [Wails3 CLI](https://v3.wails.io/quick-start/installation)
 
 **平台额外依赖：**
 
@@ -116,11 +120,12 @@ AgentPack/
 ├── app.go                 # Wails 应用主入口，暴露给前端的方法
 ├── main.go                # 程序入口
 ├── tray.go                # 系统托盘实现
+├── lite.go                # 轻量模式核心逻辑（空闲计时器、内存释放）
 ├── update.go              # 更新检查（GitHub Releases API）
 ├── winbridge.go           # Windows 主题桥接（Mica / 深色模式）
+├── winbridge_stub.go      # 非 Windows 平台的空实现
 ├── devmode_dev.go         # 开发模式配置
 ├── devmode_prod.go        # 生产模式配置
-├── wails.json             # Wails 项目配置（v2 兼容）
 ├── Taskfile.yml           # Wails v3 构建任务定义
 ├── CHANGELOG.md           # 更新日志（中文）
 ├── CHANGELOG_EN.md        # 更新日志（英文）
@@ -152,8 +157,7 @@ AgentPack/
 │   ├── config.yml         # Wails v3 构建配置
 │   ├── windows/           # Windows 安装包资源
 │   ├── darwin/            # macOS 构建资源
-│   ├── linux/             # Linux 构建资源
-│   └── docker/            # 交叉编译 Docker 镜像
+│   └── linux/             # Linux 构建资源
 └── scripts/               # 构建与发布脚本
 ```
 
@@ -161,10 +165,21 @@ AgentPack/
 
 前往 [Releases 页面](https://github.com/sugu6/AgentPack/releases) 下载对应平台的安装包：
 
-- **Windows**：`AgentPack-windows-amd64.zip` 或 `AgentPack-windows-amd64-installer.exe`（NSIS 安装包）
-- **macOS（Intel）**：`AgentPack-macos-intel.dmg`
-- **macOS（Apple Silicon）**：`AgentPack-macos-arm64.dmg`
-- **Linux**：`AgentPack-linux-amd64.tar.gz` 或 `AppImage`
+**Windows**
+- `AgentPack-{version}-windows-amd64.zip` — 便携版
+- `AgentPack-{version}-windows-amd64-installer.exe` — NSIS 安装包
+- `AgentPack-{version}-windows-arm64.zip` — ARM64 便携版
+- `AgentPack-{version}-windows-arm64-installer.exe` — ARM64 NSIS 安装包
+
+**macOS**
+- `AgentPack-{version}-macos-universal.dmg` — Universal（Intel + Apple Silicon）
+- `AgentPack-{version}-macos-universal.zip` — 便携版
+
+**Linux**
+- `AgentPack-{version}-linux-amd64.tar.gz` — 便携版
+- `AgentPack-{version}-linux-amd64.AppImage` — AppImage
+- `AgentPack-{version}-linux-arm64.tar.gz` — ARM64 便携版
+- `AgentPack-{version}-linux-arm64.AppImage` — ARM64 AppImage
 
 > macOS 用户首次打开若提示无法验证开发者，请在「系统设置 → 隐私与安全性」中点击「仍要打开」。
 

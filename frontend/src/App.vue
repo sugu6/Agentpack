@@ -29,6 +29,30 @@ let unsubscribeSkillsChanged: (() => void) | undefined
 let unsubscribeCloseRequested: (() => void) | undefined
 let unsubscribeSettingsChanged: (() => void) | undefined
 
+// 用户活动上报：节流后通知后端重置轻量模式空闲计时
+const ACTIVITY_THROTTLE_MS = 30_000
+const ACTIVITY_EVENTS = ['mousemove', 'mousedown', 'keydown', 'wheel', 'touchstart'] as const
+let lastActivityReport = 0
+
+function reportActivity() {
+  const now = Date.now()
+  if (now - lastActivityReport < ACTIVITY_THROTTLE_MS) return
+  lastActivityReport = now
+  api.system.notifyActivity().catch(() => {})
+}
+
+function addActivityListeners() {
+  for (const name of ACTIVITY_EVENTS) {
+    window.addEventListener(name, reportActivity, { passive: true })
+  }
+}
+
+function removeActivityListeners() {
+  for (const name of ACTIVITY_EVENTS) {
+    window.removeEventListener(name, reportActivity)
+  }
+}
+
 function handleAgentsChanged() {
   if (!mounted.value) return
   agents.fetch().catch((e) => console.warn('刷新 Agent 列表失败:', e))
@@ -65,6 +89,7 @@ async function handleCloseRequested() {
 
 onMounted(async () => {
   mounted.value = true
+  addActivityListeners()
   // Register event listeners BEFORE async loads to avoid missing events
   unsubscribeAgentsChanged = events.on('agents:changed', handleAgentsChanged)
   unsubscribeMcpChanged = events.on('mcp:changed', handleMcpChanged)
@@ -116,6 +141,7 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   mounted.value = false
+  removeActivityListeners()
   unsubscribeAgentsChanged?.()
   unsubscribeMcpChanged?.()
   unsubscribeSkillsChanged?.()

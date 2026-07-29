@@ -177,3 +177,77 @@ func TestConfigLoad_MigratesMissingMarketSources(t *testing.T) {
 		}
 	}
 }
+
+// TestClampLiteDelay validates ClampLiteDelay's bounds and default fallback
+func TestClampLiteDelay(t *testing.T) {
+	cases := []struct {
+		in   int
+		want int
+	}{
+		{0, liteDelayDefault},
+		{-10, liteDelayDefault},
+		{1, liteDelayMin},
+		{5, liteDelayDefault},
+		{120, liteDelayMax},
+		{121, liteDelayMax},
+		{99999, liteDelayMax},
+	}
+	for _, c := range cases {
+		if got := ClampLiteDelay(c.in); got != c.want {
+			t.Errorf("ClampLiteDelay(%d) = %d, want %d", c.in, got, c.want)
+		}
+	}
+}
+
+// TestConfigLoad_LiteDefaults verifies that an old config without lite fields gets defaults
+func TestConfigLoad_LiteDefaults(t *testing.T) {
+	setTempHome(t)
+
+	dir := AgentPackDir()
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	// Only have theme, no lite fields
+	oldCfg := map[string]any{
+		"version": 1,
+		"settings": map[string]any{
+			"theme": "dark",
+		},
+		"disabledAgents": []string{},
+	}
+	data, err := json.Marshal(oldCfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), data, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := Load()
+	if cfg.Settings.LiteAutoEnabled {
+		t.Error("expected liteAutoEnabled to default to false")
+	}
+	if cfg.Settings.LiteAutoDelay != liteDelayDefault {
+		t.Errorf("expected liteAutoDelay default %d, got %d", liteDelayDefault, cfg.Settings.LiteAutoDelay)
+	}
+}
+
+// TestConfigRoundTrip_Lite ensures lite fields survive Save/Load cycle
+func TestConfigRoundTrip_Lite(t *testing.T) {
+	setTempHome(t)
+
+	cfg := Default()
+	cfg.Settings.LiteAutoEnabled = true
+	cfg.Settings.LiteAutoDelay = 30
+	if err := Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded := Load()
+	if !loaded.Settings.LiteAutoEnabled {
+		t.Error("expected liteAutoEnabled true after round trip")
+	}
+	if loaded.Settings.LiteAutoDelay != 30 {
+		t.Errorf("expected liteAutoDelay 30, got %d", loaded.Settings.LiteAutoDelay)
+	}
+}
