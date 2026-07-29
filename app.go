@@ -1174,7 +1174,9 @@ func (a *App) UpdateSettings(s config.Settings) error {
 func (a *App) OpenURL(url string) {
 	switch runtime.GOOS {
 	case "windows":
-		exec.Command("cmd", "/c", "start", "", url).Start()
+		cmd := exec.Command("cmd", "/c", "start", "", url)
+		hideConsoleWindow(cmd)
+		cmd.Start()
 	case "darwin":
 		exec.Command("open", url).Start()
 	default:

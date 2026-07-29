@@ -499,7 +499,9 @@ func (a *App) InstallUpdate() error {
 	// 完全脱离父进程启动安装程序
 	switch runtime.GOOS {
 	case "windows":
-		if err := exec.Command("cmd", "/c", "start", "", dlPath).Start(); err != nil {
+		cmd := exec.Command("cmd", "/c", "start", "", dlPath)
+		hideConsoleWindow(cmd)
+		if err := cmd.Start(); err != nil {
 			return err
 		}
 	case "darwin":

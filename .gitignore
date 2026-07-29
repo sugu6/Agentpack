@@ -25,3 +25,4 @@ Thumbs.db
 docs/
 .worktrees/
 .superpowers/.git-commit-msg.txt
+*.syso
