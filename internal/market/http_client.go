@@ -23,9 +23,13 @@ type HTTPClient struct {
 }
 
 func NewHTTPClient() *HTTPClient {
+	return NewHTTPClientWithTimeout(defaultTimeout)
+}
+
+func NewHTTPClientWithTimeout(timeout time.Duration) *HTTPClient {
 	return &HTTPClient{
 		client: &http.Client{
-			Timeout: defaultTimeout,
+			Timeout: timeout,
 			Transport: &http.Transport{
 				MaxIdleConns:        16,
 				MaxIdleConnsPerHost: 4,

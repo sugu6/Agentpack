@@ -71,6 +71,13 @@ export function variantToBadge(variant: string): 'terminal' | 'monitor' | null {
   return null
 }
 
+// 将 variant 归一化：config 本质是 CLI（通过配置文件检测），归一为 cli
+export function normalizeVariant(variant: string | undefined, id: string): string {
+  if (variant === 'config') return 'cli'
+  if (variant) return variant
+  return getVariantFromId(id)
+}
+
 export function agentDisplayName(agent: { name: string; variant?: string; id: string }): string {
-  return `${agent.name} (${variantLabel(agent.variant || getVariantFromId(agent.id))})`
+  return `${agent.name} (${variantLabel(normalizeVariant(agent.variant, agent.id))})`
 }

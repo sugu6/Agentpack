@@ -8,12 +8,8 @@ import (
 	"log"
 	"os"
 
-	"github.com/wailsapp/wails/v2"
-	"github.com/wailsapp/wails/v2/pkg/options"
-	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
-	"github.com/wailsapp/wails/v2/pkg/options/linux"
-	"github.com/wailsapp/wails/v2/pkg/options/mac"
-	"github.com/wailsapp/wails/v2/pkg/options/windows"
+	"github.com/wailsapp/wails/v3/pkg/application"
+	"github.com/wailsapp/wails/v3/pkg/events"
 )
 
 //go:embed all:frontend/dist
@@ -24,7 +20,6 @@ func main() {
 
 	releaseLock := func() {}
 	if !isDevMode() {
-		// 单实例锁：Windows 用 Named Mutex（进程退出自动释放），Unix 用 PID 文件
 		lock, lockErr := lockfile.TryAcquire(config.AgentPackDir())
 		if lockErr != nil {
 			log.Printf("AgentPack: %v", lockErr)
@@ -43,52 +38,59 @@ func main() {
 
 	app := NewApp(cfg)
 
-	winTheme := windows.Light
-	macAppearance := mac.NSAppearanceNameAqua
+	// v3 alpha 无运行时 SetTheme API，使用 SystemDefault 让标题栏跟随系统主题。
+	// 应用内主题切换（light/dark）仅影响 CSS，不改变原生标题栏。
+	winTheme := application.SystemDefault
+	macAppearance := application.DefaultAppearance
 
-	switch cfg.Settings.Theme {
-	case "dark":
-		winTheme = windows.Dark
-		macAppearance = mac.NSAppearanceNameDarkAqua
-	case "system":
-		winTheme = windows.SystemDefault
-		macAppearance = mac.DefaultAppearance
-	}
-
-	err := wails.Run(&options.App{
-		Title:            "AgentPack",
-		Width:            960,
-		Height:           640,
-		BackgroundColour: nil,
-		// dev 模式保留右键菜单便于调试；生产构建禁用以防止用户通过右键"检查"打开 DevTools
-		EnableDefaultContextMenu: isDevMode(),
-		AssetServer: &assetserver.Options{
-			Assets: assets,
+	wailsApp := application.New(application.Options{
+		Name:        "AgentPack",
+		Description: "Unified MCP / Skills / Agent management for AI coding tools",
+		Services: []application.Service{
+			application.NewService(app),
 		},
-		OnStartup:     app.startup,
-		OnShutdown:    app.shutdown,
-		OnBeforeClose: app.beforeClose,
-		Bind: []interface{}{
-			app,
+		Assets: application.AssetOptions{
+			Handler: application.AssetFileServerFS(assets),
 		},
-		Windows: &windows.Options{
-			Theme:                winTheme,
-			BackdropType:         windows.Mica,
-			WebviewIsTransparent: true,
-			WindowIsTranslucent:  true,
+		Windows: application.WindowsOptions{
+			WndProcInterceptor: WndProcHook,
 		},
-		Mac: &mac.Options{
-			Appearance:           macAppearance,
-			TitleBar:             mac.TitleBarDefault(),
-			WebviewIsTransparent: true,
-			WindowIsTranslucent:  false,
-		},
-		Linux: &linux.Options{
-			WebviewGpuPolicy: linux.WebviewGpuPolicyAlways,
-			ProgramName:      "AgentPack",
+		Mac: application.MacOptions{
+			ApplicationShouldTerminateAfterLastWindowClosed: true,
 		},
 	})
 
+	app.setWailsApp(wailsApp)
+
+	// 创建主窗口 — 与 v2 完全对齐的 Mica + 透明背景配置
+	mainWindow := wailsApp.Window.NewWithOptions(application.WebviewWindowOptions{
+		Title:     "AgentPack",
+		Width:     960,
+		Height:    640,
+		MinWidth:  800,
+		MinHeight: 500,
+		URL:       "/",
+		BackgroundType: application.BackgroundTypeTranslucent,
+		DefaultContextMenuDisabled: !isDevMode(),
+		Windows: application.WindowsWindow{
+			Theme:        winTheme,
+			BackdropType: application.Mica,
+		},
+		Mac: application.MacWindow{
+			Appearance: macAppearance,
+		},
+	})
+
+	// 监听窗口关闭事件（v3 RegisterHook 同步拦截，e.Cancel() 可阻止关闭）
+	mainWindow.RegisterHook(events.Common.WindowClosing, func(e *application.WindowEvent) {
+		app.beforeClose(e)
+	})
+
+	// 创建 v3 原生系统托盘
+	tray := setupTray(wailsApp, app)
+	app.setTray(tray)
+
+	err := wailsApp.Run()
 	if err != nil {
 		log.Printf("AgentPack: %v", err)
 		releaseLock()

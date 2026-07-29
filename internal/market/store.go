@@ -33,7 +33,19 @@ type Store struct {
 // cacheVersion 是缓存键的版本号。
 // 当 fetcher 的数据结构或扫描逻辑发生破坏性变更时（如新增字段、修复路径拼接），
 // 递增此版本号可使旧缓存文件失效，强制重新拉取最新数据。
-const cacheVersion = 8
+//
+// v11: 修复 github_skills.go 中 fetchSkillMeta CDN 失败时跳过整个 skill 的 bug。
+//   旧缓存（v10）中 anthropics/skills 仓库只有 1 个 canvas-design skill，
+//   其他 17 个因 jsDelivr CDN 限流被跳过。升级后强制重新拉取，所有 skill 都会出现。
+// v15: MCP servers 搜索改回 API cursor 分页(放弃全量缓存)。
+//   registry API 每页 20 秒(网络瓶颈),全量加载几千个 server 需要几十分钟,
+//   后台预取永远完不成,导致 Transport 筛选只能用 100 条数据,LoadMore 到 100 条就停。
+//   新方案:Search 直接透传给 fetcher(API cursor 分页),Transport 筛选改到前端做
+//   (前端从已加载的 items 累积过滤),LoadMore 用 API cursor 一定能继续加载。
+// v16: GitHub fetcher 在 fetchSkillMeta 中直接计算 ContentHash，避免后续重复 CDN 请求。
+//   populateContentHashes 改为并发 5 路 + 同时补全 skills.sh 来源缺失的 Name/Description。
+//   旧缓存缺少 ContentHash 和 Description，需强制刷新。
+const cacheVersion = 16
 
 type ServerFetcher interface {
 	Source() Source
@@ -70,153 +82,18 @@ func (s *Store) Sources() []Source {
 	return out
 }
 
+// Search 直接透传给 fetcher,使用 registry API 的 cursor 分页。
+// Transport 筛选由前端累积式过滤(从已加载的 items 过滤),后端不处理。
+// 这是因为 registry API 不支持 transport 筛选参数,而全量缓存方案在网络瓶颈下
+// (每页 20 秒,全量加载几千个 server 需要几十分钟)不可行。
 func (s *Store) Search(ctx context.Context, source Source, opts SearchOptions) (*SearchResultServers, error) {
 	s.mu.RLock()
 	f, ok := s.servers[source]
 	s.mu.RUnlock()
 	if !ok {
-		return nil, fmt.Errorf("source not registered: %s", source)
+		return nil, fmt.Errorf("source not found: %s", source)
 	}
-
-	// 带查询词时，优先用已缓存的空查询全量列表做客户端过滤，避免重复调用慢速 API
-	if opts.Query != "" {
-		allOpts := opts
-		allOpts.Query = ""
-		allKey := s.cacheKey("search", source, allOpts)
-		if allCached, ok := s.readCache(allKey); ok && len(allCached.Items) > 0 {
-			// 缓存超过 1 小时时后台异步刷新，不阻塞当前搜索
-			if s.cacheAge(allKey) > 1*time.Hour {
-				go s.refreshAllCache(context.Background(), source, allOpts, allKey, f)
-			}
-			return s.filterFromCache(allCached.Items, opts), nil
-		}
-	}
-
-	cacheKey := s.cacheKey("search", source, opts)
-
-	// 先检查缓存（文件 I/O 不持有 cacheMu 锁）
-	if cached, ok := s.readCache(cacheKey); ok {
-		return cached, nil
-	}
-
-	// 检查是否有其他 goroutine 正在 fetch 相同 key
-	wait, isFirst := func() (chan struct{}, bool) {
-		s.inFlightMu.Lock()
-		defer s.inFlightMu.Unlock()
-		// 二次检查：readCache 无锁返回与 inFlightMu 获取之间，可能有其他 fetcher 已完成
-		if ch, exists := s.inFlight[cacheKey]; exists {
-			return ch, false
-		}
-		ch := make(chan struct{})
-		s.inFlight[cacheKey] = ch
-		return ch, true
-	}()
-
-	if !isFirst {
-		// 等待首个 fetch 完成，使用 context 确保不会永久阻塞
-		select {
-		case <-wait:
-			// 读取首个 fetch 写入的缓存
-			cached, ok := s.readCache(cacheKey)
-			if ok {
-				return cached, nil
-			}
-			// 缓存为空（首个 fetch 失败），返回错误而非触发惊群重试
-			return nil, fmt.Errorf("market search: previous fetch failed for %s", cacheKey)
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		}
-	}
-
-	// 到此 isFirst 必为 true（上面分支均已 return）
-	defer s.markInflightDone(cacheKey)
-	result, err := f.Search(ctx, opts)
-	if err != nil {
-		if cached, ok := s.readCacheAnyAge(cacheKey); ok {
-			return cached, nil
-		}
-		return nil, err
-	}
-	// 即使 context 已超时，如果 fetcher 已成功返回结果，仍然写入缓存并返回
-	// 避免因 context 超时丢弃已成功获取的数据（如 GitHub 仓库扫描耗时较长但已返回结果）
-	s.writeCache(cacheKey, result)
-	return result, nil
-}
-
-// filterFromCache 从已缓存的空查询全量列表中做客户端过滤和分页，避免重复调用慢速 API
-func (s *Store) filterFromCache(items []MarketServer, opts SearchOptions) *SearchResultServers {
-	q := strings.ToLower(strings.TrimSpace(opts.Query))
-	var matched []MarketServer
-	for _, item := range items {
-		if strings.Contains(strings.ToLower(item.Name), q) ||
-			strings.Contains(strings.ToLower(item.Title), q) ||
-			strings.Contains(strings.ToLower(item.Description), q) ||
-			strings.Contains(strings.ToLower(item.SourceID), q) {
-			matched = append(matched, item)
-		}
-	}
-
-	pageSize := opts.PageSize
-	if pageSize <= 0 {
-		pageSize = 30
-	}
-	page := opts.Page
-	if page <= 0 {
-		page = 1
-	}
-	start := (page - 1) * pageSize
-	if start >= len(matched) {
-		return &SearchResultServers{
-			Items: []MarketServer{},
-			Total: len(matched),
-			Page:  page,
-		}
-	}
-	end := start + pageSize
-	if end > len(matched) {
-		end = len(matched)
-	}
-
-	result := &SearchResultServers{
-		Items: matched[start:end],
-		Total: len(matched),
-		Page:  page,
-	}
-	if end < len(matched) {
-		result.HasMore = true
-		result.NextPage = fmt.Sprintf("%d", page+1)
-	}
-	return result
-}
-
-// cacheAge 返回缓存文件的年龄，文件不存在时返回 0
-func (s *Store) cacheAge(key string) time.Duration {
-	info, err := os.Stat(s.cachePath(key))
-	if err != nil {
-		return 0
-	}
-	return time.Since(info.ModTime())
-}
-
-// refreshAllCache 后台异步刷新空查询的全量缓存，不阻塞当前请求
-func (s *Store) refreshAllCache(ctx context.Context, source Source, opts SearchOptions, key string, f ServerFetcher) {
-	// 防止并发刷新相同 key
-	s.inFlightMu.Lock()
-	if _, exists := s.inFlight[key]; exists {
-		s.inFlightMu.Unlock()
-		return
-	}
-	ch := make(chan struct{})
-	s.inFlight[key] = ch
-	s.inFlightMu.Unlock()
-	defer s.markInflightDone(key)
-
-	result, err := f.Search(ctx, opts)
-	if err != nil {
-		log.Printf("background cache refresh failed: %v", err)
-		return
-	}
-	s.writeCache(key, result)
+	return f.Search(ctx, opts)
 }
 
 // markInflightDone 标记 in-flight fetch 完成，通知等待者
@@ -228,28 +105,6 @@ func (s *Store) markInflightDone(key string) {
 		close(ch)
 	}
 	s.inFlightMu.Unlock()
-}
-
-// readCache 读取 server 缓存，不持有 cacheMu 锁（文件 I/O 在锁外执行）
-func (s *Store) readCache(key string) (*SearchResultServers, bool) {
-	path := s.cachePath(key)
-	info, err := os.Stat(path)
-	if err != nil {
-		return nil, false
-	}
-	if time.Since(info.ModTime()) > s.ttl {
-		return nil, false
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, false
-	}
-	var result SearchResultServers
-	if err := json.Unmarshal(data, &result); err != nil {
-		_ = os.Remove(path)
-		return nil, false
-	}
-	return &result, true
 }
 
 func (s *Store) GetServer(ctx context.Context, source Source, sourceID string) (*MarketServer, error) {
@@ -271,6 +126,8 @@ func ContextWithTimeout(d time.Duration) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.Background(), d)
 }
 
+// cacheKey 生成 skill 搜索的缓存键(含 query/cursor/page 等分页参数)
+// 注意:server 搜索直接透传给 fetcher(API cursor 分页),不使用此缓存键
 func (s *Store) cacheKey(kind string, source Source, opts SearchOptions) string {
 	// cacheVersion 用于在数据结构或扫描逻辑变更后使旧缓存失效
 	// 递增此版本号会强制所有用户重新拉取最新数据
@@ -281,20 +138,6 @@ func (s *Store) cacheKey(kind string, source Source, opts SearchOptions) string 
 
 func (s *Store) cachePath(key string) string {
 	return filepath.Join(s.cacheDir, key)
-}
-
-func (s *Store) readCacheAnyAge(key string) (*SearchResultServers, bool) {
-	path := s.cachePath(key)
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, false
-	}
-	var result SearchResultServers
-	if err := json.Unmarshal(data, &result); err != nil {
-		_ = os.Remove(path)
-		return nil, false
-	}
-	return &result, true
 }
 
 func (s *Store) writeCacheLocked(key string, payload any, logPrefix string) {
@@ -310,12 +153,6 @@ func (s *Store) writeCacheLocked(key string, payload any, logPrefix string) {
 	if err := iowriter.WriteAtomic(s.cachePath(key), data, 0600); err != nil {
 		log.Printf("%s write: %v", logPrefix, err)
 	}
-}
-
-func (s *Store) writeCache(key string, result *SearchResultServers) {
-	s.cacheMu.Lock()
-	defer s.cacheMu.Unlock()
-	s.writeCacheLocked(key, result, "cache")
 }
 
 func (s *Store) CleanCache() (int, error) {
@@ -583,6 +420,10 @@ func (s *Store) SearchAllSkills(ctx context.Context, opts SearchOptions, onlySou
 		end = total
 	}
 	pageItems := merged[start:end]
+	// 确保 pageItems 非 nil(nil slice 会被 JSON 序列化为 null,导致前端 `...more.items` 崩溃)
+	if pageItems == nil {
+		pageItems = []MarketSkill{}
+	}
 
 	nextPage := ""
 	if end < total {
@@ -599,11 +440,17 @@ func (s *Store) SearchAllSkills(ctx context.Context, opts SearchOptions, onlySou
 	}, nil
 }
 
-// populateContentHashes 为缺少 ContentHash 的 MarketSkill（skills.sh 来源）补全内容指纹。
-// 从 GitHub CDN 拉取 SKILL.md 计算 SHA256，结果直接更新到 items。
-// 不阻断整体流程，拉取失败时保持原有 ContentHash 为空（降级到元数据匹配）。
+// populateContentHashes 为缺少 ContentHash 的 MarketSkill 补全内容指纹。
+// 从 GitHub CDN 拉取 SKILL.md 计算 SHA256，并发执行（最多 5 路并行），
+// 避免串行逐个拉取造成 50+ skill 等待 50-100 秒。
+// 同时补全 skills.sh 来源缺少的 Name 和 Description（从 SKILL.md frontmatter 解析）。
+// 不阻断整体流程，拉取失败时保持原有值不变（降级到元数据匹配）。
 func populateContentHashes(ctx context.Context, items []MarketSkill) {
-	hc := NewHTTPClient()
+	type task struct {
+		idx int
+		url string
+	}
+	var tasks []task
 	for i, item := range items {
 		if item.ContentHash != "" || item.RepoOwner == "" || item.RepoName == "" {
 			continue
@@ -625,27 +472,56 @@ func populateContentHashes(ctx context.Context, items []MarketSkill) {
 			rawURL = fmt.Sprintf("%s/%s/%s@%s/%s/SKILL.md",
 				githubRawBase, url.PathEscape(item.RepoOwner), url.PathEscape(item.RepoName), url.PathEscape(branch), strings.Join(segments, "/"))
 		}
-
-		resp, err := hc.Get(ctx, rawURL)
-		if err != nil {
-			log.Printf("populateContentHash: fetch SKILL.md for %s/%s/%s: %v", item.RepoOwner, item.RepoName, item.Directory, err)
-			continue
-		}
-		if resp.StatusCode != 200 {
-			drainBody(resp.Body)
-			resp.Body.Close()
-			continue
-		}
-		data, err := io.ReadAll(io.LimitReader(resp.Body, 256*1024))
-		resp.Body.Close()
-		if err != nil {
-			continue
-		}
-		// 归一化行尾（CRLF → LF），避免与本地文件行尾差异导致 hash 不匹配
-		normalized := bytes.ReplaceAll(data, []byte{'\r', '\n'}, []byte{'\n'})
-		h := sha256.Sum256(normalized)
-		items[i].ContentHash = hex.EncodeToString(h[:])
+		tasks = append(tasks, task{idx: i, url: rawURL})
 	}
+	if len(tasks) == 0 {
+		return
+	}
+
+	const maxConcurrency = 5
+	sem := make(chan struct{}, maxConcurrency)
+	var wg sync.WaitGroup
+	wg.Add(len(tasks))
+	for _, t := range tasks {
+		t := t
+		go func() {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			childCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			defer cancel()
+			hc := NewHTTPClient()
+			resp, err := hc.Get(childCtx, t.url)
+			if err != nil {
+				log.Printf("populateContentHash: fetch SKILL.md for %s: %v", t.url, err)
+				return
+			}
+			if resp.StatusCode != 200 {
+				drainBody(resp.Body)
+				resp.Body.Close()
+				return
+			}
+			data, err := io.ReadAll(io.LimitReader(resp.Body, 256*1024))
+			resp.Body.Close()
+			if err != nil {
+				return
+			}
+			normalized := bytes.ReplaceAll(data, []byte{'\r', '\n'}, []byte{'\n'})
+			h := sha256.Sum256(normalized)
+			items[t.idx].ContentHash = hex.EncodeToString(h[:])
+			// 补全 skills.sh 来源缺失的 Name 和 Description
+			meta := parseSkillFrontmatter(data)
+			if items[t.idx].Name == "" || items[t.idx].Name == items[t.idx].Directory {
+				if meta.Name != "" {
+					items[t.idx].Name = meta.Name
+				}
+			}
+			if items[t.idx].Description == "" && meta.Description != "" {
+				items[t.idx].Description = meta.Description
+			}
+		}()
+	}
+	wg.Wait()
 }
 
 // dedupSkills 按 owner/repo + directory 去重

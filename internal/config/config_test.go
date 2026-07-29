@@ -165,8 +165,8 @@ func TestConfigLoad_MigratesMissingMarketSources(t *testing.T) {
 	if !cfg.Settings.MarketSources["official"].Enabled {
 		t.Error("expected official to remain enabled")
 	}
-	// 缺失的 smithery / github / skills-sh 应被补全为默认值
-	for _, key := range []string{"smithery", "github", "skills-sh"} {
+	// 缺失的 github / skills-sh 应被补全为默认值
+	for _, key := range []string{"github", "skills-sh"} {
 		ms, exists := cfg.Settings.MarketSources[key]
 		if !exists {
 			t.Errorf("expected market source %q to be backfilled, but it's missing", key)

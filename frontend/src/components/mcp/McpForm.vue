@@ -449,7 +449,7 @@ async function submit() {
       </Tabs>
 
       <form @submit.prevent="submit" class="flex flex-col min-h-0 mt-4">
-        <div :class="['min-h-0 flex-1 space-y-4 py-2 pl-1 pr-2 pb-6', entryMode === 'form' ? 'overflow-y-auto' : 'overflow-hidden']">
+        <div class="min-h-0 flex-1 space-y-4 py-2 pl-1 pr-2 pb-6 overflow-y-auto">
           <template v-if="entryMode === 'form'">
             <div class="grid grid-cols-2 gap-3">
               <div class="space-y-1.5">

@@ -232,6 +232,117 @@ func TestGitHubSkillFetcher_SearchWithQuery(t *testing.T) {
 	}
 }
 
+// TestGitHubSkillFetcher_CDNFailureFallback 验证当 jsDelivr CDN 拉取 SKILL.md 失败时
+// （404/5xx/网络错误），skill 不会被跳过，而是以降级形式（Name=directory，Description=""）出现。
+// 这是 v11 cacheVersion 修复的核心：避免 CDN 限流导致 skills 数量大幅减少。
+func TestGitHubSkillFetcher_CDNFailureFallback(t *testing.T) {
+	treeResp := githubTreeResponse{
+		Tree: []githubTreeItem{
+			// ok skill：SKILL.md 正常返回
+			{Path: "skills/ok-skill/SKILL.md", Type: "blob"},
+			// 404 skill：CDN 返回 404
+			{Path: "skills/missing/SKILL.md", Type: "blob"},
+			// 500 skill：CDN 返回 500
+			{Path: "skills/server-error/SKILL.md", Type: "blob"},
+		},
+	}
+
+	mux := http.NewServeMux()
+	// Trees API
+	mux.HandleFunc("/repos/testowner/testrepo/git/trees/main", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(treeResp)
+	})
+	// SKILL.md raw content：模拟 CDN 故障
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		path := r.URL.Path
+		if !strings.HasSuffix(path, "/SKILL.md") {
+			w.WriteHeader(404)
+			return
+		}
+		switch {
+		case strings.Contains(path, "/ok-skill/"):
+			_, _ = w.Write([]byte("---\nname: OK Skill\ndescription: works fine\n---\nbody"))
+		case strings.Contains(path, "/missing/"):
+			w.WriteHeader(404)
+		case strings.Contains(path, "/server-error/"):
+			w.WriteHeader(500)
+		default:
+			w.WriteHeader(404)
+		}
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	origGHAPI := githubAPIBase
+	githubAPIBase = server.URL
+	defer func() { githubAPIBase = origGHAPI }()
+	origRawBase := githubRawBase
+	githubRawBase = server.URL
+	defer func() { githubRawBase = origRawBase }()
+
+	f := NewGitHubSkillFetcher(func() []RepoRef {
+		return []RepoRef{{Owner: "testowner", Name: "testrepo", Branch: "main"}}
+	})
+
+	got, err := f.Search(context.Background(), SearchOptions{Query: ""})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 关键断言：3 个 skill 都必须出现，不能因为 CDN 失败而跳过
+	if len(got.Items) != 3 {
+		t.Fatalf("expected 3 skills (CDN 失败应降级而非跳过), got %d: %+v", len(got.Items), got.Items)
+	}
+
+	byDir := make(map[string]MarketSkill, len(got.Items))
+	for _, s := range got.Items {
+		byDir[s.Directory] = s
+	}
+
+	// ok-skill：应使用 SKILL.md 中的 name 和 description
+	ok, exists := byDir["ok-skill"]
+	if !exists {
+		t.Fatal("expected ok-skill to be present")
+	}
+	if ok.Name != "OK Skill" {
+		t.Errorf("ok-skill name = %q, want %q", ok.Name, "OK Skill")
+	}
+	if ok.Description != "works fine" {
+		t.Errorf("ok-skill description = %q, want %q", ok.Description, "works fine")
+	}
+
+	// missing (CDN 404)：应降级为 Name=directory，Description=""
+	missing, exists := byDir["missing"]
+	if !exists {
+		t.Fatal("expected missing skill to still appear (fallback), but it was skipped")
+	}
+	if missing.Name != "missing" {
+		t.Errorf("missing skill fallback name = %q, want %q", missing.Name, "missing")
+	}
+	if missing.Description != "" {
+		t.Errorf("missing skill fallback description = %q, want empty", missing.Description)
+	}
+	// 关键字段必须正确，安装仍可正常工作
+	if missing.Directory != "missing" || missing.FullPath != "skills/missing" {
+		t.Errorf("missing skill install fields wrong: directory=%q fullPath=%q", missing.Directory, missing.FullPath)
+	}
+	if missing.RepoOwner != "testowner" || missing.RepoName != "testrepo" {
+		t.Errorf("missing skill repo fields wrong: owner=%q name=%q", missing.RepoOwner, missing.RepoName)
+	}
+
+	// server-error (CDN 500)：同样应降级
+	se, exists := byDir["server-error"]
+	if !exists {
+		t.Fatal("expected server-error skill to still appear (fallback), but it was skipped")
+	}
+	if se.Name != "server-error" {
+		t.Errorf("server-error skill fallback name = %q, want %q", se.Name, "server-error")
+	}
+	if se.Description != "" {
+		t.Errorf("server-error skill fallback description = %q, want empty", se.Description)
+	}
+}
+
 func TestGitHubSkillFetcher_RepoNotFound(t *testing.T) {
 	server := httptest.NewServer(newGitHubMockHandler(t, nil))
 	defer server.Close()

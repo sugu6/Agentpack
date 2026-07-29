@@ -33,8 +33,9 @@ jobs:
           awk '/^## \[Unreleased\]/{next} /^## \[/{c++; if(c==2) exit} c==1' CHANGELOG_EN.md > "${{ runner.temp }}/CHANGELOG_EN.txt"
 
           # Combine: cross-language header + Chinese + separator + English
+          REPO_URL="https://github.com/${{ github.repository }}"
           {
-            echo "[简体中文](./CHANGELOG.md) | [English](./CHANGELOG_EN.md)"
+            echo "[简体中文](${REPO_URL}/blob/main/CHANGELOG.md) | [English](${REPO_URL}/blob/main/CHANGELOG_EN.md)"
             echo ""
             cat "${{ runner.temp }}/CHANGELOG_ZH.txt"
             echo ""
@@ -94,11 +95,11 @@ jobs:
           cache: 'pnpm'
           cache-dependency-path: frontend/pnpm-lock.yaml
 
-      - name: Install Linux dependencies (Wails v2)
+      - name: Install Linux dependencies (Wails v3)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.0-dev pkg-config libfuse2
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev pkg-config libfuse2
 
       - name: Read version from wails.json
         id: version
@@ -108,8 +109,8 @@ jobs:
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "Detected version: $VERSION"
 
-      - name: Install Wails CLI
-        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0
+      - name: Install Wails v3 CLI
+        run: go install github.com/wailsapp/wails/v3/cmd/wails3@latest
 
       - name: Check i18n key consistency
         run: pnpm check:i18n
@@ -121,13 +122,21 @@ jobs:
           choco install nsis -y
           echo "C:\Program Files (x86)\NSIS" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
-      - name: Build (Windows, with NSIS installer)
+      - name: Build (Windows)
         if: runner.os == 'Windows'
-        run: wails build -platform ${{ matrix.platform }} -clean -nsis
+        run: wails3 task windows:build
 
-      - name: Build (macOS & Linux)
-        if: runner.os != 'Windows'
-        run: wails build -platform ${{ matrix.platform }} -clean
+      - name: Build (macOS)
+        if: runner.os == 'macOS'
+        run: wails3 task darwin:build
+
+      - name: Build (Linux)
+        if: runner.os == 'Linux'
+        run: wails3 task linux:build
+
+      - name: Package NSIS installer (Windows)
+        if: runner.os == 'Windows'
+        run: wails3 task windows:package
 
       - name: Package (Windows)
         if: runner.os == 'Windows'

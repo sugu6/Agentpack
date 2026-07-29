@@ -5,7 +5,8 @@ import { useAgentsStore } from '@/stores/agents'
 import { useMcpStore } from '@/stores/mcp'
 import { Card, CardContent, Badge, Button, AlertDialog, AlertDialogTrigger, AlertDialogContent, AlertDialogHeader, AlertDialogTitle, AlertDialogDescription, AlertDialogFooter, AlertDialogCancel, AlertDialogAction } from '@/components/ui'
 import { PhTerminal, PhTrash } from '@phosphor-icons/vue'
-import { getVariantFromId, variantLabel, variantToBadge } from '@/composables/useAgentHelpers'
+import { normalizeVariant, variantToBadge, agentDisplayName } from '@/composables/useAgentHelpers'
+import { transportLabel } from '@/lib/utils'
 import AgentToggleButton from '@/components/agent/AgentToggleButton.vue'
 import type { McpServer } from '@/lib/api'
 import { ApiError } from '@/lib/api'
@@ -45,12 +46,6 @@ function isGroupBound(group: { ids: string[] }) {
   return group.ids.some(id => props.server.boundAgents?.includes(id))
 }
 
-function transportLabel() {
-  if (props.server.transport === 'sse') return 'SSE'
-  if (props.server.transport === 'http') return 'HTTP'
-  return 'stdio'
-}
-
 async function handleRemove() {
   try {
     await mcp.remove(props.server.id)
@@ -73,7 +68,7 @@ async function handleRemove() {
         <div class="min-w-0 flex-1">
           <div class="flex items-center gap-2">
             <h3 class="text-sm font-semibold">{{ server.name }}</h3>
-            <Badge variant="outline">{{ transportLabel() }}</Badge>
+            <Badge variant="outline">{{ transportLabel(server.transport) }}</Badge>
           </div>
           <p v-if="server.description" class="mt-0.5 text-xs text-muted-foreground">
             {{ server.description }}
@@ -92,10 +87,10 @@ async function handleRemove() {
             >
               <AgentToggleButton
                 :agent-id="group.id"
-                :agent-name="`${group.name} (${variantLabel(getVariantFromId(group.id))})`"
+                :agent-name="group.ids.length > 1 ? group.name : agentDisplayName({ name: group.name, id: group.id })"
                 :model-value="isGroupBound(group)"
                 :disabled="group.status !== 'enabled'"
-                :badge="variantToBadge(getVariantFromId(group.id))"
+                :badge="group.ids.length > 1 ? null : variantToBadge(normalizeVariant(undefined, group.id))"
                 @update:model-value="(v: boolean) => toggleGroup(group, v)"
               />
             </div>

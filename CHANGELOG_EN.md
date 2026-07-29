@@ -1,11 +1,69 @@
 # Changelog
 
-English | [简体中文](./CHANGELOG.md)
+English | [简体中文](https://github.com/sugu6/Agentpack/blob/master/CHANGELOG.md)
 
 This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format,
 versioned by [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+
+## [0.2.0] - 2026-07-29
+
+### Features
+
+- **Wails v3 migration**: Upgraded from Wails v2 to v3 with new Taskfile-based build system (`wails3 task`), supporting cross-platform dev/build/package
+- Windows Mica material fix: Added `winbridge.go` to patch v3's `BackgroundTypeTranslucent` background brush issue, achieving same transparent window effect as v2
+- Native Windows theme bridge: Runtime theme switching via `DwmSetWindowAttribute(DWMWA_USE_IMMERSIVE_DARK_MODE)` with auto-follow on system theme change (`WM_SETTINGCHANGE` listener)
+- Native v3 system tray: Replaced third-party `energye/systray` with Wails v3 native `SystemTray` API, supports language change menu updates
+- Infinite scroll loading: Market and Skills pages support auto-loading next page on scroll, replacing manual "load more" buttons
+- Market server list cache: Restoring cached homepage results on search clear without re-querying API
+- Registry pagination: Official source supports `cursor`-based pagination, `hasMore`/`nextPage` passed to frontend
+- Registry tag enhancement: Collecting publisher-provided categories and keywords as search tags
+- Command derivation: Auto-derive command from `registryType` when `runtimeHint` is empty (npm→npx -y, pypi→uvx, oci→docker run)
+- Registry dedup: Search deduplicates by name preferring `isLatest=true`; browse shows only latest entries
+- Skills CDN fallback: When jsDelivr CDN fails to fetch SKILL.md, return fallback data (`Name=directory`) instead of skipping the skill
+- Agent list enhancement: Settings page includes `allMergedGroups` with `not_found` agents
+- Git env optimization: Set `GIT_TERMINAL_PROMPT=0` to prevent GCM from blocking git operations
+
+### Changed
+
+- Frontend binding migration: from `wailsjs` directory to `bindings/agentpack/` path (ES Module imports), runtime API migrated to `@wailsio/runtime`
+- Events API: using `Events.On`/`Events.Off`/`Events.Emit` namespace, `Events.Emit` params wrapped as array
+- Service lifecycle: `startup`/`shutdown`/`beforeClose` → `ServiceStartup`/`ServiceShutdown`, window close via `RegisterHook`
+- Window creation: v3 uses `application.WebviewWindowOptions` separating window and theme config
+- Build system migration: from `wails.json` single config to `Taskfile.yml` + `build/Taskfile.yml` layered architecture
+- CI/CD adaptation: GitHub Actions build from `wails build` to `wails3 task` per-platform, Linux deps updated to webkit2gtk-4.1
+- Windows NSIS installer: packaging split into `windows:build` + `windows:package` steps
+- Settings page layout: removed global padding, fixed header + scrollable content area
+- Changelog dialog links: opened via `OpenURL` in system browser, not in WebView
+- Version config: maintained both `wails.json` (v2 compat) and `build/config.yml` (v3 native), synced by release.mjs
+- Installed card green background opacity reduced from 10% to 5% (`!bg-emerald-500/10` → `!bg-emerald-500/5`)
+- Vite build warnings cleaned: `onLog` suppresses third-party `__PURE__` warnings, `settings.ts` dynamic import changed to static import
+
+### Fixed
+
+- `boundAgents` nullable: MCP and Skill `boundAgents` typed as `string[] | null`, frontend adds null checks
+- Skills migration scroll offset: Dialog gets `:scroll-root` prop to fix scroll offset on focus restore
+- Changelog links: relative paths (`./CHANGELOG.md`) converted to GitHub absolute URLs
+- v3 dev port mismatch: `wails3 dev` uses port 9245, Vite dev server port unified
+- Skills CDN fallback: SKILL.md fetch failure no longer skips skill, keeps market display complete
+- Registry `items: null` defense: frontend `Array.isArray` check prevents `...more.items` spread crash
+- Non-search state loadMore syncs baseServers cache
+- Registry dedup: same-name server prefers `isLatest=true` version, search also deduplicates
+- `registryType` tag added to MarketServer (e.g., npm/pypi)
+- Remote server transport: correctly set `streamable-http` type (previously not distinguished from sse)
+- Skills page `boundAgents` null causing component crash
+- Linux AppImage `.desktop` file path corrected to v3 generated path
+- Skills market loading slow: `populateContentHashes` changed from serial to concurrent (5 workers), reducing 50 skills from 50-100s to ~10s
+- Missing skill descriptions: `populateContentHashes` now parses SKILL.md frontmatter to fill Name and Description for skills.sh items
+- Duplicate CDN requests for GitHub skills: `fetchSkillMeta` computes ContentHash from already-fetched content, avoiding a second CDN request in `populateContentHashes`
+
+### CI
+
+- GitHub Actions build commands migrated to `wails3 task <platform>:build`
+- Added `wails3 task windows:package` step for NSIS installer generation
+- macOS/Linux build tasks separated into independent steps
+- Release script now syncs `build/config.yml` version
 
 ## [0.1.2] - 2026-07-15
 

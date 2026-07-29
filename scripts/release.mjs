@@ -64,7 +64,26 @@ function updateWailsJson() {
   console.log(`wails.json: ${oldVersion} -> ${version}`)
 }
 
-// --- 2. 更新 frontend/package.json ---
+// --- 2. 更新 build/config.yml (Wails v3) ---
+function updateBuildConfig() {
+  let content = readFileSync('build/config.yml', 'utf8')
+  const pattern = /^(  version:\s*")[^"]*(")/m
+  const match = content.match(pattern)
+  if (!match) {
+    console.log('build/config.yml: version field not found, skipping')
+    return
+  }
+  const oldVersion = match[0].slice(match[1].length, -match[2].length)
+  if (oldVersion === version) {
+    console.log(`build/config.yml: already ${version}, skipping`)
+    return
+  }
+  content = content.replace(pattern, `$1${version}$2`)
+  writeFileSync('build/config.yml', content)
+  console.log(`build/config.yml: ${oldVersion} -> ${version}`)
+}
+
+// --- 3. 更新 frontend/package.json ---
 function updatePackageJson() {
   const pkg = JSON.parse(readFileSync('frontend/package.json', 'utf8'))
   const oldVersion = pkg.version
@@ -77,7 +96,7 @@ function updatePackageJson() {
   console.log(`frontend/package.json: ${oldVersion} -> ${version}`)
 }
 
-// --- 3. 处理 CHANGELOG ---
+// --- 4. 处理 CHANGELOG ---
 function updateChangelog(file) {
   let content = readFileSync(file, 'utf8')
   let modified = false
@@ -167,6 +186,7 @@ function updateChangelog(file) {
 // --- 执行 ---
 console.log(`\n=== Release v${version} ===\n`)
 updateWailsJson()
+updateBuildConfig()
 updatePackageJson()
 updateChangelog('CHANGELOG.md')
 updateChangelog('CHANGELOG_EN.md')

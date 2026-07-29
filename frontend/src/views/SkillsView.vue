@@ -4,7 +4,7 @@ import { useI18n } from 'vue-i18n'
 import { useSkillsStore } from '@/stores/skills'
 import { useAgentsStore } from '@/stores/agents'
 import { Card, CardContent, Button, Badge, Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui'
-import { PhTrash, PhSparkle, PhMagnifyingGlass, PhFileArchive, PhFolderOpen, PhArrowClockwise, PhArrowSquareOut } from '@phosphor-icons/vue'
+import { PhTrash, PhSparkle, PhMagnifyingGlass, PhFileArchive, PhFolderOpen, PhArrowClockwise } from '@phosphor-icons/vue'
 import { api, events, ApiError } from '@/lib/api'
 import { normalizeVariant, variantToBadge, agentDisplayName } from '@/composables/useAgentHelpers'
 import AgentToggleButton from '@/components/agent/AgentToggleButton.vue'
@@ -169,8 +169,8 @@ function toggleGroupSelect(group: { ids: string[] }, enabled: boolean) {
   selectedAgentIds.value = next
 }
 
-function isGroupBound(boundAgents: string[], group: { ids: string[] }) {
-  return group.ids.some(id => boundAgents.includes(id))
+function isGroupBound(boundAgents: string[] | null, group: { ids: string[] }) {
+  return group.ids.some(id => boundAgents?.includes(id) ?? false)
 }
 
 async function toggleGroup(skillId: string, group: { ids: string[] }, enabled: boolean) {
@@ -371,18 +371,6 @@ async function onUpdateAll() {
   }
 }
 
-// 生成 skill 的 GitHub 仓库链接（用于"前往仓库"按钮）
-function repoUrl(skill: { repoOwner?: string; repoName?: string; repoBranch?: string }): string | null {
-  if (!skill.repoOwner || !skill.repoName) return null
-  const branch = skill.repoBranch ? `/tree/${skill.repoBranch}` : ''
-  return `https://github.com/${skill.repoOwner}/${skill.repoName}${branch}`
-}
-
-// 在系统默认浏览器中打开仓库链接
-function openRepo(url: string) {
-  api.system.openUrl(url)
-}
-
 async function scanSkills() {
   try {
     scanning.value = true
@@ -493,7 +481,7 @@ async function scanSkills() {
                   <Badge variant="outline">{{ skill.directory }}</Badge>
                   <Badge v-if="skills.updateStatusOf(skill.id)?.hasUpdate" variant="warning">{{ t('skills.hasUpdate') }}</Badge>
                   <Badge v-else-if="skills.updateStatusOf(skill.id)?.error" variant="destructive" :title="skills.updateStatusOf(skill.id)!.error">{{ t('skills.checkFailed') }}</Badge>
-                  <span v-if="skill.boundAgents.length > 0" class="text-[11px] text-muted-foreground">{{ t('skills.boundAgentCount', { count: skill.boundAgents.length }) }}</span>
+                  <span v-if="skill.boundAgents && skill.boundAgents.length > 0" class="text-[11px] text-muted-foreground">{{ t('skills.boundAgentCount', { count: skill.boundAgents.length }) }}</span>
                 </div>
 
                 <div class="mt-3 flex flex-nowrap items-center gap-2 border-t border-border pt-3">
@@ -528,16 +516,7 @@ async function scanSkills() {
                 >
                   <PhArrowClockwise :size="14" :class="{ 'animate-spin': skills.updatingSkillIds.has(skill.id) }" />
                 </Button>
-                <Button
-                  v-if="repoUrl(skill)"
-                  variant="ghost"
-                  size="icon"
-                  :aria-label="t('skills.goToRepo')"
-                  :title="t('skills.goToRepo')"
-                  @click="openRepo(repoUrl(skill)!)"
-                >
-                  <PhArrowSquareOut :size="14" />
-                </Button>
+                
                 <Button variant="outline" size="icon" class="border-destructive/40 text-destructive hover:bg-destructive/10" :aria-label="t('common.uninstall')" @click="uninstallSkill(skill.id)">
                   <PhTrash :size="14" class="text-destructive" />
                 </Button>

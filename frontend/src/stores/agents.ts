@@ -57,6 +57,41 @@ export const useAgentsStore = defineStore('agents', () => {
     return groups
   })
 
+  // 包含 not_found agent 的合并组（用于设置页面显示所有 agent）
+  const allMergedGroups = computed<AgentGroup[]>(() => {
+    const map = new Map<string, Agent[]>()
+    for (const a of items.value) {
+      const key = `${a.name}|${a.configPath}`
+      const list = map.get(key)
+      if (list) list.push(a)
+      else map.set(key, [a])
+    }
+    const groups: AgentGroup[] = []
+    for (const [, members] of map) {
+      const preferred = members.find(a => a.variant === 'cli') ?? members[0]
+      const anyEnabled = members.some(a => a.status === 'enabled' || a.status === 'detected')
+      const worstStatus = members.some(a => a.status === 'error')
+        ? 'error'
+        : members.some(a => a.status === 'not_found')
+          ? (members.some(a => a.status !== 'not_found') ? 'enabled' : 'not_found')
+          : anyEnabled ? 'enabled' : 'disabled'
+      groups.push({
+        ids: members.map(a => a.id),
+        id: preferred.id,
+        name: preferred.name,
+        status: worstStatus,
+        configPath: preferred.configPath,
+      })
+    }
+    groups.sort((a, b) => {
+      const aNotFound = a.status === 'not_found' ? 1 : 0
+      const bNotFound = b.status === 'not_found' ? 1 : 0
+      if (aNotFound !== bNotFound) return aNotFound - bNotFound
+      return a.name.localeCompare(b.name)
+    })
+    return groups
+  })
+
   async function fetch() {
     if (loading.value) return
     loading.value = true
@@ -117,6 +152,7 @@ export const useAgentsStore = defineStore('agents', () => {
     totalMcp,
     sorted,
     mergedGroups,
+    allMergedGroups,
     fetch,
     rescan,
     toggle,

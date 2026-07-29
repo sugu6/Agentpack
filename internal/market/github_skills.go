@@ -1,7 +1,10 @@
 package market
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -124,6 +127,10 @@ func (f *GitHubSkillFetcher) Search(ctx context.Context, opts SearchOptions) (*S
 	}
 
 	total := len(allSkills)
+	// 确保 items 非 nil,nil slice 会被 JSON 序列化为 null,导致前端 `...more.items` 崩溃
+	if allSkills == nil {
+		allSkills = []MarketSkill{}
+	}
 	// 不分页，直接返回全部（仓库扫描结果通常 < 100 条）
 	result := &SearchResultSkills{
 		Items:   allSkills,
@@ -265,12 +272,9 @@ func (f *GitHubSkillFetcher) scanRepo(ctx context.Context, repo RepoRef) ([]Mark
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
-			skill, err := f.fetchSkillMeta(ctx, repo, branch, item.directory, item.fullPath)
-			if err != nil {
-				// 记录失败日志，方便调试（不影响其他 skill 的扫描）
-				log.Printf("github skills: skip %s/%s/%s: %v", repo.Owner, repo.Name, item.directory, err)
-				return
-			}
+			// fetchSkillMeta 内部对 CDN 失败做降级处理，始终返回有效 MarketSkill
+			// 避免 jsDelivr 限流/网络抖动导致整个 skill 从市场消失
+			skill := f.fetchSkillMeta(ctx, repo, branch, item.directory, item.fullPath)
 			mu.Lock()
 			skills = append(skills, skill)
 			mu.Unlock()
@@ -285,7 +289,15 @@ func (f *GitHubSkillFetcher) scanRepo(ctx context.Context, repo RepoRef) ([]Mark
 // directory: SKILL.md 所在目录的最后一段（用于显示）
 // fullPath: SKILL.md 所在目录的完整相对路径（如 "skills/pdf"，根目录为空）
 // 使用 jsDelivr CDN URL 格式: https://cdn.jsdelivr.net/gh/{owner}/{repo}@{branch}/{path}/SKILL.md
-func (f *GitHubSkillFetcher) fetchSkillMeta(ctx context.Context, repo RepoRef, branch, directory, fullPath string) (MarketSkill, error) {
+//
+// 重要：即使 SKILL.md 拉取失败（CDN 限流、网络抖动、5xx 等），也返回降级 MarketSkill
+// （Name=directory，Description=""），而不是返回错误让调用方跳过该 skill。
+// 原因：SKILL.md 内容仅用于卡片展示（名称/描述），安装流程使用 GitHub tarball API +
+// Directory/FullPath 字段定位 skill 目录，完全不依赖 SKILL.md 内容。
+// 之前的实现：CDN 失败 → fetchSkillMeta 返回 error → scanRepo 跳过该 skill →
+// 用户看到 skills 数量大幅减少（实测 anthropics/skills 18 个 skill 只有 1 个能显示）。
+// 修复后：CDN 失败 → 降级返回（Name=directory，Description=""）→ skill 仍出现在市场中。
+func (f *GitHubSkillFetcher) fetchSkillMeta(ctx context.Context, repo RepoRef, branch, directory, fullPath string) MarketSkill {
 	// 拼接 jsDelivr CDN URL
 	// 格式: https://cdn.jsdelivr.net/gh/{owner}/{repo}@{branch}/{path}/SKILL.md
 	// fullPath 为空时表示 SKILL.md 在根目录
@@ -305,19 +317,24 @@ func (f *GitHubSkillFetcher) fetchSkillMeta(ctx context.Context, repo RepoRef, b
 
 	resp, err := f.hc.Get(ctx, rawURL)
 	if err != nil {
-		return MarketSkill{}, fmt.Errorf("fetch SKILL.md for %s: %w", directory, err)
+		// 网络错误：降级返回，不跳过 skill
+		log.Printf("github skills: fetch SKILL.md for %s/%s/%s failed, using fallback: %v", repo.Owner, repo.Name, directory, err)
+		return fallbackSkill(repo, branch, directory, fullPath)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != 200 {
 		drainBody(resp.Body)
-		return MarketSkill{}, fmt.Errorf("SKILL.md for %s: status %d", directory, resp.StatusCode)
+		// 非 200（如 404/429/5xx）：降级返回，不跳过 skill
+		log.Printf("github skills: SKILL.md for %s/%s/%s returned status %d, using fallback", repo.Owner, repo.Name, directory, resp.StatusCode)
+		return fallbackSkill(repo, branch, directory, fullPath)
 	}
 
 	// 限制读取 256KB（SKILL.md 通常 < 10KB）
 	data, err := io.ReadAll(io.LimitReader(resp.Body, 256*1024))
 	if err != nil {
-		return MarketSkill{}, fmt.Errorf("read SKILL.md for %s: %w", directory, err)
+		log.Printf("github skills: read SKILL.md for %s/%s/%s failed, using fallback: %v", repo.Owner, repo.Name, directory, err)
+		return fallbackSkill(repo, branch, directory, fullPath)
 	}
 
 	meta := parseSkillFrontmatter(data)
@@ -326,21 +343,48 @@ func (f *GitHubSkillFetcher) fetchSkillMeta(ctx context.Context, repo RepoRef, b
 		name = directory
 	}
 
+	// 从已拉取的 SKILL.md 内容计算 ContentHash，避免后续 populateContentHashes 再次从 CDN 拉取
+	normalized := bytes.ReplaceAll(data, []byte{'\r', '\n'}, []byte{'\n'})
+	h := sha256.Sum256(normalized)
+	contentHash := hex.EncodeToString(h[:])
+
+	return MarketSkill{
+		ID:           fmt.Sprintf("github:%s/%s/%s", repo.Owner, repo.Name, directory),
+		Name:         name,
+		Description:  meta.Description,
+		Directory:    directory,
+		FullPath:     fullPath, // 保存完整相对路径，安装时用于精准定位 tarball 中的 skill 目录
+		Source:       SourceGitHub,
+		SourceID:     fmt.Sprintf("%s/%s", repo.Owner, repo.Name),
+		Installs:     0, // GitHub 仓库扫描无下载量
+		RepoOwner:    repo.Owner,
+		RepoName:     repo.Name,
+		RepoBranch:   branch,
+		ReadmeURL:    fmt.Sprintf("https://github.com/%s/%s", repo.Owner, repo.Name),
+		UpdatedAt:    "",
+		ContentHash:  contentHash,
+	}
+}
+
+// fallbackSkill 返回 SKILL.md 拉取失败时的降级 MarketSkill
+// Name 使用 directory（最后一段路径），Description 为空
+// 安装流程不依赖这些字段，仍可正常安装
+func fallbackSkill(repo RepoRef, branch, directory, fullPath string) MarketSkill {
 	return MarketSkill{
 		ID:          fmt.Sprintf("github:%s/%s/%s", repo.Owner, repo.Name, directory),
-		Name:        name,
-		Description: meta.Description,
+		Name:        directory,
+		Description: "",
 		Directory:   directory,
-		FullPath:    fullPath, // 保存完整相对路径，安装时用于精准定位 tarball 中的 skill 目录
+		FullPath:    fullPath,
 		Source:      SourceGitHub,
 		SourceID:    fmt.Sprintf("%s/%s", repo.Owner, repo.Name),
-		Installs:    0, // GitHub 仓库扫描无下载量
+		Installs:    0,
 		RepoOwner:   repo.Owner,
 		RepoName:    repo.Name,
 		RepoBranch:  branch,
 		ReadmeURL:   fmt.Sprintf("https://github.com/%s/%s", repo.Owner, repo.Name),
 		UpdatedAt:   "",
-	}, nil
+	}
 }
 
 // skillMeta 是 SKILL.md frontmatter 的解析结果

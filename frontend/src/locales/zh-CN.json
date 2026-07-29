@@ -40,7 +40,10 @@
     "description": "描述",
     "selected": "已选",
     "agentCount": "{count} 个 Agent",
-    "operationFailed": "操作失败"
+    "operationFailed": "操作失败",
+    "scrollForMore": "加载更多",
+    "loadedProgress": "已加载 {loaded} / {total}",
+    "allLoaded": "已显示全部 {count} 项"
   },
   "settings": {
     "title": "设置",
@@ -118,7 +121,18 @@
       "repoHint": "支持 owner/name 或完整 GitHub URL，分支默认 main（URL 含 /tree/branch 时自动识别）",
       "editRepoAria": "编辑 {name}",
       "removeRepoAria": "移除 {name}",
-      "invalidRepoUrl": "请输入有效的仓库地址，如 anthropics/skills"
+      "invalidRepoUrl": "请输入有效的仓库地址，如 anthropics/skills",
+      "migrateDialog": {
+        "title": "迁移 Skills 存储位置",
+        "desc": "即将将所有 Skills 从旧目录迁移到新目录，此操作可能需要一些时间。",
+        "from": "当前",
+        "to": "目标",
+        "migrating": "正在迁移...",
+        "migrateBtn": "开始迁移",
+        "cancelBtn": "取消",
+        "success": "Skills 迁移完成，共迁移 {count} 个",
+        "error": "Skills 迁移失败：{error}"
+      }
     },
     "agents": {
       "title": "Agents 管理",
@@ -371,9 +385,6 @@
     "deployed": "已部署",
     "verified": "已验证",
     "resultCount": "{count} 个",
-    "scrollForMore": "滚动加载更多",
-    "allServersShown": "已显示全部 {count} 个服务器",
-    "allSkillsShown": "已显示全部 {count} 个 skill",
     "noServers": "未找到服务器",
     "noServersDesc": "尝试不同的搜索关键词，或调整筛选条件。",
     "noMcpSource": "无可用 MCP 来源",

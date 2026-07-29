@@ -2,58 +2,54 @@ package main
 
 import (
 	_ "embed"
-	"log"
 
 	"agentpack/internal/i18n"
 
-	"github.com/energye/systray"
+	"github.com/wailsapp/wails/v3/pkg/application"
 )
 
 //go:embed build/windows/icon.ico
 var trayIconData []byte
 
-// trayMenuRefs 保存托盘菜单项引用,用于 rebuild
-var trayMenuRefs struct {
-	show  *systray.MenuItem
-	quit  *systray.MenuItem
-}
+// 托盘菜单项引用，用于语言切换时更新文案
+var (
+	trayShowItem *application.MenuItem
+	trayQuitItem *application.MenuItem
+)
 
-// setupTray 启动系统托盘（在 goroutine 中运行，三端通用）
-func setupTray(app *App) {
-	systray.Run(func() {
-		lang := i18n.ResolveLanguage(app.cfg.Settings.Language)
-		buildTrayMenu(app, lang)
-	}, func() {
-		// onExit: systray 已停止，不做额外清理
-		log.Println("systray exited")
+// setupTray 使用 v3 原生 SystemTray API 创建系统托盘。
+func setupTray(wailsApp *application.App, app *App) *application.SystemTray {
+	lang := i18n.ResolveLanguage(app.cfg.Settings.Language)
+
+	menu := application.NewMenu()
+	trayShowItem = menu.Add(i18n.T(lang, "tray.show"))
+	trayShowItem.OnClick(func(ctx *application.Context) {
+		app.ShowWindow()
 	})
+	menu.AddSeparator()
+	trayQuitItem = menu.Add(i18n.T(lang, "tray.quit"))
+	trayQuitItem.OnClick(func(ctx *application.Context) {
+		app.Quit()
+	})
+
+	tray := wailsApp.SystemTray.New().
+		SetIcon(trayIconData).
+		SetMenu(menu)
+	tray.SetTooltip(i18n.T(lang, "tray.tooltip"))
+
+	return tray
 }
 
-// buildTrayMenu 构建托盘菜单（支持语言切换时重建）
-func buildTrayMenu(app *App, lang string) {
-	systray.SetIcon(trayIconData)
-	systray.SetTitle("AgentPack")
-	systray.SetTooltip(i18n.T(lang, "tray.tooltip"))
-
-	trayMenuRefs.show = systray.AddMenuItem(i18n.T(lang, "tray.show"), i18n.T(lang, "tray.show"))
-	trayMenuRefs.quit = systray.AddMenuItem(i18n.T(lang, "tray.quit"), i18n.T(lang, "tray.quit"))
-
-	trayMenuRefs.show.Click(func() { app.ShowWindow() })
-	trayMenuRefs.quit.Click(func() { app.Quit() })
-}
-
-// rebuildTrayMenu 切换语言后重建托盘菜单文案
-// 注意: systray 库限制,仅更新 tooltip 与菜单项标题,不重新绑定 click（避免重复绑定）
-func rebuildTrayMenu(lang string) {
-	if trayMenuRefs.show == nil {
+// rebuildTrayMenu 切换语言后更新托盘菜单文案
+func rebuildTrayMenu(tray *application.SystemTray, lang string) {
+	if tray == nil {
 		return
 	}
-	systray.SetTooltip(i18n.T(lang, "tray.tooltip"))
-	trayMenuRefs.show.SetTitle(i18n.T(lang, "tray.show"))
-	trayMenuRefs.quit.SetTitle(i18n.T(lang, "tray.quit"))
-}
-
-// cleanupTray 停止系统托盘
-func cleanupTray() {
-	systray.Quit()
+	tray.SetTooltip(i18n.T(lang, "tray.tooltip"))
+	if trayShowItem != nil {
+		trayShowItem.SetLabel(i18n.T(lang, "tray.show"))
+	}
+	if trayQuitItem != nil {
+		trayQuitItem.SetLabel(i18n.T(lang, "tray.quit"))
+	}
 }

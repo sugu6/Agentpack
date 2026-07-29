@@ -60,6 +60,8 @@ func (b *TomlBackend) Read(path string) (map[string]Server, error) {
 				transport = TransportSSE
 			} else if ts.Type == "http" {
 				transport = TransportHTTP
+			} else if ts.Type == "streamable-http" {
+				transport = TransportStreamableHTTP
 			} else if ts.Command == "" && ts.URL != "" {
 				transport = TransportHTTP
 			}
@@ -144,6 +146,8 @@ func parseTomlServer(name string, prim toml.Primitive) (Server, error) {
 		transport = TransportSSE
 	} else if ts.Type == "http" {
 		transport = TransportHTTP
+	} else if ts.Type == "streamable-http" {
+		transport = TransportStreamableHTTP
 	} else if ts.Command == "" && ts.URL != "" {
 		transport = TransportHTTP
 	}

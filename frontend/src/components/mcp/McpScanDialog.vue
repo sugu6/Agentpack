@@ -3,9 +3,11 @@ import { ref, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useMcpStore } from '@/stores/mcp'
 import { useAgentsStore } from '@/stores/agents'
+import type { ScanItem } from '@/lib/api'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, Button, Badge, DialogFooter } from '@/components/ui'
 import AgentToggleButton from '@/components/agent/AgentToggleButton.vue'
-import { getVariantFromId, variantToBadge } from '@/composables/useAgentHelpers'
+import { normalizeVariant, variantToBadge, agentDisplayName } from '@/composables/useAgentHelpers'
+
 import { PhMagnifyingGlass, PhCheckCircle, PhWarningCircle } from '@phosphor-icons/vue'
 import { useToast } from '@/composables/useToast'
 
@@ -37,10 +39,15 @@ const selectedNames = computed(() => {
   return names
 })
 
-function resolveSourceAgentIds(item: { configPath: string }): Set<string> {
+function resolveSourceAgentIds(item: ScanItem): Set<string> {
   const ids = new Set<string>()
+  // 同一 MCP 可能来自多个 agent 配置（如 Claude Code 和 OpenCode 都装了 context7），
+  // 默认勾选所有来源 agent。
   for (const g of enabledAgentGroups.value) {
-    if (item.configPath.startsWith(g.configPath) || g.configPath.startsWith(item.configPath)) {
+    const isSource = item.sources.some(s =>
+      s.configPath.startsWith(g.configPath) || g.configPath.startsWith(s.configPath)
+    )
+    if (isSource) {
       g.ids.forEach(id => ids.add(id))
     }
   }
@@ -142,10 +149,11 @@ function isGroupSelected(name: string, group: { ids: string[] }): boolean {
   return group.ids.some(id => selected.has(id))
 }
 
-function isSourceAgent(name: string, group: { id: string }): boolean {
+function isSourceAgent(name: string, group: { ids: string[] }): boolean {
   const item = newItems.value.find(i => i.server.name === name)
   if (!item) return false
-  return item.agentId === group.id
+  // 检查该 group 中的任意 agent 是否为该 MCP 的来源之一
+  return item.sources.some(s => group.ids.includes(s.agentId))
 }
 
 async function handleAdd() {
@@ -260,7 +268,8 @@ async function handleAdd() {
                     {{ item.server.url }}
                   </div>
                   <p class="mt-0.5 text-[10px] text-muted-foreground/70">
-                    {{ t('mcp.sourceLabel') }}: {{ item.agentName }} · {{ item.configPath }}
+                    <template v-if="item.sources.length > 1">{{ item.sources.map(s => s.agentName).join(' / ') }}</template>
+                    <template v-else>{{ t('mcp.sourceLabel') }}: {{ item.sources[0]?.agentName }}</template>
                   </p>
                 </div>
               </div>
@@ -273,12 +282,12 @@ async function handleAdd() {
                 >
                   <AgentToggleButton
                     :agent-id="group.id"
-                    :agent-name="group.name"
+                    :agent-name="group.ids.length > 1 ? group.name : agentDisplayName({ name: group.name, id: group.id })"
                     :model-value="isGroupSelected(item.server.name, group)"
-                    :badge="variantToBadge(getVariantFromId(group.id))"
+                    :badge="group.ids.length > 1 ? null : variantToBadge(normalizeVariant(undefined, group.id))"
                     @update:model-value="(v: boolean) => toggleAgent(item.server.name, group.id, v)"
                   />
-                  <Badge v-if="isSourceAgent(item.server.name, group)" variant="secondary" class="text-[9px] px-1 py-0">{{ t('mcp.sourceBadge') }}</Badge>
+                  <Badge v-if="item.sources.length === 1 && isSourceAgent(item.server.name, group)" variant="secondary" class="text-[9px] px-1 py-0">{{ t('mcp.sourceBadge') }}</Badge>
                 </div>
               </div>
             </div>

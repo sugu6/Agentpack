@@ -19,7 +19,6 @@ func TestDiagnostic_OldCacheKeys(t *testing.T) {
 		{"search-skills", SourceGitHub},
 		{"search-skills", SourceSkillsSh},
 		{"search", SourceOfficial},
-		{"search", SourceSmithery},
 	}
 
 	t.Log("=== NEW cache keys (v2, Page=0) ===")
@@ -35,5 +34,4 @@ func TestDiagnostic_OldCacheKeys(t *testing.T) {
 	t.Log("=== Actual cache files in dir ===")
 	t.Log("1b7c5d1508d121c057dc9088e4bc86dd.json (10923 bytes) - official MCP")
 	t.Log("b8348d9cb1e5a1571d791ef24befd398.json (47 bytes) - empty skills result")
-	t.Log("ffead36ba13dda6c557f536daf8c2629.json (14337 bytes) - smithery MCP")
 }

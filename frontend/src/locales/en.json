@@ -40,7 +40,10 @@
     "description": "Description",
     "selected": "Selected",
     "agentCount": "{count} agents",
-    "operationFailed": "Operation failed"
+    "operationFailed": "Operation failed",
+    "scrollForMore": "Load more",
+    "loadedProgress": "Loaded {loaded} / {total}",
+    "allLoaded": "All {count} items shown"
   },
   "settings": {
     "title": "Settings",
@@ -118,7 +121,18 @@
       "repoHint": "Supports owner/name or full GitHub URL. Branch defaults to main (auto-detected from /tree/branch in URL).",
       "editRepoAria": "Edit {name}",
       "removeRepoAria": "Remove {name}",
-      "invalidRepoUrl": "Please enter a valid repository URL, e.g. anthropics/skills"
+      "invalidRepoUrl": "Please enter a valid repository URL, e.g. anthropics/skills",
+      "migrateDialog": {
+        "title": "Migrate Skills Storage",
+        "desc": "All skills will be migrated from the old directory to the new one. This may take a while.",
+        "from": "Current",
+        "to": "Target",
+        "migrating": "Migrating...",
+        "migrateBtn": "Start Migration",
+        "cancelBtn": "Cancel",
+        "success": "Skills migration complete, {count} items migrated",
+        "error": "Skills migration failed: {error}"
+      }
     },
     "agents": {
       "title": "Agents management",
@@ -371,9 +385,6 @@
     "deployed": "Deployed",
     "verified": "Verified",
     "resultCount": "{count} items",
-    "scrollForMore": "Scroll to load more",
-    "allServersShown": "All {count} servers shown",
-    "allSkillsShown": "All {count} skills shown",
     "noServers": "No servers found",
     "noServersDesc": "Try a different keyword, or adjust the filters.",
     "noMcpSource": "No MCP source available",

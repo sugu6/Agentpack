@@ -1,31 +1,20 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { PhStorefront, PhMagnifyingGlass, PhBooks, PhSparkle, PhFunnel } from '@phosphor-icons/vue'
-import { Button, Input, Spinner, Tabs, TabsList, TabsTrigger, TabsContent, Empty, EmptyHeader, EmptyTitle, EmptyDescription, Select, SelectTrigger, SelectValue, SelectContent, SelectItem, SelectPortal, Checkbox } from '@/components/ui'
+import { PhStorefront, PhMagnifyingGlass, PhBooks, PhSparkle } from '@phosphor-icons/vue'
+import { Button, Input, Spinner, Tabs, TabsList, TabsTrigger, TabsContent, Empty, EmptyHeader, EmptyTitle, EmptyDescription } from '@/components/ui'
 import MarketCard from '@/components/market/MarketCard.vue'
 import SkillMarketCard from '@/components/market/SkillMarketCard.vue'
+import LoadMore from '@/components/common/LoadMore.vue'
 import { useMarketStore } from '@/stores/market'
 import { useSettingsStore } from '@/stores/settings'
 import { useSkillsStore } from '@/stores/skills'
 import { useMcpStore } from '@/stores/mcp'
 import { events } from '@/lib/api'
 import type { MarketServer } from '@/lib/api'
+import { transportLabel } from '@/lib/utils'
 
 const PAGE_SIZE = 30
-const ALL_VALUE = '__all__'
-
-// Smithery 分类预设（来自 smithery.ai/servers 顶部 Categories）
-// 每个分类对应一个语义搜索 query，选中时触发新搜索替换当前 query
-const SMITHERY_CATEGORIES: { labelKey: string; query: string }[] = [
-  { labelKey: 'market.all', query: '' },
-  { labelKey: 'market.smitheryCategory.webSearch', query: 'search the web for information' },
-  { labelKey: 'market.smitheryCategory.browserAutomation', query: 'automate and control web browsers' },
-  { labelKey: 'market.smitheryCategory.academic', query: 'research papers citations and scholarly' },
-  { labelKey: 'market.smitheryCategory.finance', query: 'financial data stocks and trading' },
-  { labelKey: 'market.smitheryCategory.reasoning', query: 'thinking reasoning and problem solving' },
-  { labelKey: 'market.smitheryCategory.devTools', query: 'software development and coding tools' },
-]
 
 const { t } = useI18n()
 const market = useMarketStore()
@@ -35,152 +24,139 @@ const mcpStore = useMcpStore()
 
 const query = ref('')
 const skillQuery = ref('')
+const transportFilter = ref<string>('')
 const mode = ref<'servers' | 'skills'>('servers')
-const mcpSource = ref<'official' | 'smithery'>('official')
 const skillSource = ref<'github' | 'skills-sh'>('github')
 const mounted = ref(true)
 const skillsSearched = ref(false)
+// 搜索按钮加载状态（含最小显示时间，避免太快看不到 spinner）
+const searching = ref(false)
 let unsubscribeReposChanged: (() => void) | undefined
 let unsubscribeMcpChanged: (() => void) | undefined
 
-// 筛选状态
-// Smithery：toggle 通过拼接 is:xxx query 语法发送服务端过滤（与分类 query 组合）
-const smitheryFilter = ref<{ category: string; deployed: boolean; verified: boolean; bySmithery: boolean }>({
-  category: ALL_VALUE, deployed: false, verified: false, bySmithery: false,
-})
-// Official：API 不支持 registry/transport 服务端过滤，仅客户端过滤已加载结果
-const officialFilter = ref<{ registry: string; transport: string }>({
-  registry: ALL_VALUE, transport: ALL_VALUE,
-})
-
-// 构造 Smithery 完整 query（分类 query + toggle 的 is:xxx 语法）
-function buildSmitheryQuery(): string {
-  const parts: string[] = []
-  const categoryQuery = smitheryFilter.value.category === ALL_VALUE ? '' : smitheryFilter.value.category
-  if (categoryQuery) parts.push(categoryQuery)
-  if (smitheryFilter.value.bySmithery) parts.push('is:smithery-managed')
-  if (smitheryFilter.value.deployed) parts.push('is:deployed')
-  if (smitheryFilter.value.verified) parts.push('is:verified')
-  // 用户输入的搜索词（如果有且与分类不冲突）
-  const userInput = query.value.trim()
-  if (userInput && userInput !== categoryQuery) {
-    parts.unshift(userInput)
-  }
-  return parts.join(' ')
-}
-
-// 无限滚动哨兵
+// 滚动容器,作为各 tab 内 LoadMore 组件 IntersectionObserver 的 root
 const scrollContainer = ref<HTMLElement | null>(null)
-const sentinel = ref<HTMLElement | null>(null)
-let sentinelObserver: IntersectionObserver | null = null
 
 const total = computed(() => market.servers.total)
 const skillTotal = computed(() => market.skills.total)
 
-// 筛选选项（从已加载结果动态提取）
-const officialRegistries = computed(() => {
-  const set = new Set<string>()
-  for (const s of market.servers.items) {
-    if (s.registry) set.add(s.registry)
-  }
-  return [...set].sort()
-})
+// 固定展示所有已知 transport 类型,避免因首页分页未加载到某类型(如 streamable-http)而隐藏筛选选项
+const transportOptions = ['stdio', 'sse', 'streamable-http']
 
-// 应用筛选后的服务器列表
-// Smithery：toggle 已通过 query 语法发送服务端过滤，此处直接返回 items
-// Official：API 不支持服务端过滤，此处仅客户端过滤已加载结果
+// transport 筛选在前端做(从已加载的 items 累积过滤)。
+// registry API 不支持 transport 筛选参数,后端只做 API cursor 分页,
+// 前端从已加载的所有 items 里按 transport 过滤,随 loadMore 加载更多数据而逐渐完整。
 const filteredServers = computed<MarketServer[]>(() => {
-  const items = market.servers.items
-  if (mcpSource.value === 'official') {
-    const f = officialFilter.value
-    return items.filter(s =>
-      (!f.registry || f.registry === ALL_VALUE || s.registry === f.registry)
-      && (!f.transport || f.transport === ALL_VALUE || s.transport === f.transport),
-    )
-  }
-  return items
+  const transport = transportFilter.value
+  if (!transport) return market.servers.items
+  return market.servers.items.filter((s) => {
+    const t = s.transport || 'stdio'
+    return t === transport
+  })
 })
 
-const hasResults = computed(() => filteredServers.value.length > 0)
+// hasResults 基于 API 返回的 items(不是筛选后的),用于控制空状态和 LoadMore 显示。
+// 这样 transport 筛选后即使无结果,只要 API 有数据,LoadMore 仍会显示,用户可加载更多。
+const hasResults = computed(() => market.servers.items.length > 0)
 const hasSkillResults = computed(() => market.skills.items.length > 0)
 const isSourceEnabled = (key: string) => computed(() => settings.config.marketSources?.[key]?.enabled !== false)
-const officialEnabled = isSourceEnabled('official')
-const smitheryEnabled = isSourceEnabled('smithery')
+const registryEnabled = isSourceEnabled('registry')
 const skillsShEnabled = isSourceEnabled('skills-sh')
 const githubEnabled = isSourceEnabled('github')
 const skillsSourceEnabled = computed(() => skillsShEnabled.value || githubEnabled.value)
-const mcpSourceAvailable = computed(() =>
-  mcpSource.value === 'official' ? officialEnabled.value : smitheryEnabled.value,
-)
+const mcpSourceAvailable = registryEnabled
 
-// 当前 tab 是否还有更多数据可加载（用于无限滚动分发）
-const currentHasMore = computed(() =>
-  mode.value === 'skills' ? market.skills.hasMore : market.servers.hasMore,
-)
-const currentLoading = computed(() =>
-  mode.value === 'skills' ? market.loadingSkills : market.loadingServers,
-)
+// 已加载条数(用于 LoadMore 进度显示)
+// serversLoaded 显示筛选后的数量(用户实际看到的),total 是 API 返回的总数
+const serversLoaded = computed(() => filteredServers.value.length)
+const skillsLoaded = computed(() => market.skills.items.length)
 
 onMounted(async () => {
   await settings.ensureLoaded()
   if (!mounted.value) return
   unsubscribeReposChanged = events.on('skills:repos-changed', onReposChanged)
   if (settings.isSkillReposChanged()) {
-    onReposChanged()
+    await onReposChanged()
   }
   unsubscribeMcpChanged = events.on('mcp:changed', onMcpChanged)
-  if (!officialEnabled.value && smitheryEnabled.value) {
-    mcpSource.value = 'smithery'
-  }
   if (!githubEnabled.value && skillsShEnabled.value) {
     skillSource.value = 'skills-sh'
   }
+  // 初始加载 MCP 服务器列表(API cursor 分页,transport 筛选由前端 computed 过滤)
   if (mcpSourceAvailable.value) {
-    await market.search(mcpSource.value, '', '', PAGE_SIZE)
+    await market.search('registry', '', '', PAGE_SIZE)
   }
+  // MCP 刷新在后台执行，不阻塞页面渲染
   mcpStore.refresh()
+  // Skills 已安装列表必须等加载完成
   await skillsStore.reload()
-  // 绑定无限滚动
-  bindSentinel()
 })
 
 onUnmounted(() => {
   mounted.value = false
-  sentinelObserver?.disconnect()
-  sentinelObserver = null
   unsubscribeReposChanged?.()
   unsubscribeMcpChanged?.()
 })
 
-function bindSentinel() {
-  if (!scrollContainer.value) return
-  sentinelObserver = new IntersectionObserver(
-    ([entry]) => {
-      if (!entry.isIntersecting) return
-      // 按 mode 分发到对应的 loadMore
-      if (mode.value === 'skills') {
-        if (market.skills.hasMore && !market.loadingSkills) {
-          market.loadMoreSkills()
-        }
-      } else {
-        if (market.servers.hasMore && !market.loadingServers) {
-          market.loadMore()
-        }
-      }
-    },
-    { root: scrollContainer.value, rootMargin: '0px 0px 300px 0px' },
-  )
-  if (sentinel.value) sentinelObserver.observe(sentinel.value)
+async function onSearch() {
+  if (!mcpSourceAvailable.value) return
+  if (searching.value) return
+  query.value = query.value.trim()
+  searching.value = true
+  try {
+    // 最小加载显示 300ms，确保 spinner 可见，避免搜索太快无反馈
+    await Promise.all([
+      market.search('registry', query.value, '', PAGE_SIZE),
+      new Promise(resolve => setTimeout(resolve, 300)),
+    ])
+  } finally {
+    searching.value = false
+  }
 }
 
-function searchGithubSkills() {
+// 搜索框清空时恢复全部列表,不走 onSearch(不显示搜索按钮 spinner)。
+// 优先恢复本地缓存的 baseServers(首页+已 loadMore 的),瞬时完成,无需等待 API。
+// 仅当 baseServers 为空(未加载过首页)时才调 API 拉取。
+function restoreServersIfEmpty() {
+  if (!mcpSourceAvailable.value) return
+  if (market.currentQuery === '') return
+  if (!market.restoreBaseServers()) {
+    market.search('registry', '', '', PAGE_SIZE)
+  }
+}
+
+// 直接在原生 DOM input 上监听 input 事件,绕开 Input 组件的事件透传问题。
+// 使用 data-slot="input" 选择器,与 Input.vue 内部 input 元素一致。
+let inputCleanup: (() => void) | undefined
+onMounted(() => {
+  import('vue').then(({ nextTick }) => {
+    nextTick(() => {
+      const el = document.querySelector<HTMLInputElement>('input[data-slot="input"]')
+      if (!el) return
+      const handler = () => {
+        if (el.value === '') restoreServersIfEmpty()
+      }
+      el.addEventListener('input', handler)
+      inputCleanup = () => el.removeEventListener('input', handler)
+    })
+  })
+})
+onUnmounted(() => {
+  inputCleanup?.()
+})
+
+// transport 筛选由前端 computed 过滤,切换时不需要调 API,瞬时无 loading。
+// 随 loadMore 加载更多数据,筛选结果会逐渐完整。
+// 注意:hasMore 基于 API 的 hasMore(不是筛选后的),所以即使筛选后结果很少,LoadMore 仍会继续加载。
+
+async function searchGithubSkills() {
   if (skillSource.value !== 'github' || !skillsSourceEnabled.value) return
   skillsSearched.value = true
-  market.searchSkills('', PAGE_SIZE, skillSource.value)
+  await market.searchSkills('', PAGE_SIZE, skillSource.value)
 }
 
-function onReposChanged() {
-  searchGithubSkills()
+async function onReposChanged() {
+  await searchGithubSkills()
 }
 
 function onMcpChanged() {
@@ -190,56 +166,6 @@ function onMcpChanged() {
 watch(mode, (newMode) => {
   if (newMode === 'skills') {
     searchGithubSkills()
-  }
-})
-
-async function onSearch() {
-  if (!mcpSourceAvailable.value) return
-  if (mcpSource.value === 'smithery') {
-    // Smithery：用 buildSmitheryQuery 组合用户输入 + toggle
-    // 用户手动输入时重置分类（避免与预设 query 冲突），用 silent 跳过 watch 触发的重复搜索
-    smitheryCategorySilent = true
-    smitheryFilter.value.category = ALL_VALUE
-    query.value = query.value.trim()
-    await market.search(mcpSource.value, buildSmitheryQuery(), '', PAGE_SIZE)
-  } else {
-    await market.search(mcpSource.value, query.value.trim(), '', PAGE_SIZE)
-  }
-}
-
-async function switchMcpSource(src: 'official' | 'smithery') {
-  if (mcpSource.value === src) return
-  mcpSource.value = src
-  query.value = ''
-  // 重置筛选状态（用 silent 跳过 watch 触发的重复搜索，下面会统一 search）
-  smitheryCategorySilent = true
-  smitheryFilter.value = { category: ALL_VALUE, deployed: false, verified: false, bySmithery: false }
-  officialFilter.value = { registry: ALL_VALUE, transport: ALL_VALUE }
-  if (mcpSourceAvailable.value) {
-    await market.search(src, '', '', PAGE_SIZE)
-  }
-}
-
-// Smithery toggle 切换：触发新搜索（重新组合 query 发送服务端过滤）
-async function onSmitheryToggleChange() {
-  if (!mcpSourceAvailable.value) return
-  await market.search(mcpSource.value, buildSmitheryQuery(), '', PAGE_SIZE)
-}
-
-// Select 通过 v-model 更新 smitheryFilter.category，watch 触发新搜索
-// smitheryCategorySilent 标志用于跳过程序化重置（switchMcpSource / onSearch）触发的重复搜索
-let smitheryCategorySilent = false
-watch(() => smitheryFilter.value.category, () => {
-  if (mcpSource.value !== 'smithery') return
-  if (smitheryCategorySilent) {
-    smitheryCategorySilent = false
-    return
-  }
-  const categoryQuery = smitheryFilter.value.category === ALL_VALUE ? '' : smitheryFilter.value.category
-  const cat = SMITHERY_CATEGORIES.find(c => c.query === categoryQuery)
-  query.value = cat?.query ?? ''
-  if (mcpSourceAvailable.value) {
-    market.search(mcpSource.value, buildSmitheryQuery(), '', PAGE_SIZE)
   }
 })
 
@@ -254,6 +180,11 @@ async function switchSkillSource(src: 'github' | 'skills-sh') {
     skillsSearched.value = false
     market.clearSkills()
   }
+}
+
+// 根据当前 skillSource 返回 skills-sh 或 github 对应的 i18n key 的翻译值
+function sk(shKey: string, ghKey: string): string {
+  return t(skillSource.value === 'skills-sh' ? shKey : ghKey)
 }
 
 async function onSkillSearch() {
@@ -283,7 +214,7 @@ async function onSkillSearch() {
       <div class="mx-auto max-w-6xl px-8 py-4">
         <Tabs v-model="mode" class="space-y-6">
           <TabsList>
-            <TabsTrigger value="servers" :disabled="!officialEnabled && !smitheryEnabled">
+            <TabsTrigger value="servers" :disabled="!mcpSourceAvailable">
               <PhBooks :size="13" class="mr-1.5" />
               {{ t('market.mcpServers') }}
               <span v-if="total > 0" class="ml-1.5 text-[10px] text-muted-foreground">{{ total }}</span>
@@ -298,7 +229,7 @@ async function onSkillSearch() {
           <!-- MCP 服务器 Tab -->
           <TabsContent value="servers" class="space-y-4">
             <Empty
-              v-if="!officialEnabled && !smitheryEnabled"
+              v-if="!mcpSourceAvailable"
             >
               <EmptyHeader>
                 <EmptyTitle>{{ t('market.noMcpSource') }}</EmptyTitle>
@@ -306,126 +237,49 @@ async function onSkillSearch() {
               </EmptyHeader>
             </Empty>
             <template v-else>
-              <!-- MCP 来源切换 -->
-              <div class="flex items-center gap-2">
-                <button
-                  v-if="officialEnabled"
-                  :aria-pressed="mcpSource === 'official'"
-                  class="rounded-md px-3 py-1.5 text-xs font-medium transition-all duration-200"
-                  :class="mcpSource === 'official' ? 'bg-primary text-primary-foreground shadow' : 'bg-muted/60 text-muted-foreground hover:bg-muted'"
-                  @click="switchMcpSource('official')"
-                >
-                  {{ t('market.official') }}
-                </button>
-                <button
-                  v-if="smitheryEnabled"
-                  :aria-pressed="mcpSource === 'smithery'"
-                  class="rounded-md px-3 py-1.5 text-xs font-medium transition-all duration-200"
-                  :class="mcpSource === 'smithery' ? 'bg-primary text-primary-foreground shadow' : 'bg-muted/60 text-muted-foreground hover:bg-muted'"
-                  @click="switchMcpSource('smithery')"
-                >
-                  Smithery
-                </button>
-              </div>
-
               <form class="flex items-center gap-2" @submit.prevent="onSearch">
                 <div class="relative flex-1">
                   <PhMagnifyingGlass :size="14" class="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
                   <Input
                     v-model="query"
-                    :placeholder="mcpSource === 'smithery' ? t('market.searchSmitheryPlaceholder') : t('market.searchMcpPlaceholder')"
+                    :placeholder="t('market.searchMcpPlaceholder')"
                     class="pl-9"
                     :aria-label="t('market.searchMcpAria')"
                   />
                 </div>
-                <Button type="submit" :disabled="market.loadingServers">
-                  <PhMagnifyingGlass :size="14" />
+                <Button type="submit" :disabled="searching">
+                  <Spinner v-if="searching" class="size-3.5" />
+                  <PhMagnifyingGlass v-else :size="14" />
                   {{ t('common.search') }}
                 </Button>
               </form>
 
-              <!-- 筛选条：
-                   Smithery：分类下拉 + toggle，通过 query 语法发送服务端过滤（与分类可组合）
-                   Official：registry/transport 下拉，仅客户端过滤已加载结果（API 不支持服务端筛选） -->
-              <div v-if="market.servers.items.length > 0" class="flex flex-wrap items-center gap-2 rounded-md border border-border bg-muted/20 px-3 py-2">
-                <div class="flex items-center gap-1.5 text-xs text-muted-foreground">
-                  <PhFunnel :size="12" />
-                  {{ t('market.filter') }}
-                </div>
-                <template v-if="mcpSource === 'smithery'">
-                  <Select v-model="smitheryFilter.category">
-                    <SelectTrigger size="sm" class="w-40 text-xs">
-                      <SelectValue :placeholder="t('market.selectCategory')" />
-                    </SelectTrigger>
-                    <SelectPortal>
-                      <SelectContent>
-                        <SelectItem v-for="cat in SMITHERY_CATEGORIES" :key="cat.labelKey" :value="cat.query || ALL_VALUE" class="text-xs">
-                          {{ t(cat.labelKey) }}
-                        </SelectItem>
-                      </SelectContent>
-                    </SelectPortal>
-                  </Select>
-                  <label class="inline-flex cursor-pointer items-center gap-1.5 text-xs">
-                    <Checkbox
-                      :model-value="smitheryFilter.bySmithery"
-                      @update:model-value="(v: boolean | 'indeterminate') => { smitheryFilter.bySmithery = v === true; onSmitheryToggleChange() }"
-                    />
-                    {{ t('market.smitheryOfficial') }}
-                  </label>
-                  <label class="inline-flex cursor-pointer items-center gap-1.5 text-xs">
-                    <Checkbox
-                      :model-value="smitheryFilter.deployed"
-                      @update:model-value="(v: boolean | 'indeterminate') => { smitheryFilter.deployed = v === true; onSmitheryToggleChange() }"
-                    />
-                    {{ t('market.deployed') }}
-                  </label>
-                  <label class="inline-flex cursor-pointer items-center gap-1.5 text-xs">
-                    <Checkbox
-                      :model-value="smitheryFilter.verified"
-                      @update:model-value="(v: boolean | 'indeterminate') => { smitheryFilter.verified = v === true; onSmitheryToggleChange() }"
-                    />
-                    {{ t('market.verified') }}
-                  </label>
-                  <!-- remote 在 API 中等同 is:deployed，不再单独暴露以避免重复 -->
-                </template>
-                <template v-else>
-                  <Select v-model="officialFilter.registry">
-                    <SelectTrigger size="sm" class="w-40 text-xs">
-                      <SelectValue :placeholder="t('market.allRegistries')" />
-                    </SelectTrigger>
-                    <SelectPortal>
-                      <SelectContent>
-                        <SelectItem :value="ALL_VALUE" class="text-xs">{{ t('market.allRegistries') }}</SelectItem>
-                        <SelectItem v-for="r in officialRegistries" :key="r" :value="r" class="text-xs">{{ r }}</SelectItem>
-                      </SelectContent>
-                    </SelectPortal>
-                  </Select>
-                  <Select v-model="officialFilter.transport">
-                    <SelectTrigger size="sm" class="w-44 text-xs">
-                      <SelectValue :placeholder="t('market.allTransports')" />
-                    </SelectTrigger>
-                    <SelectPortal>
-                      <SelectContent>
-                        <SelectItem :value="ALL_VALUE" class="text-xs">{{ t('market.allTransports') }}</SelectItem>
-                        <SelectItem value="stdio" class="text-xs">stdio</SelectItem>
-                        <SelectItem value="http" class="text-xs">http</SelectItem>
-                        <SelectItem value="sse" class="text-xs">sse</SelectItem>
-                      </SelectContent>
-                    </SelectPortal>
-                  </Select>
-                </template>
-                <span class="ml-auto text-[10px] text-muted-foreground">
-                  <template v-if="mcpSource === 'smithery'">
-                    {{ t('market.resultCount', { count: market.servers.total }) }}
-                  </template>
-                  <template v-else>
-                    {{ t('market.loadedCount', { loaded: filteredServers.length, total: market.servers.items.length }) }}
-                  </template>
-                </span>
+              <!-- Transport 筛选标签 -->
+              <div v-if="transportOptions.length > 0" class="flex items-center gap-1.5">
+                <span class="text-xs text-muted-foreground">{{ t('market.transportLabel') }}:</span>
+                <button
+                  :aria-pressed="transportFilter === ''"
+                  class="rounded-md px-2.5 py-1 text-[11px] font-medium transition-all duration-200"
+                  :class="transportFilter === '' ? 'bg-primary text-primary-foreground shadow' : 'bg-muted/60 text-muted-foreground hover:bg-muted'"
+                  @click="transportFilter = ''"
+                >
+                  {{ t('common.all') }}
+                </button>
+                <button
+                  v-for="opt in transportOptions"
+                  :key="opt"
+                  :aria-pressed="transportFilter === opt"
+                  class="rounded-md px-2.5 py-1 text-[11px] font-medium transition-all duration-200"
+                  :class="transportFilter === opt ? 'bg-primary text-primary-foreground shadow' : 'bg-muted/60 text-muted-foreground hover:bg-muted'"
+                  @click="transportFilter = opt"
+                >
+                  {{ transportLabel(opt) }}
+                </button>
               </div>
 
-              <div v-if="market.loadingServers && !hasResults" class="flex items-center justify-center py-12">
+              <div v-if="market.loadingServers && !hasResults" class="flex flex-col items-center justify-center gap-2 py-12 text-center">
                 <Spinner />
+                <p class="text-sm text-muted-foreground">{{ t('common.loading') }}</p>
               </div>
 
               <Empty
@@ -437,32 +291,12 @@ async function onSkillSearch() {
                 </EmptyHeader>
               </Empty>
 
-              <div v-else class="grid grid-cols-1 gap-4 lg:grid-cols-2">
+              <div v-else class="grid grid-cols-1 gap-4 lg:grid-cols-2 transition-opacity duration-200" :class="{ 'opacity-60 pointer-events-none': market.loadingServers && !hasResults }">
                 <MarketCard
                   v-for="server in filteredServers"
                   :key="server.sourceId"
                   :server="server"
                 />
-              </div>
-
-              <!-- 无限滚动提示行（与 Skills tab 统一） -->
-              <div
-                v-if="hasResults && market.servers.hasMore"
-                class="flex items-center justify-center gap-2 py-6 text-sm text-muted-foreground"
-              >
-                <template v-if="market.loadingServers">
-                  <Spinner />
-                  <span>{{ t('common.loading') }}</span>
-                </template>
-                <template v-else>
-                  <span>{{ t('market.scrollForMore') }}</span>
-                </template>
-              </div>
-              <div
-                v-else-if="hasResults && market.servers.total > 0 && !market.servers.hasMore"
-                class="flex items-center justify-center py-6 text-sm text-muted-foreground"
-              >
-                <span>{{ t('market.allServersShown', { count: market.servers.total }) }}</span>
               </div>
             </template>
           </TabsContent>
@@ -505,7 +339,7 @@ async function onSkillSearch() {
                   <PhMagnifyingGlass :size="14" class="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
                   <Input
                     v-model="skillQuery"
-                    :placeholder="skillSource === 'skills-sh' ? t('market.searchSkillsShPlaceholder') : t('market.searchGithubSkillsPlaceholder')"
+                    :placeholder="sk('market.searchSkillsShPlaceholder', 'market.searchGithubSkillsPlaceholder')"
                     class="pl-9"
                     :aria-label="t('market.searchSkillsAria')"
                   />
@@ -520,18 +354,17 @@ async function onSkillSearch() {
                 {{ t('market.skillsShMinLength') }}
               </p>
 
-              <div v-if="market.loadingSkills && !hasSkillResults" class="flex items-center justify-center py-12">
+              <div v-if="market.loadingSkills && !hasSkillResults" class="flex flex-col items-center justify-center gap-2 py-12 text-center">
                 <Spinner />
+                <p class="text-sm text-muted-foreground">{{ t('common.loading') }}</p>
               </div>
 
               <Empty
                 v-else-if="!skillsSearched"
               >
                 <EmptyHeader>
-                  <EmptyTitle>{{ skillSource === 'skills-sh' ? t('market.searchSkillsShPrompt') : t('market.searchGithubPrompt') }}</EmptyTitle>
-                  <EmptyDescription>{{ skillSource === 'skills-sh'
-                    ? t('market.searchSkillsShPromptDesc')
-                    : t('market.searchGithubPromptDesc') }}</EmptyDescription>
+                  <EmptyTitle>{{ sk('market.searchSkillsShPrompt', 'market.searchGithubPrompt') }}</EmptyTitle>
+                  <EmptyDescription>{{ sk('market.searchSkillsShPromptDesc', 'market.searchGithubPromptDesc') }}</EmptyDescription>
                 </EmptyHeader>
               </Empty>
 
@@ -539,10 +372,8 @@ async function onSkillSearch() {
                 v-else-if="!hasSkillResults"
               >
                 <EmptyHeader>
-                  <EmptyTitle>{{ skillSource === 'skills-sh' ? t('market.noSkillsShSkills') : t('market.noGithubSkills') }}</EmptyTitle>
-                  <EmptyDescription>{{ skillSource === 'skills-sh'
-                    ? t('market.noSkillsShSkillsDesc')
-                    : t('market.noGithubSkillsDesc') }}</EmptyDescription>
+                  <EmptyTitle>{{ sk('market.noSkillsShSkills', 'market.noGithubSkills') }}</EmptyTitle>
+                  <EmptyDescription>{{ sk('market.noSkillsShSkillsDesc', 'market.noGithubSkillsDesc') }}</EmptyDescription>
                 </EmptyHeader>
               </Empty>
 
@@ -553,37 +384,37 @@ async function onSkillSearch() {
                   :skill="skill"
                 />
               </div>
-
-              <!-- 无限滚动哨兵：进入视口时自动加载下一页 -->
-              <div
-                v-if="hasSkillResults && market.skills.hasMore"
-                class="flex items-center justify-center gap-2 py-6 text-sm text-muted-foreground"
-              >
-                <template v-if="market.loadingSkills">
-                  <Spinner />
-                  <span>{{ t('common.loading') }}</span>
-                </template>
-                <template v-else>
-                  <span>{{ t('market.scrollForMore') }}</span>
-                </template>
-              </div>
-              <div
-                v-else-if="hasSkillResults && market.skills.total > 0 && !market.skills.hasMore"
-                class="flex items-center justify-center py-6 text-sm text-muted-foreground"
-              >
-                <span>{{ t('market.allSkillsShown', { count: market.skills.total }) }}</span>
-              </div>
             </template>
           </TabsContent>
         </Tabs>
+
+        <!-- LoadMore 统一放在 Tabs 外,根据当前 tab 切换,避免每个 TabsContent 重复 -->
+        <!-- Transport 筛选时不显示 API total:registry 不支持按 transport 统计,
+             显示 "2 / 2000" 会误导用户以为还有 1998 条 SSE。total=0 时 LoadMore
+             隐藏进度文字,仅显示 "加载更多" 或无提示。 -->
+        <LoadMore
+          v-if="mode === 'servers' && hasResults"
+          :loading="market.loadingServers"
+          :has-more="market.servers.hasMore"
+          :loaded="serversLoaded"
+          :total="transportFilter ? 0 : market.servers.total"
+          :scroll-root="scrollContainer"
+          @load-more="market.loadMore()"
+        />
+        <LoadMore
+          v-if="mode === 'skills' && hasSkillResults"
+          :loading="market.loadingSkills"
+          :has-more="market.skills.hasMore"
+          :loaded="skillsLoaded"
+          :total="market.skills.total"
+          :scroll-root="scrollContainer"
+          @load-more="market.loadMoreSkills()"
+        />
 
         <p v-if="market.error" class="mt-4 text-xs text-destructive">
           {{ market.error }}
         </p>
       </div>
-      <!-- 无限滚动哨兵：始终在 DOM 中，确保 IntersectionObserver 可靠触发。
-           当任一 tab 有更多数据且正在加载时也保留触发能力。 -->
-      <div ref="sentinel" class="h-4" :class="{ 'opacity-0': !currentHasMore && !currentLoading }" />
     </div>
   </div>
 </template>

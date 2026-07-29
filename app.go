@@ -22,11 +22,12 @@ import (
 	"agentpack/internal/mcp"
 	"agentpack/internal/skills"
 
-	wruntime "github.com/wailsapp/wails/v2/pkg/runtime"
+	"github.com/wailsapp/wails/v3/pkg/application"
 )
 
 type App struct {
 	ctx       context.Context
+	wailsApp  *application.App
 	mu        sync.RWMutex // 保护 App 内部状态（registry, stores, cfg）
 	rescanMu  sync.Mutex   // 序列化 RescanAgents（先于 storeOpMu 获取）
 	storeOpMu sync.Mutex   // 序列化 MCP/Skills 存储操作（后于 rescanMu）
@@ -46,11 +47,21 @@ type App struct {
 	exporter      *backup.Exporter
 	closed        bool
 	allowClose    bool
-	trayActive    bool
 	startupErrors []string
 	inFlight      int
 	flightCond    *sync.Cond
 	downloadCancel context.CancelFunc
+	tray           *application.SystemTray
+}
+
+// setWailsApp 注入 v3 应用实例引用
+func (a *App) setWailsApp(app *application.App) {
+	a.wailsApp = app
+}
+
+// setTray 注入 v3 原生系统托盘引用
+func (a *App) setTray(tray *application.SystemTray) {
+	a.tray = tray
 }
 
 func NewApp(cfg *config.AppConfig) *App {
@@ -59,7 +70,7 @@ func NewApp(cfg *config.AppConfig) *App {
 	return a
 }
 
-func (a *App) startup(ctx context.Context) {
+func (a *App) ServiceStartup(ctx context.Context, options application.ServiceOptions) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.ctx = ctx
@@ -85,14 +96,9 @@ func (a *App) startup(ctx context.Context) {
 		addErr("database init", err)
 	}
 
-	switch a.cfg.Settings.Theme {
-	case "dark":
-		wruntime.WindowSetDarkTheme(ctx)
-	case "light":
-		wruntime.WindowSetLightTheme(ctx)
-	default:
-		wruntime.WindowSetSystemDefaultTheme(ctx)
-	}
+	// v3: Theme is set at window creation time via WindowsWindow.Theme.
+	// Runtime theme switching is not available in v3 alpha.
+	// TODO: When v3 stabilizes, implement runtime theme switching.
 
 	a.registry = agents.NewRegistry()
 	a.registry.Scan()
@@ -145,18 +151,11 @@ func (a *App) startup(ctx context.Context) {
 	a.refreshBackupHooksLocked()
 
 	a.startupErrors = errs
-
-	// 启动系统托盘（在 goroutine 中运行）
-	a.trayActive = true
-	go setupTray(a)
+	return nil
 }
 
-func (a *App) shutdown(ctx context.Context) {
-	// 清理系统托盘
-	if a.trayActive {
-		cleanupTray()
-		a.trayActive = false
-	}
+func (a *App) ServiceShutdown() error {
+	// v3: 系统托盘由 application.App 统一管理生命周期，无需手动清理
 	a.mu.Lock()
 	a.closed = true
 	if a.inFlight > 0 {
@@ -207,29 +206,30 @@ func (a *App) shutdown(ctx context.Context) {
 	if err := database.Close(); err != nil {
 		log.Printf("database close: %v", err)
 	}
+	return nil
 }
 
-func (a *App) beforeClose(ctx context.Context) bool {
+// beforeClose 在 v3 中通过 RegisterHook 同步拦截窗口关闭事件。
+// 调用 e.Cancel() 可阻止窗口关闭（由前端决定是隐藏还是退出）。
+func (a *App) beforeClose(e *application.WindowEvent) {
 	a.mu.RLock()
 	closed := a.closed
 	inFlight := a.inFlight
 	allowClose := a.allowClose
 	a.mu.RUnlock()
 
-	if closed {
-		return false
-	}
-	// allowClose 为 true 时，说明用户已确认退出，放行关闭
-	if allowClose {
-		return false
+	if closed || allowClose {
+		// 允许关闭，不取消事件
+		return
 	}
 	if inFlight > 0 {
-		wruntime.EventsEmit(ctx, "app:close-blocked", nil)
-		return true
+		a.emit("app:close-blocked")
+		e.Cancel()
+		return
 	}
-	// 发出关闭请求事件，前端根据配置决定行为
-	wruntime.EventsEmit(ctx, "app:close-requested", nil)
-	return true
+	// 发出关闭请求事件，前端根据配置决定是隐藏还是退出
+	a.emit("app:close-requested")
+	e.Cancel()
 }
 
 func (a *App) beginInFlight() error {
@@ -261,14 +261,14 @@ func (a *App) emit(event string, data ...interface{}) {
 	if !a.ready() {
 		return
 	}
-	wruntime.EventsEmit(a.ctx, event, data...)
+	a.wailsApp.Event.Emit(event, data...)
 }
 
 func (a *App) emitLocked(event string, data ...interface{}) {
 	if a.closed || a.ctx == nil {
 		return
 	}
-	wruntime.EventsEmit(a.ctx, event, data...)
+	a.wailsApp.Event.Emit(event, data...)
 }
 
 func (a *App) refreshBackupHooksLocked() {
@@ -1115,10 +1115,13 @@ func (a *App) UpdateSettings(s config.Settings) error {
 		a.emit("skills:changed", skillsStore.List())
 	}
 
-	// 语言变化时重建托盘菜单
+	// 语言变化时更新托盘菜单文案
 	newLang := i18n.ResolveLanguage(s.Language)
 	if oldLang != newLang {
-		rebuildTrayMenu(newLang)
+		a.mu.RLock()
+		tray := a.tray
+		a.mu.RUnlock()
+		rebuildTrayMenu(tray, newLang)
 	}
 
 	// emit settings:changed 让前端同步 i18n 语言 + 后端托盘重建
@@ -1127,99 +1130,109 @@ func (a *App) UpdateSettings(s config.Settings) error {
 	return nil
 }
 
-// Quit 退出应用程序。设置 allowClose 标志后调用 wruntime.Quit。
+// OpenURL 在系统浏览器中打开指定 URL。
+func (a *App) OpenURL(url string) {
+	switch runtime.GOOS {
+	case "windows":
+		exec.Command("cmd", "/c", "start", "", url).Start()
+	case "darwin":
+		exec.Command("open", url).Start()
+	default:
+		exec.Command("xdg-open", url).Start()
+	}
+}
+
+// Quit 退出应用程序。设置 allowClose 标志后调用 application.Quit。
 func (a *App) Quit() error {
 	a.mu.Lock()
 	a.allowClose = true
-	ctx := a.ctx
 	closed := a.closed
 	a.mu.Unlock()
-	if closed || ctx == nil {
+	if closed {
 		return nil
 	}
-	wruntime.Quit(ctx)
+	a.wailsApp.Quit()
 	return nil
 }
 
 // HideWindow 隐藏窗口（最小化到系统托盘）。
 func (a *App) HideWindow() {
 	a.mu.RLock()
-	ctx := a.ctx
 	closed := a.closed
 	a.mu.RUnlock()
-	if closed || ctx == nil {
+	if closed {
 		return
 	}
-	wruntime.WindowHide(ctx)
+	a.wailsApp.Window.Current().Hide()
 }
 
 // ShowWindow 显示窗口（从系统托盘恢复）。
 func (a *App) ShowWindow() {
 	a.mu.RLock()
-	ctx := a.ctx
 	closed := a.closed
 	a.mu.RUnlock()
-	if closed || ctx == nil {
+	if closed {
 		return
 	}
-	wruntime.WindowShow(ctx)
+	a.wailsApp.Window.Current().Show()
 }
 
 func (a *App) SetTheme(theme string) {
 	a.mu.RLock()
-	ctx := a.ctx
 	closed := a.closed
 	a.mu.RUnlock()
-	if closed || ctx == nil {
+	if closed {
 		return
 	}
 
+	// v3 alpha 无运行时 SetTheme 公共 API，通过 WndProcInterceptor 缓存的 HWND
+	// 直接调用 DwmSetWindowAttribute(DWMWA_USE_IMMERSIVE_DARK_MODE) 实现。
+	hwnd := getMainWindowHWND()
+	if hwnd == 0 {
+		return
+	}
 	switch theme {
 	case "dark":
-		wruntime.WindowSetDarkTheme(ctx)
+		SetDarkMode(hwnd, true)
 	case "light":
-		wruntime.WindowSetLightTheme(ctx)
-	default:
-		wruntime.WindowSetSystemDefaultTheme(ctx)
+		SetDarkMode(hwnd, false)
+	case "system":
+		SetDarkMode(hwnd, isDarkMode())
 	}
 }
 
 func (a *App) PickDirectory() (string, error) {
 	a.mu.RLock()
-	ctx := a.ctx
 	closed := a.closed
 	a.mu.RUnlock()
-	if closed || ctx == nil {
+	if closed {
 		return "", fmt.Errorf("app not ready")
 	}
-	return wruntime.OpenDirectoryDialog(ctx, wruntime.OpenDialogOptions{
-		Title: "选择目录",
-	})
+	return a.wailsApp.Dialog.OpenFile().
+		SetTitle("选择目录").
+		CanChooseFiles(false).
+		CanChooseDirectories(true).
+		PromptForSingleSelection()
 }
 
 func (a *App) PickFile(filters string) (string, error) {
 	a.mu.RLock()
-	ctx := a.ctx
 	closed := a.closed
 	a.mu.RUnlock()
-	if closed || ctx == nil {
+	if closed {
 		return "", fmt.Errorf("app not ready")
 	}
-	opts := wruntime.OpenDialogOptions{
-		Title: "选择文件",
-	}
+	dialog := a.wailsApp.Dialog.OpenFile().
+		SetTitle("选择文件")
 	if filters != "" {
 		for _, f := range strings.Split(filters, ",") {
 			f = strings.TrimSpace(f)
 			if f != "" {
-				opts.Filters = append(opts.Filters, wruntime.FileFilter{
-					DisplayName: f,
-					Pattern:     f,
-				})
+				dialog = dialog.AddFilter(f, f)
 			}
 		}
 	}
-	return wruntime.OpenFileDialog(ctx, opts)
+	return dialog.PromptForSingleSelection()
 }
 
 func (a *App) ListBackups() ([]backup.Summary, error) {

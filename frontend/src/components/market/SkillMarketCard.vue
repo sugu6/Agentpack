@@ -31,24 +31,39 @@ const uninstalling = ref(false)
 const installError = ref('')
 
 // 匹配已安装的 skill
-// 1. 有 repoOwner → 精确复合匹配（owner + repo + directory）
-// 2. 无 repoOwner（TRAE 内置 / 手动安装）→ directory + name + description 全匹配
-//    通过 description 区分不同仓库的同名 skill（如 test-driven-development 在多个仓库都有）
-function normalizeDesc(s: string | undefined): string {
-  return (s ?? '').trim().toLowerCase().replace(/\s+/g, ' ')
-}
+// 匹配策略：
+// 0. 内容指纹匹配（SKILL.md SHA256）— hash 一致即为同一 skill，最精确
+// 1. 双方都有 repoOwner → 精确匹配 repoOwner + repoName
+// 2. 双方都无 repoOwner（stub/无来源）→ name 匹配即视为已安装
+// 3. 一方有仓库来源另一方没有 → 不匹配（不同仓库的同名 skill）
 const installedSkill = computed(() =>
   skillsStore.skills.find(s => {
     if (s.directory !== props.skill.directory) return false
-    if (s.repoOwner) {
+    // 0. 内容指纹匹配：hash 一致即为同一 skill（最精确）
+    if (s.contentHash && props.skill.contentHash && s.contentHash === props.skill.contentHash) {
+      return true
+    }
+    // 1. 双方都有仓库来源 → 精确匹配 repoOwner + repoName
+    if (s.repoOwner && props.skill.repoOwner) {
       return s.repoOwner === props.skill.repoOwner && s.repoName === props.skill.repoName
     }
-    // 无仓库来源：directory + name + description 全匹配
-    return s.name === props.skill.name
-      && normalizeDesc(s.description) === normalizeDesc(props.skill.description)
+    // 2. 双方都无仓库来源 → name 匹配（stub/无来源，无法做 repo 匹配）
+    if (!s.repoOwner && !props.skill.repoOwner) {
+      return s.name === props.skill.name
+    }
+    // 3. 一方有仓库来源但另一方没有 → 不匹配（不同仓库的同名 skill）
+    return false
   }),
 )
 const installed = computed(() => !!installedSkill.value)
+
+// 目录冲突：同 directory 但被判定为不同 skill（不同仓库同名 / 同名不同内容）
+// 显示冲突提示，禁用 install 按钮，避免用户点击后报错
+const conflictSkill = computed(() => {
+  if (installed.value) return undefined
+  return skillsStore.skills.find(s => s.directory === props.skill.directory)
+})
+const conflict = computed(() => !!conflictSkill.value)
 
 const repoUrl = computed(() =>
   `https://github.com/${props.skill.repoOwner}/${props.skill.repoName}`,
@@ -80,18 +95,19 @@ async function confirmInstall() {
 }
 
 async function uninstallSkill() {
-  if (!installedSkill.value) return
+  const skill = installedSkill.value
+  if (!skill || uninstalling.value) return
   const ok = await confirm.confirm({
     title: t('dialog.confirm.uninstall'),
-    message: t('skills.uninstallConfirmMessageNamed', { name: installedSkill.value.name }),
+    message: t('skills.uninstallConfirmMessageNamed', { name: skill.name }),
     confirmText: t('common.uninstall'),
     variant: 'destructive',
   })
   if (!ok) return
   uninstalling.value = true
   try {
-    await skillsStore.uninstall(installedSkill.value.id)
-    toast.success(t('skills.toast.uninstalled', { name: installedSkill.value.name }))
+    await skillsStore.uninstall(skill.id)
+    toast.success(t('skills.toast.uninstalled', { name: skill.name }))
   } catch (e) {
     const apiError = ApiError.from(e)
     toast.error(t('skills.toast.uninstallFailed', { error: apiError.message }))
@@ -99,15 +115,46 @@ async function uninstallSkill() {
     uninstalling.value = false
   }
 }
+
+// 替换安装：卸载冲突的旧 skill → 打开 Agent 选择弹窗 → 安装新的
+const replacing = ref(false)
+async function replaceWithInstall() {
+  if (!conflictSkill.value || replacing.value) return
+  // 在 await 前保存冲突 skill 的引用，避免 computed 重新计算后丢失
+  const skill = conflictSkill.value
+  replacing.value = true
+  const ok = await confirm.confirm({
+    title: t('market.replaceTitle'),
+    message: t('market.replaceMessage', { name: skill.name, newName: props.skill.name }),
+    confirmText: t('market.replaceAndInstall'),
+    variant: 'default',
+  })
+  if (!ok) {
+    replacing.value = false
+    return
+  }
+  try {
+    await skillsStore.uninstall(skill.id)
+    toast.success(t('skills.toast.uninstalled', { name: skill.name }))
+    // 卸载完成后打开 Agent 选择弹窗
+    await skillsStore.load()
+    openDialog()
+  } catch (e) {
+    const apiError = ApiError.from(e)
+    toast.error(t('skills.toast.uninstallFailed', { error: apiError.message }))
+  } finally {
+    replacing.value = false
+  }
+}
 </script>
 
 <template>
-  <Card :class="cn('select-none transition-colors hover:border-primary/40', installed && 'border-emerald-500 !bg-emerald-500/10')">
+  <Card :class="cn('select-none transition-colors hover:border-primary/40', installed && 'border-emerald-500 !bg-emerald-500/5')">
     <CardHeader>
       <div class="flex items-start justify-between gap-3">
         <div class="min-w-0 flex-1">
           <CardTitle class="flex items-center gap-2">
-            <span class="truncate">{{ skill.name }}</span>
+            <span class="break-words leading-tight">{{ skill.name }}</span>
           </CardTitle>
           <CardDescription v-if="skill.description" class="mt-1 line-clamp-2">
             {{ skill.description }}
@@ -122,6 +169,7 @@ async function uninstallSkill() {
             skills.sh
           </Badge>
           <Badge
+            v-else
             variant="secondary"
             class="inline-flex items-center gap-0.5 font-mono text-[10px]"
           >
@@ -165,6 +213,17 @@ async function uninstallSkill() {
             <Spinner v-if="uninstalling" class="mr-1" />
             <PhTrash v-else :size="13" class="mr-1 text-destructive" />
             {{ t('common.uninstall') }}
+          </Button>
+          <Button
+            v-else-if="conflict"
+            size="sm"
+            variant="outline"
+            :disabled="replacing"
+            @click="replaceWithInstall"
+          >
+            <Spinner v-if="replacing" class="mr-1" />
+            <PhDownloadSimple v-else :size="13" class="mr-1" />
+            {{ t('common.install') }}
           </Button>
           <Button
             v-else

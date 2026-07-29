@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <!-- Off-black vertical gradient. NOT pure black. -->
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#1a1a1f"/>
+      <stop offset="100%" stop-color="#0a0a0d"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Squircle background (off-black, not pure #000) -->
+  <rect width="1024" height="1024" rx="228" ry="228" fill="url(#bg)"/>
+
+  <!-- Inner edge highlight: 2px white at 8% for physical refraction -->
+  <rect x="2" y="2" width="1020" height="1020" rx="226" ry="226"
+        fill="none" stroke="#ffffff" stroke-width="2" opacity="0.08"/>
+
+  <!--
+    Single bold gesture: a thick off-white diagonal bar (the "path/agent")
+    passing through a centered electric-blue circle (the "hub/core").
+
+    The bar runs corner-to-corner (bottom-left to top-right). The blue circle
+    sits at center ON TOP of the bar, so the bar appears to pass behind the hub.
+    The bar pokes out on both sides of the circle, creating a "path through
+    the hub" silhouette.
+
+    Geometry (1024 canvas):
+      Bar:  from (200, 824) to (824, 200), width 96, round caps, off-white #fafafa
+      Circle: center (512, 512), radius 150, electric blue #3b82f6
+  -->
+
+  <!-- Diagonal bar (drawn first, will be partially covered by circle) -->
+  <line x1="200" y1="824" x2="824" y2="200"
+        stroke="#fafafa" stroke-width="96" stroke-linecap="round"/>
+
+  <!-- Centered blue hub (drawn on top, bar passes behind it) -->
+  <circle cx="512" cy="512" r="150" fill="#3b82f6"/>
+</svg>

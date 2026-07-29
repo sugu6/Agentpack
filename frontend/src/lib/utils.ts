@@ -46,6 +46,13 @@ export function debounce<T extends (...args: any[]) => any>(
   return debounced
 }
 
+export function transportLabel(transport?: string): string {
+  if (!transport || transport === 'stdio') return 'Stdio'
+  if (transport === 'sse') return 'SSE'
+  if (transport === 'streamable-http') return 'Streamable HTTP'
+  return transport
+}
+
 export function withTimeout<T>(promise: Promise<T>, ms: number, message?: string): Promise<T> {
   return Promise.race([
     promise,

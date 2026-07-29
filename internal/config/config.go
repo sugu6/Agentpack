@@ -71,10 +71,9 @@ func DefaultSettings() Settings {
 	return Settings{
 		Theme: "system",
 		MarketSources: map[string]MarketSource{
-			"official":  {Enabled: true},
-			"github":    {Enabled: true},
+			"registry": {Enabled: true},
+			"github":   {Enabled: true},
 			"skills-sh": {Enabled: true},
-			"smithery":  {Enabled: true},
 		},
 		AutoBackup:      true,
 		BackupCount:     10,
@@ -145,7 +144,7 @@ func Load() *AppConfig {
 		cfg.Settings.Theme = defaults.Theme
 	}
 	// MarketSources: 若整体为 nil 直接用默认值；否则逐个 key 补全缺失项
-	// 避免旧 config 文件缺少新增来源（如 smithery）时被误判为禁用
+	// 避免旧 config 文件缺少新增来源时被误判为禁用
 	if cfg.Settings.MarketSources == nil {
 		cfg.Settings.MarketSources = defaults.MarketSources
 	} else {

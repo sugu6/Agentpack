@@ -50,11 +50,15 @@ import {
   UpdateSkills,
   SetTheme,
   HideWindow,
+  OpenURL,
   Quit,
   ShowWindow,
-} from '../../wailsjs/go/main/App'
-import { EventsOn, EventsOff, EventsEmit, BrowserOpenURL } from '../../wailsjs/runtime/runtime'
-import type { agents as AgentsNS, config as ConfigNS, market as MarketNS, mcp as McpNS } from '../../wailsjs/go/models'
+} from '../../bindings/agentpack/app'
+import { Events } from '@wailsio/runtime'
+import type * as AgentsNS from '../../bindings/agentpack/internal/agents/models'
+import type * as ConfigNS from '../../bindings/agentpack/internal/config/models'
+import type * as MarketNS from '../../bindings/agentpack/internal/market/models'
+import type * as McpNS from '../../bindings/agentpack/internal/mcp/models'
 
 export type Agent = AgentsNS.Agent
 export interface Settings {
@@ -151,7 +155,7 @@ export interface McpServer {
   timeout?: number
   source: string
   sourceId?: string
-  boundAgents: string[]
+  boundAgents: string[] | null
   installedAt: string
   updatedAt: string
 }
@@ -253,7 +257,7 @@ export interface Skill {
   description?: string
   directory: string
   contentHash?: string
-  boundAgents: string[]
+  boundAgents: string[] | null
   installedAt: string
   updatedAt: string
   /** 仓库来源信息（从 ~/.agents/.skill-lock.json 解析，用于更新检测） */
@@ -310,14 +314,14 @@ async function safeCall<T>(fn: () => Promise<T>): Promise<T> {
 
 export const api = {
   agents: {
-    list: async () => optimizeToPlainObject(await ListAgents()),
-    rescan: async () => optimizeToPlainObject(await RescanAgents()),
+    list: async () => (await ListAgents() ?? []).filter(Boolean) as Agent[],
+    rescan: async () => (await RescanAgents() ?? []).filter(Boolean) as Agent[],
     get: async (id: string) => optimizeToPlainObject(await GetAgent(id)),
     toggle: (id: string, enabled: boolean) => safeCall(() => ToggleAgent(id, enabled)),
     getMcpServers: async (id: string) => optimizeToPlainObject(await GetAgentMcpServers(id)),
   },
   mcp: {
-    list: async () => optimizeToPlainObject(await ListMcpServers()),
+    list: async () => (await ListMcpServers() ?? []) as McpServer[],
     get: async (id: string) => optimizeToPlainObject(await GetMcpServer(id)),
     add: (server: McpServer, agents: string[]) => safeCall(() => AddMcpServer(optimizeToPlainObject(server) as WailsMcpServer, agents)),
     update: (id: string, server: McpServer, agents: string[]) => safeCall(() => UpdateMcpServer(id, optimizeToPlainObject(server) as WailsMcpServer, agents)),
@@ -398,7 +402,7 @@ export const api = {
     pickDirectory: () => safeCall(() => PickDirectory()),
     setTheme: (theme: string) => safeCall(() => SetTheme(theme)),
     getStartupErrors: () => safeCall(() => GetStartupErrors() as Promise<string[]>),
-    openUrl: (url: string) => { BrowserOpenURL(url) },
+    openUrl: (url: string) => { OpenURL(url) },
     quit: () => safeCall(() => Quit()),
     hideWindow: () => safeCall(() => HideWindow()),
     showWindow: () => safeCall(() => ShowWindow()),
@@ -419,12 +423,14 @@ export const api = {
 
 export const events = {
   on(event: string, callback: (...args: unknown[]) => void) {
-    return EventsOn(event, callback)
+    return Events.On(event, (ev) => {
+      callback(ev.data)
+    })
   },
   off(event: string) {
-    EventsOff(event)
+    Events.Off(event)
   },
   emit(event: string, ...args: unknown[]) {
-    EventsEmit(event, ...args)
+    Events.Emit(event, args.length > 0 ? args[0] : undefined)
   },
 }

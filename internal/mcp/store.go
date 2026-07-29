@@ -382,6 +382,8 @@ func (s *Store) Get(id string) (Server, bool) {
 // 并标记哪些已在 Store 中管理、哪些是新发现的。
 // 按安装命令去重（command + args 归一化，忽略名称差异），
 // URL 服务器（SSE/HTTP）按 URL 去重。
+// 同一服务器在多个 agent 配置中存在时会合并为一个 ScanItem，
+// Sources 字段保留所有来源 agent 信息。
 func (s *Store) Scan(reg *agents.Registry) *ScanResult {
 	items := make([]ScanItem, 0)
 	managedKeys := make(map[string]bool)
@@ -400,8 +402,18 @@ func (s *Store) Scan(reg *agents.Registry) *ScanResult {
 		pathGroups[ag.ConfigPath] = append(pathGroups[ag.ConfigPath], ag.ID)
 	}
 
-	seenKeys := make(map[string]bool)
-	for configPath, agentIDs := range pathGroups {
+	// 按 configPath 排序，保证扫描顺序稳定，避免 map 遍历顺序随机
+	// 导致同一 MCP 的"主来源"在不同次扫描中发生变化。
+	configPaths := make([]string, 0, len(pathGroups))
+	for cp := range pathGroups {
+		configPaths = append(configPaths, cp)
+	}
+	sort.Strings(configPaths)
+
+	// 已见 key → items 中的索引，便于把同一 MCP 的多个来源合并到同一 item
+	seenIdx := make(map[string]int)
+	for _, configPath := range configPaths {
+		agentIDs := pathGroups[configPath]
 		firstAgent := reg.Get(agentIDs[0])
 		if firstAgent == nil {
 			continue
@@ -416,22 +428,24 @@ func (s *Store) Scan(reg *agents.Registry) *ScanResult {
 			srv.ID = ensureGlobalID(srv.ID)
 			key := scanDedupKey(srv)
 			managed := managedKeys[key]
-			agentID := agentIDs[0]
-			ag := reg.Get(agentID)
-			agentName := ""
-			if ag != nil {
-				agentName = ag.Name
+			source := ScanSource{
+				AgentID:    agentIDs[0],
+				AgentName:  firstAgent.Name,
+				ConfigPath: configPath,
 			}
-			if seenKeys[key] {
+			if idx, ok := seenIdx[key]; ok {
+				// 已存在同一 MCP，仅追加来源信息，不重复添加
+				items[idx].Sources = append(items[idx].Sources, source)
 				continue
 			}
-			seenKeys[key] = true
+			seenIdx[key] = len(items)
 			items = append(items, ScanItem{
 				Server:     srv,
 				Managed:    managed,
-				AgentID:    agentID,
-				AgentName:  agentName,
-				ConfigPath: configPath,
+				AgentID:    source.AgentID,
+				AgentName:  source.AgentName,
+				ConfigPath: source.ConfigPath,
+				Sources:    []ScanSource{source},
 			})
 		}
 	}
@@ -453,9 +467,9 @@ func (s *Store) Scan(reg *agents.Registry) *ScanResult {
 
 // scanDedupKey 生成用于去重和"已管理"判断的唯一键。
 // stdio 服务器：按归一化后的 command + args；
-// SSE/HTTP 服务器：按 URL。
+// SSE/HTTP/streamable-http 服务器：按 URL。
 func scanDedupKey(srv Server) string {
-	if srv.Transport == TransportSSE || srv.Transport == TransportHTTP {
+	if srv.Transport == TransportSSE || srv.Transport == TransportHTTP || srv.Transport == TransportStreamableHTTP {
 		return "url:" + srv.URL
 	}
 	cmd, args := normalizeCommand(srv.Command, srv.Args)

@@ -37,8 +37,8 @@ function trimLatestSuffix(s: string): string {
  * 1. 精确 source + sourceId（managed 安装路径）
  * 2. 归一化 command + args 匹配（stdio，处理 cmd /c 包装与 @latest 差异）
  * 3. URL 匹配（http/sse）
- * 4. market 条目无 command/args 时（如 smithery 搜索结果）：
- *    检查 sourceId 是否出现在已安装 server 的 args 中（例：smithery sourceId="@upstash/context7-mcp"
+ * 4. market 条目无 command/args 时（如搜索结果）：
+ *    检查 sourceId 是否出现在已安装 server 的 args 中
  *    匹配手动安装的 args=["-y","@upstash/context7-mcp"]）
  */
 export function matchInstalledServer(market: MarketServer, installed: McpServer[]): McpServer | undefined {
@@ -67,7 +67,7 @@ export function matchInstalledServer(market: MarketServer, installed: McpServer[
   }
 
   // 4. sourceId 出现在 args 中（手动安装的兜底匹配）
-  // 例：smithery sourceId="context7" 或 official sourceId="@upstash/context7-mcp"
+  // 例：sourceId="context7" 或 official sourceId="@upstash/context7-mcp"
   // 对应手动安装 args 中包含该标识符的情况
   if (market.sourceId && !market.command) {
     const argMatch = installed.find(s => {

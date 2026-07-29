@@ -2,15 +2,15 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { api, ApiError } from '@/lib/api'
 import type { AppSettings } from '@/types'
-import { WindowSetDarkTheme, WindowSetLightTheme, WindowSetSystemDefaultTheme } from '../../wailsjs/runtime/runtime'
+import { setLanguage, resolveLanguage } from '@/i18n'
+
 
 const DEFAULT_SETTINGS: AppSettings = {
   theme: 'system',
   marketSources: {
-    official: { enabled: true },
+    registry: { enabled: true },
     github: { enabled: true },
     'skills-sh': { enabled: true },
-    smithery: { enabled: true },
   },
   autoBackup: true,
   backupCount: 10,
@@ -41,18 +41,7 @@ export const useSettingsStore = defineStore('settings', () => {
       await api.system.setTheme(theme)
     } catch (e) {
       console.warn('setTheme via Go binding failed:', e)
-      // Fallback to Wails runtime JS API
-      try {
-        if (theme === 'dark') {
-          await WindowSetDarkTheme()
-        } else if (theme === 'light') {
-          await WindowSetLightTheme()
-        } else {
-          await WindowSetSystemDefaultTheme()
-        }
-      } catch (e2) {
-        console.warn('applyWailsTheme JS fallback failed:', e2)
-      }
+      // v3: Runtime theme switching functions removed — theme is set at window creation time
     }
   }
 
@@ -124,7 +113,6 @@ export const useSettingsStore = defineStore('settings', () => {
       loaded.value = true
       await applyTheme(migrated.theme)
       // 同步 i18n 语言
-      const { setLanguage, resolveLanguage } = await import('@/i18n')
       setLanguage(resolveLanguage(migrated.language))
     } catch (e) {
       const apiError = ApiError.from(e)
@@ -141,7 +129,6 @@ export const useSettingsStore = defineStore('settings', () => {
       loaded.value = true
       await applyTheme(next.theme)
       // 同步 i18n 语言(立即生效,不等 settings:changed 事件回环)
-      const { setLanguage, resolveLanguage } = await import('@/i18n')
       setLanguage(resolveLanguage(next.language))
     } catch (e) {
       const apiError = ApiError.from(e)

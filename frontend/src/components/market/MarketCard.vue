@@ -1,14 +1,14 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { PhDownloadSimple, PhTag, PhTerminal, PhCheck, PhTrash, PhInfo, PhGlobe, PhBookOpen, PhLink, PhStar } from '@phosphor-icons/vue'
+import { PhDownloadSimple, PhTag, PhCheck, PhTrash, PhGlobe, PhBookOpen, PhLink, PhStar, PhCopy } from '@phosphor-icons/vue'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription, Badge, Button, Spinner, Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter, Separator } from '@/components/ui'
 import { useMarketStore } from '@/stores/market'
 import { useMcpStore } from '@/stores/mcp'
 import { useAgentSelector } from '@/composables/useAgentSelector'
 import { agentLogoUrl, agentLogoInvertClass } from '@/composables/useAgentHelpers'
 import { useConfirm } from '@/composables/useConfirm'
-import { cn } from '@/lib/utils'
+import { cn, transportLabel } from '@/lib/utils'
 import { api, type MarketServer, ApiError } from '@/lib/api'
 import { useToast } from '@/composables/useToast'
 import { matchInstalledServer } from '@/lib/mcpMatch'
@@ -56,26 +56,72 @@ watch(detailOpen, (open) => {
 // 1. source + sourceId 精确匹配（managed 安装路径）
 // 2. command + args 归一化匹配（处理 cmd /c 包装与 @latest 差异，覆盖手动安装的 context7 等场景）
 // 3. URL 匹配（http/sse）
-// 4. sourceId 出现在 args 中的兜底匹配（smithery 搜索结果无 command 时）
+// 4. sourceId 出现在 args 中的兜底匹配（搜索结果无 command 时）
 const installedServer = computed(() => matchInstalledServer(props.server, mcpStore.items))
 const installed = computed(() => !!installedServer.value)
 
 const commandPreview = computed(() => {
-  if (!props.server.command) return ''
-  const parts = [props.server.command, ...(props.server.args || [])]
+  if (!props.server.command && !props.server.args?.length) return ''
+  const parts = [props.server.command, ...(props.server.args || [])].filter(Boolean)
   return parts.join(' ')
-})
-
-// 详情 Dialog：完整的 command preview（含参数换行展示）
-const commandFull = computed(() => {
-  if (!props.server.command) return ''
-  return [props.server.command, ...(props.server.args || [])].map((p, i) => i === 0 ? p : `  ${p}`).join(' \\\n')
 })
 
 const envKeys = computed(() => {
   const env = props.server.env || {}
   return Object.keys(env)
 })
+
+// 环境变量可复制文本（KEY=value 格式，每行一个）
+const envText = computed(() => {
+  const env = props.server.env || {}
+  return Object.entries(env)
+    .map(([k, v]) => `${k}=${v}`)
+    .join('\n')
+})
+
+// 复制状态（不同区块独立反馈）
+const copiedCommand = ref(false)
+const copiedEnv = ref(false)
+
+async function copyToClipboard(text: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(text)
+    return true
+  } catch {
+    // WebView2 回退方案
+    try {
+      const ta = document.createElement('textarea')
+      ta.value = text
+      ta.style.position = 'fixed'
+      ta.style.opacity = '0'
+      document.body.appendChild(ta)
+      ta.select()
+      const ok = document.execCommand('copy')
+      document.body.removeChild(ta)
+      return ok
+    } catch {
+      return false
+    }
+  }
+}
+
+async function copyCommand() {
+  if (!commandPreview.value) return
+  const ok = await copyToClipboard(commandPreview.value)
+  if (ok) {
+    copiedCommand.value = true
+    setTimeout(() => { copiedCommand.value = false }, 2000)
+  }
+}
+
+async function copyEnv() {
+  if (!envText.value) return
+  const ok = await copyToClipboard(envText.value)
+  if (ok) {
+    copiedEnv.value = true
+    setTimeout(() => { copiedEnv.value = false }, 2000)
+  }
+}
 
 async function openExternal(url: string) {
   if (!url) return
@@ -88,14 +134,14 @@ async function confirmInstall() {
   showDialog.value = false
   busy.value = true
   try {
-    // Smithery 搜索结果不含 command/args，需先拉取详情获取 stdio/http 模板
+    // Registry 搜索结果可能不含 command/args，需拉取详情获取安装模板
     let serverToInstall = props.server
-    if (props.server.source === 'smithery' && !props.server.command) {
+    if (props.server.source === 'registry' && !props.server.command) {
       try {
-        serverToInstall = await api.market.getServer('smithery', props.server.sourceId)
+        serverToInstall = await api.market.getServer(props.server.source, props.server.sourceId)
       } catch (e) {
         const apiError = ApiError.from(e)
-        toast.error(t('market.toast.getSmitheryFailed', { error: apiError.message }))
+        toast.error(t('market.toast.getServerDetailFailed', { error: apiError.message }))
         busy.value = false
         return
       }
@@ -121,9 +167,10 @@ async function uninstallServer() {
   })
   if (!ok) return
   uninstalling.value = true
+  const server = installedServer.value
   try {
-    await mcpStore.remove(installedServer.value.id)
-    toast.success(t('market.toast.uninstalled', { name: installedServer.value.name }))
+    await mcpStore.remove(server.id)
+    toast.success(t('market.toast.uninstalled', { name: server.name }))
   } catch (e) {
     const apiError = ApiError.from(e)
     toast.error(t('market.toast.uninstallFailed', { error: apiError.message }))
@@ -134,52 +181,54 @@ async function uninstallServer() {
 </script>
 
 <template>
-  <Card :class="cn('group select-none transition-colors hover:border-primary/40', installed && 'border-emerald-500 !bg-emerald-500/10')">
-    <CardHeader class="cursor-pointer" @click="openDetail">
+  <Card :class="cn('group select-none cursor-pointer transition-colors hover:border-primary/40', installed && 'border-emerald-500 !bg-emerald-500/5')" @click="openDetail">
+    <CardHeader>
       <div class="flex items-start justify-between gap-3">
         <div class="min-w-0 flex-1">
-          <CardTitle class="flex items-center gap-2">
-            <span class="truncate">{{ server.title || server.name }}</span>
-            <span v-if="server.title" class="truncate font-mono text-xs font-normal text-muted-foreground">
-              {{ server.name }}
+          <CardTitle class="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+            <span class="min-w-0 break-words leading-tight">{{ server.title || server.name }}</span>
+            <span v-if="server.title && server.sourceId && server.sourceId !== server.name" class="shrink-0 break-all font-mono text-xs font-normal text-muted-foreground">
+              {{ server.sourceId }}
             </span>
           </CardTitle>
-          <CardDescription v-if="server.description" class="mt-1 line-clamp-2">
+          <CardDescription v-if="server.description" class="mt-1 line-clamp-2 break-words">
             {{ server.description }}
           </CardDescription>
         </div>
         <div class="flex shrink-0 items-center gap-1.5">
+          <Badge variant="default" class="font-mono text-[10px] px-1.5">
+            {{ transportLabel(server.transport) }}
+          </Badge>
           <Badge variant="secondary" class="font-mono text-[10px]">
             {{ server.source }}
           </Badge>
-          <button
-            type="button"
-            class="rounded-md p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-muted hover:text-foreground group-hover:opacity-100"
-            :title="t('market.viewDetails')"
-            @click.stop="openDetail"
-          >
-            <PhInfo :size="14" />
-          </button>
         </div>
       </div>
     </CardHeader>
 
     <CardContent class="space-y-3">
-      <div v-if="server.tags?.length" class="flex flex-wrap items-center gap-1.5">
-        <PhTag :size="11" class="text-muted-foreground" />
-        <Badge v-for="tag in (server.tags || []).slice(0, 4)" :key="tag" variant="outline" class="font-normal text-[10px]">
-          {{ tag }}
-        </Badge>
-        <span v-if="(server.tags?.length || 0) > 4" class="text-[10px] text-muted-foreground">
-          +{{ (server.tags?.length || 0) - 4 }}
-        </span>
-      </div>
-
-      <div v-if="commandPreview" class="flex items-center gap-2 rounded-md bg-muted/40 px-2.5 py-1.5">
-        <PhTerminal :size="13" class="shrink-0 text-muted-foreground" />
-        <code class="truncate font-mono text-[11px]" :title="commandPreview">
-          {{ commandPreview }}
-        </code>
+      <div class="flex items-center gap-2 rounded-md bg-muted/40 px-2.5 py-1.5">
+        <div v-if="server.tags?.length" class="flex shrink-0 items-center gap-1">
+          <PhTag :size="11" class="text-muted-foreground" />
+          <span v-for="tag in (server.tags || []).slice(0, 3)" :key="tag" class="inline-flex shrink-0 items-center rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary">
+            {{ tag }}
+          </span>
+          <span v-if="(server.tags?.length || 0) > 3" class="shrink-0 text-[10px] text-muted-foreground">
+            +{{ (server.tags?.length || 0) - 3 }}
+          </span>
+        </div>
+        <span v-if="server.tags?.length && (server.command || server.url)" class="flex shrink-0 text-[10px] text-border">·</span>
+        <div v-if="commandPreview" class="flex min-w-0 items-center gap-2">
+          <code class="min-w-0 flex-1 truncate font-mono text-[11px]" :title="commandPreview">
+            {{ commandPreview }}
+          </code>
+        </div>
+        <div v-if="server.url" class="flex min-w-0 items-center gap-2">
+          <PhLink :size="13" class="shrink-0 text-muted-foreground" />
+          <code class="min-w-0 flex-1 truncate font-mono text-[11px]" :title="server.url">
+            {{ server.url }}
+          </code>
+        </div>
       </div>
 
       <div class="flex items-center justify-between pt-1">
@@ -228,8 +277,11 @@ async function uninstallServer() {
   <Dialog v-model:open="detailOpen">
     <DialogContent class="max-w-lg select-none">
       <DialogHeader>
-        <DialogTitle class="flex items-center gap-2 pr-6">
-          <span class="truncate">{{ server.title || server.name }}</span>
+        <DialogTitle class="flex flex-wrap items-baseline gap-x-2 gap-y-1 pr-6">
+          <span class="min-w-0 break-words leading-tight">{{ server.title || server.name }}</span>
+          <Badge variant="default" class="shrink-0 font-mono text-[10px] px-1.5">
+            {{ transportLabel(server.transport) }}
+          </Badge>
           <Badge variant="secondary" class="shrink-0 font-mono text-[10px]">
             {{ server.source }}
           </Badge>
@@ -238,18 +290,18 @@ async function uninstallServer() {
             {{ t('common.installed') }}
           </Badge>
         </DialogTitle>
-        <DialogDescription v-if="server.name !== server.title" class="font-mono text-xs">
-          {{ server.name }}
+        <DialogDescription v-if="server.sourceId && server.sourceId !== server.name" class="break-all font-mono text-xs">
+          {{ server.sourceId }}
         </DialogDescription>
       </DialogHeader>
 
       <div class="max-h-[60vh] space-y-4 overflow-y-auto py-2">
         <!-- 描述 -->
-        <p v-if="server.description" class="text-sm leading-relaxed text-foreground">
+        <p v-if="server.description" class="break-words text-sm leading-relaxed text-foreground">
           {{ server.description }}
         </p>
 
-        <Separator v-if="server.tags?.length || commandFull || server.url || envKeys.length || server.installs || server.stars" />
+        <Separator v-if="server.tags?.length || commandPreview || server.url || envKeys.length || server.installs || server.stars" />
 
         <!-- 标签 -->
         <div v-if="server.tags?.length" class="space-y-1.5">
@@ -262,9 +314,19 @@ async function uninstallServer() {
         </div>
 
         <!-- 命令预览 -->
-        <div v-if="commandFull" class="space-y-1.5">
-          <p class="text-xs font-medium text-muted-foreground">{{ t('mcp.command') }}</p>
-          <pre class="overflow-x-auto rounded-md bg-muted/60 px-3 py-2 font-mono text-[11px] leading-relaxed"><code>{{ commandFull }}</code></pre>
+        <div v-if="commandPreview" class="space-y-1.5">
+          <div class="flex items-center justify-between">
+            <p class="text-xs font-medium text-muted-foreground">{{ t('mcp.command') }}</p>
+            <button
+              type="button"
+              class="inline-flex shrink-0 items-center gap-1 rounded text-[10px] text-muted-foreground transition-colors hover:text-foreground"
+              @click="copyCommand"
+            >
+              <component :is="copiedCommand ? PhCheck : PhCopy" :size="12" />
+              {{ copiedCommand ? t('common.copied') : t('common.copy') }}
+            </button>
+          </div>
+          <pre class="overflow-x-auto rounded-md bg-muted/60 px-3 py-2 font-mono text-[11px] leading-relaxed"><code>{{ commandPreview }}</code></pre>
         </div>
 
         <!-- URL（http/sse） -->
@@ -279,12 +341,22 @@ async function uninstallServer() {
         <!-- Transport -->
         <div v-if="server.transport" class="flex items-center gap-2 text-xs">
           <span class="text-muted-foreground">{{ t('market.transportLabel') }}:</span>
-          <Badge variant="outline" class="font-mono text-[10px]">{{ server.transport }}</Badge>
+          <Badge variant="outline" class="font-mono text-[10px]">{{ transportLabel(server.transport) }}</Badge>
         </div>
 
         <!-- 环境变量 -->
         <div v-if="envKeys.length" class="space-y-1.5">
-          <p class="text-xs font-medium text-muted-foreground">{{ t('market.envVarsHint') }}</p>
+          <div class="flex items-center justify-between">
+            <p class="text-xs font-medium text-muted-foreground">{{ t('market.envVarsHint') }}</p>
+            <button
+              type="button"
+              class="inline-flex shrink-0 items-center gap-1 rounded text-[10px] text-muted-foreground transition-colors hover:text-foreground"
+              @click="copyEnv"
+            >
+              <component :is="copiedEnv ? PhCheck : PhCopy" :size="12" />
+              {{ copiedEnv ? t('common.copied') : t('common.copy') }}
+            </button>
+          </div>
           <div class="flex flex-wrap gap-1.5">
             <Badge v-for="key in envKeys" :key="key" variant="outline" class="font-mono text-[10px]">
               {{ key }}

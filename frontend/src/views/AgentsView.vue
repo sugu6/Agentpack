@@ -91,28 +91,27 @@ async function onRescan() {
 
         <div v-else class="space-y-2">
           <Card
-            v-for="agent in agents.sorted"
-            :key="agent.id"
-            :class="['transition-colors', agent.status === 'not_found' ? 'opacity-60' : '']"
+            v-for="group in agents.mergedGroups"
+            :key="group.id"
           >
             <CardContent class="flex items-center gap-4 p-4">
               <div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-md bg-secondary p-2">
-                <img :src="agentLogoUrl(agent.id)" :alt="agent.name" :class="['h-full w-full object-contain', agentLogoInvertClass(agent.id)]" />
+                <img :src="agentLogoUrl(group.id)" :alt="group.name" :class="['h-full w-full object-contain', agentLogoInvertClass(group.id)]" />
               </div>
               <div class="min-w-0 flex-1">
                 <div class="flex items-center gap-2">
-                  <h3 class="text-sm font-semibold">{{ agent.name }}</h3>
-                  <Badge variant="outline">{{ variantLabel(agent.variant || getVariantFromId(agent.id)) }}</Badge>
-                  <Badge :variant="statusVariant(agent.status)">{{ statusLabel(agent.status) }}</Badge>
+                  <h3 class="text-sm font-semibold">{{ group.name }}</h3>
+                  <Badge v-if="group.ids.length <= 1" variant="outline">{{ variantLabel(getVariantFromId(group.id)) }}</Badge>
+                  <Badge :variant="statusVariant(group.status)">{{ statusLabel(group.status) }}</Badge>
                 </div>
                 <p class="mt-0.5 truncate font-mono text-[11px] text-muted-foreground">
-                  {{ agent.configPath || t('agents.noConfigPath') }}
+                  {{ group.configPath || t('agents.noConfigPath') }}
                 </p>
                 <div class="mt-2 flex items-center gap-3 text-xs text-muted-foreground">
                   <span class="flex items-center gap-1">
-                    <PhCheckCircle v-if="agent.status !== 'not_found'" :size="11" weight="fill" class="text-success" />
+                    <PhCheckCircle v-if="group.status !== 'not_found'" :size="11" weight="fill" class="text-success" />
                     <PhXCircle v-else :size="11" weight="fill" />
-                    <span class="tabular-nums">{{ agent.mcpCount }}</span> MCP
+                    <span class="tabular-nums">{{ group.ids.length }}</span> {{ t('agents.instances') }}
                   </span>
                 </div>
               </div>

@@ -1,13 +1,12 @@
 {
   "name": "frontend",
   "private": true,
-  "version": "0.1.2",
+  "version": "0.2.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "build:dev": "vue-tsc --noEmit && vite build --minify false --mode development",
     "build": "vue-tsc --noEmit && vite build",
-    "typecheck": "vue-tsc --noEmit && node scripts/check-i18n.mjs",
-    "check:i18n": "node scripts/check-i18n.mjs",
     "preview": "vite preview"
   },
   "dependencies": {
@@ -30,6 +29,7 @@
     "@tailwindcss/node": "^4.3.2",
     "@tailwindcss/vite": "^4.3.2",
     "@vitejs/plugin-vue": "^6.0.7",
+    "@wailsio/runtime": "latest",
     "esbuild": "^0.28.1",
     "tailwindcss": "^4.3.2",
     "typescript": "~6.0.3",

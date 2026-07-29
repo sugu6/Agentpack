@@ -11,6 +11,8 @@ const DEFAULT_PAGE_SIZE = 30
 export const useMarketStore = defineStore('market', () => {
   const servers = ref<SearchResultServers>({ ...EMPTY_SERVERS })
   const skills = ref<SearchResultSkills>({ ...EMPTY_SKILLS })
+  // 保存 query='' 状态下的服务器列表(含 loadMore 累积的),清空搜索框时直接恢复,避免重新调 API。
+  const baseServers = ref<SearchResultServers>({ ...EMPTY_SERVERS })
   // MCP 搜索与 Skills 搜索使用各自独立的 loading 状态，
   // 避免一个 tab 的搜索进行时另一个 tab 误显示 Spinner 或禁用搜索按钮
   const loadingServers = ref(false)
@@ -45,6 +47,10 @@ export const useMarketStore = defineStore('market', () => {
       // 仅当这是最新的请求时才更新结果，丢弃过期响应
       if (requestId !== serverRequestId) return
       servers.value = result
+      // 缓存非搜索状态结果(首页),用于清空搜索框时快速恢复,避免重新调 API。
+      if (query === '' && cursor === '') {
+        baseServers.value = { ...result, items: [...result.items] }
+      }
     } catch (e) {
       if (requestId !== serverRequestId) return
       const apiError = ApiError.from(e)
@@ -68,10 +74,16 @@ export const useMarketStore = defineStore('market', () => {
         servers.value.nextPage,
         DEFAULT_PAGE_SIZE,
       )
+      // 后端某些边界情况(如 nil slice)会序列化为 items: null,这里做防御性处理避免崩溃
+      const newItems = Array.isArray(more?.items) ? more.items : []
       servers.value = {
         ...more,
-        items: [...servers.value.items, ...more.items],
+        items: [...servers.value.items, ...newItems],
         page: servers.value.page + 1,
+      }
+      // 如果在非搜索状态下加载更多,同步更新 baseServers,确保清空搜索时能恢复到最新状态。
+      if (currentQuery.value === '') {
+        baseServers.value = { ...servers.value, items: [...servers.value.items] }
       }
     } catch (e) {
       const apiError = ApiError.from(e)
@@ -134,13 +146,14 @@ export const useMarketStore = defineStore('market', () => {
         currentSkillSource.value,
       )
       if (requestId !== skillRequestId) return
+      const newSkillItems = Array.isArray(more?.items) ? more.items : []
       skills.value = {
         ...more,
-        items: [...skills.value.items, ...more.items],
+        items: [...skills.value.items, ...newSkillItems],
         page: more.page,
       }
-      // 等待已安装 skills 列表刷新完成，确保市场卡片正确显示「已安装」状态
-      await useSkillsStore().reload()
+      // 注:已安装状态已在首次 searchSkills 时同步,分页加载不再重复刷新,
+      // 与 servers.loadMore 行为对齐,加快分页速度
     } catch (e) {
       if (requestId !== skillRequestId) return
       const apiError = ApiError.from(e)
@@ -170,11 +183,24 @@ export const useMarketStore = defineStore('market', () => {
   function clearCache() {
     servers.value = { ...EMPTY_SERVERS }
     skills.value = { ...EMPTY_SKILLS }
+    baseServers.value = { ...EMPTY_SERVERS }
+  }
+
+  // 恢复缓存的非搜索状态列表(首页+已 loadMore 的),避免清空搜索框时重新调 API。
+  // 返回 true 表示成功恢复,false 表示没有缓存需要重新拉取。
+  function restoreBaseServers(): boolean {
+    if (baseServers.value.items.length === 0) return false
+    // 浅拷贝避免与 baseServers 共享引用,防止后续操作互相影响
+    servers.value = { ...baseServers.value, items: [...baseServers.value.items] }
+    currentQuery.value = ''
+    error.value = null
+    return true
   }
 
   return {
     servers,
     skills,
+    baseServers,
     loadingServers,
     loadingSkills,
     error,
@@ -185,6 +211,7 @@ export const useMarketStore = defineStore('market', () => {
     sourceStatuses,
     search,
     loadMore,
+    restoreBaseServers,
     installServer,
     searchSkills,
     loadMoreSkills,

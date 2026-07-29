@@ -1,4 +1,3 @@
-import type { agents as AgentsNS, config as ConfigNS } from '../../wailsjs/go/models'
 import type {
   MarketSource as ApiMarketSource,
   McpServer as ApiMcpServer,
@@ -8,8 +7,6 @@ import type {
   Settings as ApiSettings,
 } from '@/lib/api'
 
-export type WailsAgent = AgentsNS.Agent
-export type WailsSettings = ConfigNS.Settings
 export type AgentVariant = 'cli' | 'desktop' | 'ide' | 'config'
 export type AgentStatus =
   | 'detected'

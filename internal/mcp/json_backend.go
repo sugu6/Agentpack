@@ -131,6 +131,8 @@ func (b *JsonBackend) parseStandardJsonServer(name string, raw json.RawMessage) 
 		transport = TransportSSE
 	} else if js.Transport == "http" || js.Type == "http" {
 		transport = TransportHTTP
+	} else if js.Transport == "streamable-http" || js.Type == "streamable-http" {
+		transport = TransportStreamableHTTP
 	}
 	// 归一化：空切片视为 nil，保证读写一致性
 	args := js.Args

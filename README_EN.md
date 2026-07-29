@@ -18,7 +18,7 @@
 
 ## Introduction
 
-AgentPack is a cross-platform desktop application built with [Wails v2](https://wails.io)
+AgentPack is a cross-platform desktop application built with [Wails v3](https://wails.io)
 (Go + Vue 3 + TypeScript) for unified management of MCP servers, Skills, and Agent
 configurations across various AI coding tools.
 
@@ -37,15 +37,16 @@ Supported agents:
 - **Agent Management**: Auto-detect installed AI coding tools; enable/disable individual agents
 - **MCP Server Management**: Full CRUD for MCP servers with multi-agent binding and one-click scan
 - **Skills Management**: Install, uninstall, check updates; scan from GitHub repos and import from ZIP
-- **Marketplace**: Integrated Smithery, Official Registry, skills.sh skill marketplaces
+- **Marketplace**: Integrated Official Registry, skills.sh, GitHub skill marketplaces with infinite scroll
 - **Config Import/Export**: Backup configurations and migrate across devices
-- **System Tray**: Lightweight mode; pause background scans when window hidden to tray
+- **System Tray**: Wails v3 native tray with language change menu updates
 - **Auto Update Check**: Built-in version check via GitHub Releases with changelog preview
+- **i18n**: Built-in Chinese/English toggle, defaults to system language
 - **Cross-Platform**: Windows, macOS (Intel / Apple Silicon), Linux
 
 ## Tech Stack
 
-- **Backend**: Go 1.25+, Wails v2.12
+- **Backend**: Go 1.25+, Wails v3
 - **Frontend**: Vue 3, TypeScript, Vite, Tailwind CSS, shadcn/vue
 - **Database**: SQLite (modernc.org/sqlite, pure Go)
 - **Icons**: Phosphor Icons
@@ -55,7 +56,7 @@ Supported agents:
 - [Go](https://go.dev/dl/) 1.25 or higher
 - [Node.js](https://nodejs.org/) 20+
 - [pnpm](https://pnpm.io/) 9+
-- [Wails CLI](https://wails.io/docs/gettingstarted/installation) v2.12.0
+- [Wails3 CLI](https://wails.io/docs/next/gettingstarted/installation)
 
 **Platform-specific:**
 
@@ -75,8 +76,8 @@ cd AgentPack
 ### 2. Install dependencies
 
 ```bash
-# Install Wails CLI (if not yet installed)
-go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0
+# Install Wails3 CLI (if not yet installed)
+go install github.com/wailsapp/wails/v3/cmd/wails3@latest
 
 # Install frontend dependencies
 cd frontend && pnpm install && cd ..
@@ -85,16 +86,26 @@ cd frontend && pnpm install && cd ..
 ### 3. Run in development mode
 
 ```bash
-wails dev
+wails3 dev
 ```
 
 Development mode starts the Vite dev server with frontend hot-reload.
-The backend dev server runs at `http://localhost:34115` for browser-based Go method debugging.
+The backend dev server runs at `http://localhost:9245` for browser-based Go method debugging.
 
 ### 4. Build for production
 
 ```bash
-wails build -clean
+# Windows build
+wails3 task windows:build
+
+# macOS build
+wails3 task darwin:build
+
+# Linux build
+wails3 task linux:build
+
+# Generate Windows NSIS installer
+wails3 task windows:package
 ```
 
 Build artifacts are located in `build/bin/`.
@@ -107,7 +118,11 @@ AgentPack/
 ├── main.go                # Program entry
 ├── tray.go                # System tray implementation
 ├── update.go              # Update check (GitHub Releases API)
-├── wails.json             # Wails project config
+├── winbridge.go           # Windows theme bridge (Mica / dark mode)
+├── devmode_dev.go         # Dev mode configuration
+├── devmode_prod.go        # Production mode configuration
+├── wails.json             # Wails project config (v2 compat)
+├── Taskfile.yml           # Wails v3 build task definitions
 ├── CHANGELOG.md           # Changelog (Chinese)
 ├── CHANGELOG_EN.md        # Changelog (English)
 ├── internal/              # Backend business logic
@@ -116,10 +131,16 @@ AgentPack/
 │   ├── config/            # Configuration management
 │   ├── crypto/            # Environment variable encryption
 │   ├── database/          # SQLite database
+│   ├── dbutil/            # Database utility functions
 │   ├── i18n/              # Internationalization (zh-CN / en)
-│   ├── market/            # Skill marketplace (Smithery / Official / skills.sh)
+│   ├── iowriter/          # Atomic file writer
+│   ├── lockfile/          # Cross-platform file locking
+│   ├── logger/            # Logging utility
+│   ├── market/            # Skill marketplace (Official / skills.sh / GitHub)
 │   ├── mcp/               # MCP server storage
-│   └── skills/            # Skills management and update check
+│   ├── shared/            # Shared utility functions
+│   ├── skills/            # Skills management and update check
+│   └── win32/             # Windows-specific implementation
 ├── frontend/              # Vue 3 frontend
 │   ├── src/
 │   │   ├── views/         # Pages (Agents / MCP / Skills / Market / Settings)
@@ -127,15 +148,21 @@ AgentPack/
 │   │   ├── stores/        # Pinia state management
 │   │   ├── lib/api.ts     # Wails binding wrapper
 │   │   └── composables/   # Composition functions
-│   └── wailsjs/           # Wails auto-generated bindings
-└── build/                 # Build resources per platform
+│   └── bindings/          # Wails v3 auto-generated bindings
+├── build/                 # Build resources per platform (v3 Taskfile layout)
+│   ├── config.yml         # Wails v3 build config
+│   ├── windows/           # Windows installer resources
+│   ├── darwin/            # macOS build resources
+│   ├── linux/             # Linux build resources
+│   └── docker/            # Cross-compilation Docker images
+└── scripts/               # Build and release scripts
 ```
 
 ## Download & Install
 
 Visit the [Releases page](https://github.com/sugu6/AgentPack/releases) to download the installer for your platform:
 
-- **Windows**: `AgentPack-windows-amd64.zip`
+- **Windows**: `AgentPack-windows-amd64.zip` or `AgentPack-windows-amd64-installer.exe` (NSIS installer)
 - **macOS (Intel)**: `AgentPack-macos-intel.dmg`
 - **macOS (Apple Silicon)**: `AgentPack-macos-arm64.dmg`
 - **Linux**: `AgentPack-linux-amd64.tar.gz` or `AppImage`

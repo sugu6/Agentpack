@@ -5,11 +5,10 @@ import "context"
 type Source string
 
 const (
-	SourceOfficial Source = "official"
+	SourceOfficial Source = "registry"
 	SourceGitHub   Source = "github"
 	SourceLocal    Source = "local"
 	SourceSkillsSh Source = "skills-sh"
-	SourceSmithery Source = "smithery"
 )
 
 type MarketServer struct {
@@ -29,14 +28,7 @@ type MarketServer struct {
 	SourceID    string            `json:"sourceId"`
 	Installs    int               `json:"installs,omitempty"`
 	Stars       int               `json:"stars,omitempty"`
-	UpdatedAt   string            `json:"updatedAt"`
-	// Smithery 特有字段（仅 SourceSmithery 时填充，用于前端筛选）
-	BySmithery bool `json:"bySmithery,omitempty"` // 是否由 Smithery 官方管理
-	IsDeployed bool `json:"isDeployed,omitempty"`
-	IsVerified bool `json:"isVerified,omitempty"`
-	IsRemote   bool `json:"isRemote,omitempty"` // 是否为远程托管（http 型）
-	// Official 特有字段（仅 SourceOfficial 时填充，用于前端筛选）
-	Registry string `json:"registry,omitempty"` // 包注册表：npm / pypi / docker / oci
+	UpdatedAt   string `json:"updatedAt"`
 }
 
 type SearchOptions struct {
@@ -76,6 +68,7 @@ type MarketSkill struct {
 	RepoBranch  string `json:"repoBranch"` // 默认 "main"
 	ReadmeURL   string `json:"readmeUrl,omitempty"` // GitHub 仓库 README 直链
 	UpdatedAt   string `json:"updatedAt"`
+	ContentHash string `json:"contentHash,omitempty"` // SKILL.md 内容指纹（SHA256），用于缓存失效和去重
 }
 
 // SearchResultSkills 是 Skill 搜索结果

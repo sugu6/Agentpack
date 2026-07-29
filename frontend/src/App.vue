@@ -6,13 +6,15 @@ import { useAgentsStore } from '@/stores/agents'
 import { useSettingsStore } from '@/stores/settings'
 import { useMcpStore } from '@/stores/mcp'
 import { useSkillsStore } from '@/stores/skills'
-import { api, events } from '@/lib/api'
+import { api, events, type UpdateCheckResult } from '@/lib/api'
 import { TooltipProvider, Toaster } from '@/components/ui'
+import { useToast } from '@/composables/useToast'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import WindowCloseDialog from '@/components/WindowCloseDialog.vue'
 import UpdateDialog from '@/components/UpdateDialog.vue'
 
 const { t } = useI18n()
+const toast = useToast()
 const agents = useAgentsStore()
 const settings = useSettingsStore()
 const mcp = useMcpStore()
@@ -90,6 +92,26 @@ onMounted(async () => {
     if (!mounted.value) return
     startupErrors.value = errs || []
   }).catch((e) => console.warn('读取启动错误失败:', e))
+
+  // 首次启动时静默检查更新：使用 localStorage 记录检测状态，防止重复检测
+  const UPDATE_CHECK_KEY = 'agentpack_update_checked_session'
+  if (!localStorage.getItem(UPDATE_CHECK_KEY)) {
+    localStorage.setItem(UPDATE_CHECK_KEY, '1')
+    // 后台静默执行，不干扰用户操作
+    api.system.checkUpdate().then((result: UpdateCheckResult) => {
+      if (!mounted.value) return
+      if (result.hasUpdate) {
+        // 有更新时按现有提示机制处理（toast + UpdateDialog）
+        toast.success(t('settings.toast.foundNewVersion', { latest: result.latestVersion, current: result.currentVersion }), {
+          duration: 5000,
+        })
+        events.emit('app:update-available', result)
+      }
+      // 无更新时不显示任何提示，静默处理
+    }).catch(() => {
+      // 检测失败静默忽略，不打扰用户
+    })
+  }
 })
 
 onBeforeUnmount(() => {

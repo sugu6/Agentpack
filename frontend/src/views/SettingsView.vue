@@ -1,7 +1,4 @@
 <script lang="ts">
-// 模块级标记：每个页面会话只静默自动检查一次更新，避免反复进入设置页时重复请求
-// 必须放在非 setup 的 <script> 块中，才能跨组件实例持久化
-let autoUpdateChecked = false
 </script>
 
 <script setup lang="ts">
@@ -12,22 +9,36 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription, Switch, Butt
 import AgentToggleButton from '@/components/agent/AgentToggleButton.vue'
 import { PhFolderOpen, PhArrowsClockwise, PhDownload, PhUpload, PhPlus, PhTrash, PhPencilSimple } from '@phosphor-icons/vue'
 import { api, ApiError, events, type SkillRepo, type UpdateCheckResult } from '@/lib/api'
-import { getVariantFromId, variantToBadge, agentDisplayName } from '@/composables/useAgentHelpers'
+import { normalizeVariant, variantToBadge, agentDisplayName } from '@/composables/useAgentHelpers'
 import { useToast } from '@/composables/useToast'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 import { useI18n } from 'vue-i18n'
 
 // 将 changelog markdown 渲染为安全的 HTML
+const GITHUB_REPO = 'https://github.com/sugu6/Agentpack'
 function renderMarkdown(md: string): string {
   if (!md) return ''
-  return DOMPurify.sanitize(marked.parse(md, { async: false }) as string)
+  // 将相对路径链接（如 ./CHANGELOG.md）转为 GitHub 绝对 URL
+  const fixed = md.replace(/\]\(\.\/(CHANGELOG[^\)]*)\)/g, `](${GITHUB_REPO}/blob/master/$1)`)
+  return DOMPurify.sanitize(marked.parse(fixed, { async: false }) as string)
+}
+
+// 拦截 changelog 内的链接点击，在系统浏览器打开而非 WebView 内
+function onChangelogLinkClick(e: MouseEvent) {
+  const target = e.target as HTMLElement
+  const link = target.closest('a')
+  if (!link?.href) return
+  e.preventDefault()
+  api.system.openUrl(link.href)
 }
 
 const settings = useSettingsStore()
 const agents = useAgentsStore()
 const toast = useToast()
 const { t } = useI18n()
+
+const scrollContainer = ref<HTMLElement | null>(null)
 
 const saving = ref(false)
 const backupLoading = ref<'create' | 'export' | 'import' | null>(null)
@@ -66,11 +77,6 @@ onMounted(() => {
   void settings.fetch()
   // 从后端获取版本号
   api.system.getAppVersion().then(v => { appVersion.value = v }).catch(() => {})
-  // 进入设置页时自动检查一次更新（每个会话仅一次），避免反复进入设置页时重复请求
-  if (!autoUpdateChecked) {
-    autoUpdateChecked = true
-    void checkUpdate()
-  }
   // 监听下载进度事件
   offDownloadProgress = events.on('update:download:progress', (data: any) => {
     if (data && typeof data === 'object') {
@@ -180,9 +186,38 @@ function setAutoBackup(v: boolean) {
   withAutoSave(cfg => { cfg.autoBackup = v })
 }
 
+// Skills 存储迁移弹窗
+const migrateDialog = ref({ open: false, from: '', to: '', migrating: false })
+
 function setSkillStorage(v: string) {
   if (v !== 'agentpack' && v !== 'unified') return
-  withAutoSave(cfg => { cfg.skillStorage = v as 'agentpack' | 'unified' })
+  if (v === settings.config.skillStorage) return
+  // 弹窗确认后才执行迁移
+  const from = settings.config.skillStorage === 'agentpack' ? '~/.agentpack/skills/' : '~/.agents/skills/'
+  const to = v === 'agentpack' ? '~/.agentpack/skills/' : '~/.agents/skills/'
+  migrateDialog.value = { open: true, from, to, migrating: false }
+}
+
+async function confirmMigrate() {
+  const target = migrateDialog.value.to === '~/.agentpack/skills/' ? 'agentpack' : 'unified'
+  migrateDialog.value.migrating = true
+  try {
+    const result = await api.skills.migrateStorage(target)
+    const count = result?.migrated ?? 0
+    const next = cloneConfig()
+    next.skillStorage = target as 'agentpack' | 'unified'
+    await settings.update(next)
+    toast.success(t('settings.skills.migrateDialog.success', { count }))
+  } catch (e) {
+    toast.error(t('settings.skills.migrateDialog.error', { error: String(e) }))
+    const revert = migrateDialog.value.from === '~/.agentpack/skills/' ? 'agentpack' : 'unified'
+    const rollback = cloneConfig()
+    rollback.skillStorage = revert as 'agentpack' | 'unified'
+    settings.setConfig(rollback)
+  } finally {
+    migrateDialog.value.migrating = false
+    migrateDialog.value.open = false
+  }
 }
 
 function setSkillSyncMethod(v: string) {
@@ -206,6 +241,19 @@ async function toggleAgent(agentId: string, enabled: boolean) {
   } catch (e) {
     const apiError = ApiError.from(e)
     toast.error(t('settings.toast.toggleAgentFailed', { error: apiError.message }))
+  }
+}
+
+async function toggleAgentGroup(group: { ids: string[] }, enabled: boolean) {
+  const uniqueIds = [...new Set(group.ids)]
+  const results = await Promise.allSettled(
+    uniqueIds.map(id => agents.toggle(id, enabled))
+  )
+  const failures = results.filter(r => r.status === 'rejected')
+  if (failures.length > 0) {
+    toast.error(t('settings.toast.toggleAgentFailed', { error: failures.length + ' failed' }))
+  } else {
+    toast.success(enabled ? t('settings.toast.agentEnabled') : t('settings.toast.agentDisabled'))
   }
 }
 
@@ -480,8 +528,7 @@ const marketSourceTabs = computed(() => ({
   mcp: {
     label: 'MCP',
     sources: [
-      { key: 'official', label: 'Official', description: t('settings.market.officialDesc') },
-      { key: 'smithery', label: 'Smithery', description: t('settings.market.smitheryDesc') },
+      { key: 'registry', label: 'Official', description: t('settings.market.officialDesc') },
     ],
   },
   skills: {
@@ -519,7 +566,7 @@ const marketSourceList = computed(() => {
     </div>
 
     <!-- 可滚动内容 -->
-    <div class="flex-1 overflow-y-auto">
+    <div ref="scrollContainer" class="flex-1 overflow-y-auto">
       <div class="mx-auto max-w-4xl space-y-6 px-8 py-4">
 
     <Card>
@@ -748,7 +795,7 @@ const marketSourceList = computed(() => {
               :agent-name="agentDisplayName(agent)"
               :model-value="agent.status === 'enabled'"
               :disabled="agent.status === 'error' || agent.status === 'not_found'"
-              :badge="variantToBadge(agent.variant || getVariantFromId(agent.id))"
+              :badge="variantToBadge(normalizeVariant(agent.variant, agent.id))"
               @update:model-value="(v) => toggleAgent(agent.id, v)"
             />
           </div>
@@ -883,7 +930,7 @@ const marketSourceList = computed(() => {
     </Card>
 
     <!-- 导入确认弹窗 -->
-    <Dialog v-model:open="importDialog.open">
+    <Dialog v-model:open="importDialog.open" :scroll-root="scrollContainer">
       <DialogContent class="max-w-md">
         <DialogHeader>
           <DialogTitle>{{ t('settings.importDialog.title') }}</DialogTitle>
@@ -934,7 +981,7 @@ const marketSourceList = computed(() => {
     </Dialog>
 
     <!-- 更新日志弹窗 -->
-    <Dialog v-model:open="changelogDialogOpen">
+    <Dialog v-model:open="changelogDialogOpen" :scroll-root="scrollContainer">
       <DialogContent class="max-w-2xl max-h-[80vh] flex flex-col">
         <DialogHeader>
           <DialogTitle>{{ t('settings.update.changelog') }}</DialogTitle>
@@ -944,7 +991,7 @@ const marketSourceList = computed(() => {
           </DialogDescription>
         </DialogHeader>
         <div class="flex-1 overflow-y-auto">
-          <div class="text-sm text-muted-foreground leading-relaxed max-w-none [&_a]:text-primary [&_a]:underline [&_h1]:text-base [&_h1]:font-semibold [&_h1]:mt-4 [&_h1]:mb-2 [&_h2]:text-sm [&_h2]:font-semibold [&_h2]:mt-3 [&_h2]:mb-2 [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:list-decimal [&_ol]:pl-5 [&_li]:my-1 [&_pre]:bg-muted [&_pre]:p-3 [&_pre]:rounded [&_pre]:overflow-x-auto [&_code]:text-primary [&_hr]:my-4 [&_blockquote]:border-l-2 [&_blockquote]:border-border [&_blockquote]:pl-3 [&_blockquote]:italic" v-html="renderMarkdown(updateResult?.changelog || '')" />
+          <div class="text-sm text-muted-foreground leading-relaxed max-w-none [&_a]:text-primary [&_a]:underline [&_h1]:text-base [&_h1]:font-semibold [&_h1]:mt-4 [&_h1]:mb-2 [&_h2]:text-sm [&_h2]:font-semibold [&_h2]:mt-3 [&_h2]:mb-2 [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:list-decimal [&_ol]:pl-5 [&_li]:my-1 [&_pre]:bg-muted [&_pre]:p-3 [&_pre]:rounded [&_pre]:overflow-x-auto [&_code]:text-primary [&_hr]:my-4 [&_blockquote]:border-l-2 [&_blockquote]:border-border [&_blockquote]:pl-3 [&_blockquote]:italic" v-html="renderMarkdown(updateResult?.changelog || '')" @click="onChangelogLinkClick" />
         </div>
         <DialogFooter>
           <Button v-if="updateResult?.releaseUrl" variant="outline" size="sm" @click="api.system.openUrl(updateResult.releaseUrl)">
@@ -957,6 +1004,32 @@ const marketSourceList = computed(() => {
           </Button>
           <Button variant="outline" size="sm" @click="changelogDialogOpen = false">
             <span>{{ t('common.close') }}</span>
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+
+    <!-- Skills 存储迁移确认弹窗 -->
+    <Dialog v-model:open="migrateDialog.open" :scroll-root="scrollContainer">
+      <DialogContent class="max-w-md">
+        <DialogHeader>
+          <DialogTitle>{{ t('settings.skills.migrateDialog.title') }}</DialogTitle>
+          <DialogDescription>{{ t('settings.skills.migrateDialog.desc') }}</DialogDescription>
+        </DialogHeader>
+        <div class="space-y-3 py-2">
+          <div class="flex items-center gap-2 text-sm">
+            <span class="text-muted-foreground">{{ t('settings.skills.migrateDialog.from') }}:</span>
+            <code class="rounded bg-muted px-1.5 py-0.5 text-xs">{{ migrateDialog.from }}</code>
+          </div>
+          <div class="flex items-center gap-2 text-sm">
+            <span class="text-muted-foreground">{{ t('settings.skills.migrateDialog.to') }}:</span>
+            <code class="rounded bg-muted px-1.5 py-0.5 text-xs">{{ migrateDialog.to }}</code>
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" size="sm" @click="migrateDialog.open = false">{{ t('settings.skills.migrateDialog.cancelBtn') }}</Button>
+          <Button size="sm" :disabled="migrateDialog.migrating" @click="confirmMigrate">
+            {{ migrateDialog.migrating ? t('settings.skills.migrateDialog.migrating') : t('settings.skills.migrateDialog.migrateBtn') }}
           </Button>
         </DialogFooter>
       </DialogContent>
