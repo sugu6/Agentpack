@@ -1,0 +1,4 @@
+ci: fix NSIS installer path and nfpm config for Linux packaging
+
+- Use github.workspace absolute path for NSIS binary (avoids .. resolution issue)
+- Fix nfpm.yaml: set name, correct desktop/icon paths
