@@ -122,9 +122,9 @@ jobs:
           choco install nsis -y
           echo "C:\Program Files (x86)\NSIS" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
-      - name: Build (Windows)
+      - name: Build and Package (Windows)
         if: runner.os == 'Windows'
-        run: wails3 task windows:build
+        run: wails3 task windows:package
 
       - name: Build (macOS)
         if: runner.os == 'macOS'
@@ -142,18 +142,7 @@ jobs:
         if: runner.os == 'Linux'
         run: wails3 task linux:package
 
-      - name: Create NSIS installer (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        working-directory: build/windows/nsis
-        env:
-          BINARY_FLAG: ${{ matrix.name == 'windows-arm64' && 'ARM64' || 'AMD64' }}
-        run: |
-          wails3 generate webview2bootstrapper -dir .
-          $binary = "${{ github.workspace }}\bin\AgentPack.exe"
-          makensis "-DARG_WAILS_${env:BINARY_FLAG}_BINARY=$binary" project.nsi
-
-      - name: Package (Windows)
+      - name: Package ZIP (Windows)
         if: runner.os == 'Windows'
         run: |
           7z a "${{ runner.temp }}/AgentPack-${{ steps.version.outputs.version }}-${{ matrix.name }}.zip" "bin/AgentPack.exe"
