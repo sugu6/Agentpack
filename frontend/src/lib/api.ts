@@ -43,6 +43,9 @@ import {
   DeleteMcpServer,
   RemoveSkillRepo,
   StartDownloadUpdate,
+  PauseDownload,
+  ResumeDownload,
+  InstallUpdate,
   UpdateSkillRepo,
   UpdateMcpServer,
   UpdateSettings,
@@ -415,8 +418,17 @@ export const api = {
     startDownloadUpdate: async (url: string): Promise<void> => {
       return safeCall(() => StartDownloadUpdate(url))
     },
+    pauseDownload: async (): Promise<void> => {
+      return safeCall(() => PauseDownload())
+    },
+    resumeDownload: async (): Promise<void> => {
+      return safeCall(() => ResumeDownload())
+    },
     cancelDownload: async (): Promise<void> => {
       return safeCall(() => CancelDownload())
+    },
+    installUpdate: async (): Promise<void> => {
+      return safeCall(() => InstallUpdate())
     },
   },
 }

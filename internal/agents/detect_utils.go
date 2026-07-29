@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -98,6 +99,7 @@ func loadNpmCache() {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, npmPath, "list", "-g", "--depth=0", "--json")
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	output, err := cmd.Output()
 	if err != nil {
 		// 区分两种情况：
@@ -136,6 +138,7 @@ func checkNpmPackageSingle(pkg string) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, npmPath, "list", "-g", pkg, "--depth=0")
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	output, _ := cmd.CombinedOutput()
 	return strings.Contains(string(output), pkg+"@")
 }

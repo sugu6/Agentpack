@@ -7,6 +7,29 @@
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-07-29
+
+### 特性
+
+- 更新下载支持暂停与续传：下载中可暂停，暂停后保留已下载的临时文件，继续下载时通过 HTTP `Range` 请求从断点接续；服务器不支持续传（返回 200 而非 206）时自动删除临时文件从头下载，避免产出损坏的安装包
+- 暂停状态可直接删除已下载内容，或关闭弹窗自动清理临时文件
+- 更新弹窗显示下载字节数、总大小与实时速度，后端速度字段缺失时前端按事件间隔自行推算
+
+### 变更
+
+- 下载完成不再自动启动安装程序并退出应用，改为显示"立即安装"按钮，由用户确认后调用 `InstallUpdate` 启动安装器并退出（Windows 上运行中的 exe 无法被安装器覆盖，退出仍不可避免）
+- 更新弹窗统一为全局 `UpdateDialog` 组件：移除 SettingsView 内嵌的重复弹窗，设置页"更新日志"按钮改为派发 `app:update-available` / `app:show-changelog` 事件；全局弹窗补齐 changelog 相对链接转换、链接跳系统浏览器、Releases 与关闭按钮
+- 更新弹窗右上角显示安装包文件名（等宽字体单行显示，标题区在宽度不足时优先收缩）
+- 暂停状态下按钮顺序调整为"继续下载"在左、"删除下载"在右，删除按钮改用标准 `destructive` 变体，与下载按钮同尺寸仅颜色为红色
+- 路由视图启用 `KeepAlive` 缓存，页面切换不再重新挂载组件
+
+### 修复
+
+- 取消下载时不再同时弹出"下载已取消"与"下载失败"两条冲突提示（取消期间抑制后端 error 事件）
+- 下载速度为空时整个区域不渲染导致看起来"无速度显示"的问题，现改为始终渲染并以 `—` 占位
+- 续传时进度百分比错误：206 响应的 `Content-Length` 仅为剩余字节数，需叠加已下载偏移量才是文件总大小
+- npm 检测子进程在 Windows 上弹出命令行窗口：为 `npm list` 调用设置 `SysProcAttr.HideWindow`
+
 ## [0.2.0] - 2026-07-29
 
 ### 特性
@@ -161,4 +184,5 @@ AgentPack 的初始版本，一款面向 AI 编码工具的统一 MCP / Skills /
 [0.1.2]: https://github.com/sugu6/Agentpack/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/sugu6/Agentpack/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/sugu6/Agentpack/releases/tag/v0.1.0
-[Unreleased]: https://github.com/sugu6/Agentpack/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/sugu6/Agentpack/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/sugu6/Agentpack/compare/v0.2.0...v0.2.1

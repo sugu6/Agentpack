@@ -11,27 +11,7 @@ import { PhFolderOpen, PhArrowsClockwise, PhDownload, PhUpload, PhPlus, PhTrash,
 import { api, ApiError, events, type SkillRepo, type UpdateCheckResult } from '@/lib/api'
 import { normalizeVariant, variantToBadge, agentDisplayName } from '@/composables/useAgentHelpers'
 import { useToast } from '@/composables/useToast'
-import { marked } from 'marked'
-import DOMPurify from 'dompurify'
 import { useI18n } from 'vue-i18n'
-
-// 将 changelog markdown 渲染为安全的 HTML
-const GITHUB_REPO = 'https://github.com/sugu6/Agentpack'
-function renderMarkdown(md: string): string {
-  if (!md) return ''
-  // 将相对路径链接（如 ./CHANGELOG.md）转为 GitHub 绝对 URL
-  const fixed = md.replace(/\]\(\.\/(CHANGELOG[^\)]*)\)/g, `](${GITHUB_REPO}/blob/master/$1)`)
-  return DOMPurify.sanitize(marked.parse(fixed, { async: false }) as string)
-}
-
-// 拦截 changelog 内的链接点击，在系统浏览器打开而非 WebView 内
-function onChangelogLinkClick(e: MouseEvent) {
-  const target = e.target as HTMLElement
-  const link = target.closest('a')
-  if (!link?.href) return
-  e.preventDefault()
-  api.system.openUrl(link.href)
-}
 
 const settings = useSettingsStore()
 const agents = useAgentsStore()
@@ -44,19 +24,10 @@ const saving = ref(false)
 const backupLoading = ref<'create' | 'export' | 'import' | null>(null)
 const updateChecking = ref(false)
 const updateResult = ref<UpdateCheckResult | null>(null)
-const changelogDialogOpen = ref(false)
 let saveDirty = false
 
 // 版本号（从后端 API 获取）
 const appVersion = ref('')
-
-// 下载状态
-const downloadStatus = ref<'idle' | 'downloading' | 'complete' | 'error'>('idle')
-const downloadProgress = ref(0)
-const downloadSpeed = ref('')
-let offDownloadProgress: (() => void) | null = null
-let offDownloadComplete: (() => void) | null = null
-let offDownloadError: (() => void) | null = null
 
 // 导入确认弹窗状态
 const importDialog = ref({
@@ -77,32 +48,9 @@ onMounted(() => {
   void settings.fetch()
   // 从后端获取版本号
   api.system.getAppVersion().then(v => { appVersion.value = v }).catch(() => {})
-  // 监听下载进度事件
-  offDownloadProgress = events.on('update:download:progress', (data: any) => {
-    if (data && typeof data === 'object') {
-      downloadProgress.value = Math.round(data.percent || 0)
-      downloadSpeed.value = formatSpeed(data.speed)
-    }
-  })
-  offDownloadComplete = events.on('update:download:complete', (data: any) => {
-    if (data && typeof data === 'object') {
-      downloadStatus.value = 'complete'
-    }
-  })
-  offDownloadError = events.on('update:download:error', (data: any) => {
-    if (data && typeof data === 'object') {
-      downloadStatus.value = 'error'
-      downloadProgress.value = 0
-      downloadSpeed.value = ''
-      toast.error(t('settings.toast.downloadFailedMsg', { message: data.message || t('settings.toast.unknownError') }))
-    }
-  })
 })
 onUnmounted(() => {
   if (offSettingsChanged) offSettingsChanged()
-  if (offDownloadProgress) offDownloadProgress()
-  if (offDownloadComplete) offDownloadComplete()
-  if (offDownloadError) offDownloadError()
 })
 
 const MIN_RETENTION = 1
@@ -362,41 +310,10 @@ async function checkUpdate() {
   }
 }
 
-function formatSpeed(bytesPerSecond: number): string {
-  if (!bytesPerSecond || bytesPerSecond <= 0) return ''
-  const units = ['B/s', 'KB/s', 'MB/s', 'GB/s']
-  let i = 0
-  let speed = bytesPerSecond
-  while (speed >= 1024 && i < units.length - 1) {
-    speed /= 1024
-    i++
-  }
-  return `${speed.toFixed(i === 0 ? 0 : 1)} ${units[i]}`
-}
-
-async function startDownload() {
-  if (!updateResult.value?.downloadUrl) return
-  downloadStatus.value = 'downloading'
-  downloadProgress.value = 0
-  downloadSpeed.value = ''
-  try {
-    await api.system.startDownloadUpdate(updateResult.value.downloadUrl)
-  } catch (e) {
-    downloadStatus.value = 'error'
-    const apiError = ApiError.from(e)
-    toast.error(t('settings.toast.startDownloadFailed', { error: apiError.message }))
-  }
-}
-
-async function cancelDownload() {
-  try {
-    await api.system.cancelDownload()
-    downloadStatus.value = 'idle'
-    downloadProgress.value = 0
-    downloadSpeed.value = ''
-  } catch (e) {
-    // ignore
-  }
+// 打开全局 UpdateDialog 查看更新日志（无新版本时也可查看）
+function openChangelog() {
+  if (!updateResult.value) return
+  events.emit(updateResult.value.hasUpdate ? 'app:update-available' : 'app:show-changelog', updateResult.value)
 }
 
 // === Skills 仓库扫描管理 ===
@@ -916,7 +833,7 @@ const marketSourceList = computed(() => {
         <div class="flex items-center justify-between">
           <Label>{{ t('settings.update.checkUpdate') }}</Label>
           <div class="flex gap-2">
-            <Button v-if="updateResult?.changelog" variant="outline" size="sm" @click="changelogDialogOpen = true">
+            <Button v-if="updateResult?.changelog" variant="outline" size="sm" @click="openChangelog">
               <span>{{ t('settings.update.changelog') }}</span>
             </Button>
             <Button variant="outline" size="sm" :disabled="updateChecking" @click="checkUpdate">
@@ -980,34 +897,7 @@ const marketSourceList = computed(() => {
       </DialogContent>
     </Dialog>
 
-    <!-- 更新日志弹窗 -->
-    <Dialog v-model:open="changelogDialogOpen" :scroll-root="scrollContainer">
-      <DialogContent class="max-w-2xl max-h-[80vh] flex flex-col">
-        <DialogHeader>
-          <DialogTitle>{{ t('settings.update.changelog') }}</DialogTitle>
-          <DialogDescription v-if="updateResult">
-            v{{ updateResult.currentVersion }}
-            <span v-if="updateResult.hasUpdate"> → v{{ updateResult.latestVersion }}</span>
-          </DialogDescription>
-        </DialogHeader>
-        <div class="flex-1 overflow-y-auto">
-          <div class="text-sm text-muted-foreground leading-relaxed max-w-none [&_a]:text-primary [&_a]:underline [&_h1]:text-base [&_h1]:font-semibold [&_h1]:mt-4 [&_h1]:mb-2 [&_h2]:text-sm [&_h2]:font-semibold [&_h2]:mt-3 [&_h2]:mb-2 [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:list-decimal [&_ol]:pl-5 [&_li]:my-1 [&_pre]:bg-muted [&_pre]:p-3 [&_pre]:rounded [&_pre]:overflow-x-auto [&_code]:text-primary [&_hr]:my-4 [&_blockquote]:border-l-2 [&_blockquote]:border-border [&_blockquote]:pl-3 [&_blockquote]:italic" v-html="renderMarkdown(updateResult?.changelog || '')" @click="onChangelogLinkClick" />
-        </div>
-        <DialogFooter>
-          <Button v-if="updateResult?.releaseUrl" variant="outline" size="sm" @click="api.system.openUrl(updateResult.releaseUrl)">
-            <PhDownload :size="14" />
-            <span>{{ t('settings.update.goToReleases') }}</span>
-          </Button>
-          <Button v-if="updateResult?.hasUpdate && downloadStatus === 'idle'" size="sm" @click="startDownload">
-            <PhDownload :size="14" />
-            <span>{{ t('settings.update.download') }}</span>
-          </Button>
-          <Button variant="outline" size="sm" @click="changelogDialogOpen = false">
-            <span>{{ t('common.close') }}</span>
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+    <!-- 更新日志弹窗统一由全局 UpdateDialog 组件承载（App.vue 挂载） -->
 
     <!-- Skills 存储迁移确认弹窗 -->
     <Dialog v-model:open="migrateDialog.open" :scroll-root="scrollContainer">

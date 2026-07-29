@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"agentpack/internal/config"
@@ -286,16 +287,34 @@ func downloadDir() string {
 	return os.TempDir()
 }
 
+// StartDownloadUpdate 开始一次全新的下载（从头开始）
 func (a *App) StartDownloadUpdate(url string) error {
+	a.mu.Lock()
+	// 新下载：清理任何遗留的暂停状态与临时文件
+	if a.downloadPausedFile != "" {
+		os.Remove(a.downloadPausedFile)
+		a.downloadPausedFile = ""
+	}
+	a.downloadOffset = 0
+	a.mu.Unlock()
+	atomic.StoreInt32(&a.paused, 0)
+	return a.startDownload(url, 0)
+}
+
+// startDownload 执行下载，offset > 0 时通过 Range 请求实现断点续传
+func (a *App) startDownload(url string, offset int64) error {
 	if !strings.HasPrefix(url, config.DefaultGitHubProxy) {
 		url = config.DefaultGitHubProxy + strings.TrimPrefix(url, "https://")
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	a.mu.Lock()
+	a.downloadURL = url
+	a.downloadState = DownloadStateDownloading
 	if a.downloadCancel != nil {
 		a.downloadCancel()
 	}
+	a.downloadCtx = ctx
 	a.downloadCancel = cancel
 	a.mu.Unlock()
 
@@ -305,46 +324,93 @@ func (a *App) StartDownloadUpdate(url string) error {
 		defer cancel()
 		lang := i18n.ResolveLanguage(a.cfg.Settings.Language)
 
+		emitError := func(msgKey string, args map[string]interface{}) {
+			a.mu.Lock()
+			a.downloadState = DownloadStateError
+			a.mu.Unlock()
+			a.emit("update:download:error", map[string]string{"message": i18n.T(lang, msgKey, args)})
+		}
+
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 		if err != nil {
-			a.emit("update:download:error", map[string]string{"message": i18n.T(lang, "update.download.failed", map[string]interface{}{"error": err.Error()})})
+			emitError("update.download.failed", map[string]interface{}{"error": err.Error()})
 			return
 		}
 		req.Header.Set("User-Agent", "AgentPack/"+currentAppVersion())
+		if offset > 0 {
+			req.Header.Set("Range", fmt.Sprintf("bytes=%d-", offset))
+		}
 
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
-			a.emit("update:download:error", map[string]string{"message": i18n.T(lang, "update.download.failed", map[string]interface{}{"error": err.Error()})})
+			emitError("update.download.failed", map[string]interface{}{"error": err.Error()})
 			return
 		}
 		defer resp.Body.Close()
 
-		if resp.StatusCode != http.StatusOK {
-			a.emit("update:download:error", map[string]string{"message": i18n.T(lang, "update.download.serverError", map[string]interface{}{"code": resp.StatusCode})})
+		if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
+			emitError("update.download.serverError", map[string]interface{}{"code": resp.StatusCode})
 			return
 		}
 
-		totalSize := resp.ContentLength
-		var downloaded int64
-		lastTime := time.Now()
-		var lastBytes int64
-
 		fileName := filepath.Base(url)
-		dlDir := downloadDir()
-		dlPath := filepath.Join(dlDir, fileName)
+		dlPath := filepath.Join(downloadDir(), fileName)
 		dlTmpPath := dlPath + ".downloading"
-		// 如果临时文件已存在（上次中断的下载），先删除
-		os.Remove(dlTmpPath)
-		f, err := os.Create(dlTmpPath)
-		if err != nil {
-			a.emit("update:download:error", map[string]string{"message": i18n.T(lang, "update.download.failed", map[string]interface{}{"error": err.Error()})})
-			return
+
+		// 服务器忽略 Range（返回 200）时无法续传，退化为从头下载
+		resumed := offset > 0 && resp.StatusCode == http.StatusPartialContent
+		var downloaded int64
+		var f *os.File
+		if resumed {
+			f, err = os.OpenFile(dlTmpPath, os.O_APPEND|os.O_WRONLY, 0600)
+			if err == nil {
+				downloaded = offset
+			}
+		}
+		if f == nil {
+			os.Remove(dlTmpPath)
+			f, err = os.Create(dlTmpPath)
+			if err != nil {
+				emitError("update.download.failed", map[string]interface{}{"error": err.Error()})
+				return
+			}
+			downloaded = 0
 		}
 		defer f.Close()
 
+		// totalSize 统一为文件总大小：206 响应的 ContentLength 只是剩余部分
+		totalSize := resp.ContentLength
+		if resumed && totalSize > 0 {
+			totalSize += offset
+		}
+
+		lastTime := time.Now()
+		lastBytes := downloaded
 		removeTmp := func() { os.Remove(dlTmpPath) }
 		buf := make([]byte, 32*1024)
+
 		for {
+			// 暂停：保留临时文件与偏移量，等待 ResumeDownload
+			if atomic.LoadInt32(&a.paused) != 0 {
+				atomic.StoreInt32(&a.paused, 0)
+				f.Close()
+				a.mu.Lock()
+				a.downloadPausedFile = dlTmpPath
+				a.downloadOffset = downloaded
+				a.downloadState = DownloadStatePaused
+				a.mu.Unlock()
+				percent := 0.0
+				if totalSize > 0 {
+					percent = float64(downloaded) / float64(totalSize) * 100
+				}
+				a.emit("update:download:paused", map[string]interface{}{
+					"downloaded": downloaded,
+					"total":      totalSize,
+					"percent":    percent,
+					"fileName":   fileName,
+				})
+				return
+			}
 			select {
 			case <-ctx.Done():
 				removeTmp()
@@ -355,7 +421,7 @@ func (a *App) StartDownloadUpdate(url string) error {
 			if n > 0 {
 				if _, writeErr := f.Write(buf[:n]); writeErr != nil {
 					removeTmp()
-					a.emit("update:download:error", map[string]string{"message": i18n.T(lang, "update.download.failed", map[string]interface{}{"error": writeErr.Error()})})
+					emitError("update.download.failed", map[string]interface{}{"error": writeErr.Error()})
 					return
 				}
 				downloaded += int64(n)
@@ -380,7 +446,7 @@ func (a *App) StartDownloadUpdate(url string) error {
 			}
 			if readErr != nil {
 				removeTmp()
-				a.emit("update:download:error", map[string]string{"message": i18n.T(lang, "update.download.failed", map[string]interface{}{"error": readErr.Error()})})
+				emitError("update.download.failed", map[string]interface{}{"error": readErr.Error()})
 				return
 			}
 		}
@@ -389,28 +455,61 @@ func (a *App) StartDownloadUpdate(url string) error {
 		// 下载完成后重命名: .downloading → 正式文件名
 		if err := os.Rename(dlTmpPath, dlPath); err != nil {
 			removeTmp()
-			a.emit("update:download:error", map[string]string{"message": i18n.T(lang, "update.download.failed", map[string]interface{}{"error": err.Error()})})
+			emitError("update.download.failed", map[string]interface{}{"error": err.Error()})
 			return
 		}
 
+		a.mu.Lock()
+		a.downloadState = DownloadStateCompleted
+		a.downloadPausedFile = ""
+		a.downloadOffset = 0
+		a.downloadURL = ""
+		a.downloadedFile = dlPath
+		a.mu.Unlock()
+
+		// 不自动启动安装程序与退出：由前端提示用户确认后调用 InstallUpdate
 		a.emit("update:download:complete", map[string]interface{}{
 			"filePath": dlPath,
 			"fileName": fileName,
 		})
+	}()
 
-		// 自动运行安装程序，完全脱离父进程
-		switch runtime.GOOS {
-		case "windows":
-			exec.Command("cmd", "/c", "start", "", dlPath).Start()
-		case "darwin":
-			exec.Command("open", dlPath).Start()
-		default:
-			exec.Command("xdg-open", dlPath).Start()
+	return nil
+}
+
+// InstallUpdate 启动已下载的安装程序并退出应用。
+// 必须退出主程序，否则 Windows 上安装器无法覆盖正在运行的 exe。
+func (a *App) InstallUpdate() error {
+	a.mu.RLock()
+	dlPath := a.downloadedFile
+	a.mu.RUnlock()
+	if dlPath == "" {
+		return fmt.Errorf("no downloaded installer")
+	}
+	if _, err := os.Stat(dlPath); err != nil {
+		return fmt.Errorf("installer not found: %w", err)
+	}
+
+	// 完全脱离父进程启动安装程序
+	switch runtime.GOOS {
+	case "windows":
+		if err := exec.Command("cmd", "/c", "start", "", dlPath).Start(); err != nil {
+			return err
 		}
+	case "darwin":
+		if err := exec.Command("open", dlPath).Start(); err != nil {
+			return err
+		}
+	default:
+		if err := exec.Command("xdg-open", dlPath).Start(); err != nil {
+			return err
+		}
+	}
+
+	go func() {
 		time.Sleep(1 * time.Second)
 		a.Quit()
 	}()
-
 	return nil
 }
 
@@ -421,6 +520,15 @@ func (a *App) CancelDownload() error {
 		a.downloadCancel()
 		a.downloadCancel = nil
 	}
+	// 暂停状态下取消：主动删除保留的临时文件
+	if a.downloadPausedFile != "" {
+		os.Remove(a.downloadPausedFile)
+		a.downloadPausedFile = ""
+	}
+	a.downloadState = DownloadStateIdle
+	a.downloadOffset = 0
+	a.downloadURL = ""
+	atomic.StoreInt32(&a.paused, 0)
 	return nil
 }
 

@@ -159,13 +159,22 @@
       "changelog": "更新日志",
       "download": "下载安装包",
       "cancelDownload": "取消下载",
+      "pauseDownload": "暂停下载",
+      "pauseFailed": "暂停失败",
+      "pausedLabel": "已暂停",
+      "installNow": "立即安装",
+      "installFailed": "启动安装程序失败",
+      "resumeFailed": "续传失败：服务器不支持续传",
+      "resumeDownload": "继续下载",
       "downloading": "下载中… {percent}%",
       "downloadComplete": "下载完成",
       "downloadFailed": "下载失败",
+      "deleteDownload": "删除下载",
       "downloadSection": "下载更新",
       "recheck": "重新检查",
       "retryDownload": "重试下载",
-      "goToReleases": "前往 Releases"
+      "goToReleases": "前往 Releases",
+      "downloadCancelled": "下载已取消"
     },
     "importDialog": {
       "title": "确认导入",

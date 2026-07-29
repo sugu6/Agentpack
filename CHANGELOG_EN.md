@@ -7,6 +7,29 @@ versioned by [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-07-29
+
+### Features
+
+- Pause and resume for update downloads: downloads can be paused, the partial temp file is kept, and resuming continues from the offset via an HTTP `Range` request. If the server ignores `Range` (returns 200 instead of 206), the temp file is discarded and the download restarts from scratch to avoid a corrupted installer
+- Paused downloads can be deleted directly, and closing the dialog cleans up the temp file automatically
+- The update dialog now shows downloaded bytes, total size and live speed; when the backend speed field is missing, the frontend derives it from the interval between progress events
+
+### Changed
+
+- Downloads no longer launch the installer and quit the app automatically. An "Install now" button is shown instead, and `InstallUpdate` launches the installer and quits only after the user confirms (quitting remains unavoidable since a running exe cannot be replaced by the installer on Windows)
+- Consolidated the update dialog into the global `UpdateDialog` component: removed the duplicate dialog embedded in SettingsView, and the "Changelog" button now emits `app:update-available` / `app:show-changelog`. The global dialog gained changelog relative-link rewriting, opening links in the system browser, and the Releases and Close buttons
+- The installer filename is shown in the dialog's top-right corner (single line, monospace; the title area shrinks first when width is tight)
+- In the paused state, "Resume download" now sits left of "Delete download", and the delete button uses the standard `destructive` variant — same size as the download button, only red
+- Route views are wrapped in `KeepAlive`, so switching pages no longer remounts components
+
+### Fixed
+
+- Cancelling a download no longer shows conflicting "Download cancelled" and "Download failed" toasts at once (backend error events are suppressed while cancelling)
+- Download speed appeared missing because the whole element was skipped when the value was empty; it now always renders with a `—` placeholder
+- Wrong progress percentage when resuming: a 206 response's `Content-Length` only covers the remaining bytes, so the existing offset must be added to get the full file size
+- npm detection subprocesses opened a console window on Windows: `npm list` calls now set `SysProcAttr.HideWindow`
+
 ## [0.2.0] - 2026-07-29
 
 ### Features
@@ -162,4 +185,5 @@ Initial release of AgentPack — a unified MCP / Skills / Agent management deskt
 [0.1.2]: https://github.com/sugu6/Agentpack/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/sugu6/Agentpack/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/sugu6/Agentpack/releases/tag/v0.1.0
-[Unreleased]: https://github.com/sugu6/Agentpack/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/sugu6/Agentpack/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/sugu6/Agentpack/compare/v0.2.0...v0.2.1

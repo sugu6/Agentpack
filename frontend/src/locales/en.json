@@ -159,13 +159,22 @@
       "changelog": "Changelog",
       "download": "Download installer",
       "cancelDownload": "Cancel download",
+      "pauseDownload": "Pause download",
+      "pauseFailed": "Pause failed",
+      "pausedLabel": "Paused",
+      "installNow": "Install now",
+      "installFailed": "Failed to launch installer",
+      "resumeFailed": "Resume failed: server does not support resuming",
+      "resumeDownload": "Resume download",
       "downloading": "Downloading… {percent}%",
       "downloadComplete": "Download complete",
       "downloadFailed": "Download failed",
+      "deleteDownload": "Delete download",
       "downloadSection": "Download update",
       "recheck": "Recheck",
       "retryDownload": "Retry download",
-      "goToReleases": "Go to Releases"
+      "goToReleases": "Go to Releases",
+      "downloadCancelled": "Download cancelled"
     },
     "importDialog": {
       "title": "Confirm import",

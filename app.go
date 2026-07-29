@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"agentpack/internal/agents"
@@ -50,9 +51,27 @@ type App struct {
 	startupErrors []string
 	inFlight      int
 	flightCond    *sync.Cond
-	downloadCancel context.CancelFunc
+	downloadCtx        context.Context
+	downloadCancel     context.CancelFunc
+	downloadPausedFile string        // 暂停时保存的临时文件路径
+	downloadOffset     int64         // 暂停时的下载偏移量
+	downloadURL        string        // 当前下载的 URL
+	downloadedFile     string        // 下载完成的安装包路径（供 InstallUpdate 使用）
+	downloadState      DownloadState // 下载状态（受 mu 保护）
+	paused             int32         // 暂停标志（原子操作，0=否，1=是）
 	tray           *application.SystemTray
 }
+
+// DownloadState 下载状态
+type DownloadState int
+
+const (
+	DownloadStateIdle        DownloadState = iota // 空闲
+	DownloadStateDownloading                      // 下载中
+	DownloadStatePaused                           // 已暂停
+	DownloadStateCompleted                        // 完成
+	DownloadStateError                            // 错误
+)
 
 // setWailsApp 注入 v3 应用实例引用
 func (a *App) setWailsApp(app *application.App) {
@@ -67,6 +86,7 @@ func (a *App) setTray(tray *application.SystemTray) {
 func NewApp(cfg *config.AppConfig) *App {
 	a := &App{cfg: cfg}
 	a.flightCond = sync.NewCond(&a.mu)
+	a.downloadState = DownloadStateIdle
 	return a
 }
 
@@ -1613,6 +1633,59 @@ func (a *App) ScanUnmanagedSkills() ([]skills.UnmanagedSkill, error) {
 		return nil, fmt.Errorf("skills store not initialized")
 	}
 	return a.skillsStore.ScanUnmanaged(a.registry), nil
+}
+
+// PauseDownload 暂停当前正在进行的下载
+func (a *App) PauseDownload() error {
+	a.mu.Lock()
+	if a.closed || a.downloadState != DownloadStateDownloading {
+		a.mu.Unlock()
+		return fmt.Errorf("no active download")
+	}
+	a.mu.Unlock()
+	atomic.StoreInt32(&a.paused, 1)
+	return nil
+}
+
+// ResumeDownload 恢复已暂停的下载
+func (a *App) ResumeDownload() error {
+	a.mu.Lock()
+	if a.closed || a.downloadState != DownloadStatePaused {
+		a.mu.Unlock()
+		return fmt.Errorf("no paused download to resume")
+	}
+	url := a.downloadURL
+	offset := a.downloadOffset
+	if url == "" || offset <= 0 {
+		a.mu.Unlock()
+		return fmt.Errorf("no saved download position")
+	}
+	a.downloadState = DownloadStateDownloading
+	a.downloadPausedFile = ""
+	a.mu.Unlock()
+
+	// 必须在释放 a.mu 之后调用，startDownload 内部会再次加锁
+	atomic.StoreInt32(&a.paused, 0)
+	return a.startDownload(url, offset)
+}
+
+// GetDownloadState 获取当前下载状态（供前端查询）
+func (a *App) GetDownloadState() (state string, fileName string, offset int64) {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	switch a.downloadState {
+	case DownloadStateIdle:
+		state = "idle"
+	case DownloadStateDownloading:
+		state = "downloading"
+	case DownloadStatePaused:
+		state = "paused"
+	case DownloadStateCompleted:
+		state = "complete"
+	case DownloadStateError:
+		state = "error"
+	}
+	return state, a.downloadPausedFile, a.downloadOffset
 }
 
 func (a *App) MigrateSkillStorage(target string) (skills.MigrationResult, error) {
