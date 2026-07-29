@@ -141,15 +141,15 @@ jobs:
       - name: Package (Windows)
         if: runner.os == 'Windows'
         run: |
-          7z a "${{ runner.temp }}/AgentPack-${{ steps.version.outputs.version }}-${{ matrix.name }}.zip" "build/bin/AgentPack.exe"
-          cp build/bin/AgentPack-*-installer.exe "${{ runner.temp }}/AgentPack-${{ steps.version.outputs.version }}-${{ matrix.name }}-installer.exe"
+          7z a "${{ runner.temp }}/AgentPack-${{ steps.version.outputs.version }}-${{ matrix.name }}.zip" "bin/AgentPack.exe"
+          cp bin/AgentPack-*-installer.exe "${{ runner.temp }}/AgentPack-${{ steps.version.outputs.version }}-${{ matrix.name }}-installer.exe"
 
       - name: Package DMG (macOS)
         if: runner.os == 'macOS'
         run: |
           STAGING="dmg_staging"
           mkdir -p "$STAGING"
-          cp -R "build/bin/AgentPack.app" "$STAGING/"
+          cp -R "bin/AgentPack.app" "$STAGING/"
           ln -s /Applications "$STAGING/Applications"
           hdiutil create \
             -volname "AgentPack" \
@@ -160,11 +160,11 @@ jobs:
 
       - name: Package ZIP portable (macOS)
         if: runner.os == 'macOS'
-        run: ditto -c -k --keepParent "build/bin/AgentPack.app" "${{ runner.temp }}/AgentPack-${{ steps.version.outputs.version }}-${{ matrix.name }}.zip"
+        run: ditto -c -k --keepParent "bin/AgentPack.app" "${{ runner.temp }}/AgentPack-${{ steps.version.outputs.version }}-${{ matrix.name }}.zip"
 
       - name: Package tar.gz (Linux)
         if: runner.os == 'Linux'
-        run: tar -czf "${{ runner.temp }}/AgentPack-${{ steps.version.outputs.version }}-${{ matrix.name }}.tar.gz" -C build/bin AgentPack
+        run: tar -czf "${{ runner.temp }}/AgentPack-${{ steps.version.outputs.version }}-${{ matrix.name }}.tar.gz" -C bin AgentPack
 
       - name: Package AppImage (Linux)
         if: runner.os == 'Linux'
@@ -175,7 +175,7 @@ jobs:
           chmod +x "appimagetool-${APPIMAGE_ARCH}.AppImage"
           APPDIR="AgentPack.AppDir"
           mkdir -p "$APPDIR/usr/bin"
-          cp build/bin/AgentPack "$APPDIR/usr/bin/"
+          cp bin/AgentPack "$APPDIR/usr/bin/"
           cp build/linux/desktop "$APPDIR/AgentPack.desktop"
           cp build/appicon.png "$APPDIR/AgentPack.png"
           cat > "$APPDIR/.AppRun" <<'EOF'

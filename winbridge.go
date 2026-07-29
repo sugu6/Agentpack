@@ -1,3 +1,5 @@
+//go:build windows
+
 package main
 
 // Windows 原生桥接 — 修补 Wails v3 alpha 的已知问题:
