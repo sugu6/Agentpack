@@ -70,10 +70,10 @@ jobs:
           - os: macos-latest
             platform: darwin/universal
             name: macos-universal
-          - os: ubuntu-22.04
+          - os: ubuntu-24.04
             platform: linux
             name: linux-amd64
-          - os: ubuntu-22.04-arm
+          - os: ubuntu-24.04-arm
             platform: linux/arm64
             name: linux-arm64
     runs-on: ${{ matrix.os }}
@@ -99,7 +99,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev pkg-config libfuse2
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libgtk-4-dev libwebkitgtk-6.0-dev pkg-config libfuse2
 
       - name: Read version from wails.json
         id: version
@@ -176,7 +176,7 @@ jobs:
           APPDIR="AgentPack.AppDir"
           mkdir -p "$APPDIR/usr/bin"
           cp build/bin/AgentPack "$APPDIR/usr/bin/"
-          cp build/linux/agentpack.desktop "$APPDIR/AgentPack.desktop"
+          cp build/linux/desktop "$APPDIR/AgentPack.desktop"
           cp build/appicon.png "$APPDIR/AgentPack.png"
           cat > "$APPDIR/.AppRun" <<'EOF'
           #!/bin/sh
