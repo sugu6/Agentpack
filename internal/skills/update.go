@@ -115,6 +115,7 @@ func fetchSkillCommitSHAImpl(ctx context.Context, owner, repo, branch string) (s
 	ref := fmt.Sprintf("refs/heads/%s", branch)
 
 	cmd := exec.CommandContext(ctx, "git", "ls-remote", repoURL, ref)
+	hideGitConsoleWindow(cmd)
 	out, err := cmd.Output()
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
