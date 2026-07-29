@@ -1,13 +1,12 @@
 [Desktop Entry]
 Version=1.0
 Name=AgentPack
-Comment=AgentPack
-# The Exec line includes %u to pass the URL to the application
-Exec=/usr/local/bin/ %u
+Comment=Unified management of MCP / Skills / Agent configurations
+Exec=AgentPack %u
 Terminal=false
 Type=Application
-Icon=
-Categories=Utility;
-StartupWMClass=
+Icon=AgentPack
+Categories=Development;
+StartupWMClass=AgentPack
 
  

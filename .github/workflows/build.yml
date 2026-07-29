@@ -130,6 +130,10 @@ jobs:
         if: runner.os == 'macOS'
         run: wails3 task darwin:build
 
+      - name: Package .app bundle (macOS)
+        if: runner.os == 'macOS'
+        run: wails3 task darwin:package
+
       - name: Build (Linux)
         if: runner.os == 'Linux'
         run: wails3 task linux:build
