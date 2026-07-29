@@ -57,6 +57,31 @@ export const useAgentsStore = defineStore('agents', () => {
     return groups
   })
 
+  // 按 name + configPath + variant 拆分的独立卡片组（用于 agents 页面）
+  // 不合并 CLI/Desktop 变体，每个变体独立显示
+  interface VariantGroup {
+    id: string
+    name: string
+    variant: string
+    status: AgentStatus
+    configPath: string
+  }
+  const variantGroups = computed<VariantGroup[]>(() => {
+    const groups: VariantGroup[] = []
+    for (const a of items.value) {
+      if (a.status === 'not_found') continue
+      groups.push({
+        id: a.id,
+        name: a.name,
+        variant: a.variant,
+        status: a.status === 'enabled' || a.status === 'detected' ? 'enabled' : 'disabled',
+        configPath: a.configPath,
+      })
+    }
+    groups.sort((a, b) => a.name.localeCompare(b.name))
+    return groups
+  })
+
   // 包含 not_found agent 的合并组（用于设置页面显示所有 agent）
   const allMergedGroups = computed<AgentGroup[]>(() => {
     const map = new Map<string, Agent[]>()
@@ -152,6 +177,7 @@ export const useAgentsStore = defineStore('agents', () => {
     totalMcp,
     sorted,
     mergedGroups,
+    variantGroups,
     allMergedGroups,
     fetch,
     rescan,

@@ -7,21 +7,6 @@ versioned by [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-### Features
-
-- Skills update detection improved: failed queries no longer overwrite the local cache baseline, preventing bad state from corrupting future checks; empty branches now try `main` first, then fall back to `master`; multiple skills from the same repo share the same error message while preserving per-skill failure mapping
-
-### Changed
-
-- Agents page title changed to "Agents"; agent cards now split by variant with individual Switch toggles; removed MCP count card; agent management consolidated on the Agents page, and the Agents management card was removed from Settings
-- Skills page header layout adjusted: long English subtitles sit inline with the title on the same row, while action buttons stay on a second right-aligned row so the description never crowds the buttons
-- Skills update buttons improved: when updates are found, "Update all" replaces "Check for updates" in the same position instead of sitting beside it; the per-skill update icon was changed to an upward arrow for clearer upgrade meaning
-- Skills update toast colors adjusted: "all up to date" now shows green success, while "updates found" shows blue info
-
-### Fixed
-
-- MCP page title switched to i18n translation instead of hard-coded "MCP 服务器"
-
 ## [0.2.2] - 2026-07-30
 
 ### Features
@@ -35,6 +20,17 @@ versioned by [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Unified version source to `build/config.yml`, removed `wails.json` (Go embed, CI, and release script all migrated to read version from `build/config.yml`)
 - Removed mobile build configs (`build/android/`, `build/ios/`) and Docker cross-compilation configs (`build/docker/`), cleaned up related Taskfile tasks
 - README updates: corrected Wails v3 doc links, complete agent variant table with detection methods, download filenames aligned with CI build artifacts, project structure updated
+- Agents management unified on the Agents page: enable/disable buttons switched to `Switch`, removed Agents management card from Settings
+- Skills update check optimization: "Update all" button replaces "Check updates" position to avoid occlusion; single skill update button icon changed to upward arrow
+- Skills page title and description layout adjusted: title left-aligned, description inline, avoiding English overflow into button area
+- MCP page title changed to i18n: `{{ t('nav.mcp') }}`
+- Skills update prompt color adjustment: all-up-to-date shows green, updates-found shows blue
+
+### Fixed
+
+- Skills update baseline pollution: failed skills no longer overwrite local cache baseline, avoiding false update reports
+- Skills default branch compatibility: empty branch checks `main` first, falls back to `master` on failure
+- Skills error information refinement: multiple skills from the same repo share error info, preserving failure reason mapping
 
 ## [0.2.1] - 2026-07-29
 

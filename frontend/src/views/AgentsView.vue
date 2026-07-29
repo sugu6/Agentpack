@@ -1,17 +1,16 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useAgentsStore } from '@/stores/agents'
-import { useMcpStore } from '@/stores/mcp'
-import { Card, CardHeader, CardTitle, CardDescription, CardContent, Badge, Spinner, Button, Empty, EmptyHeader, EmptyTitle, EmptyDescription, EmptyMedia } from '@/components/ui'
-import { PhArrowsClockwise, PhCheckCircle, PhXCircle, PhCircleNotch } from '@phosphor-icons/vue'
+import { Card, CardContent, Badge, Spinner, Button, Switch, Empty, EmptyHeader, EmptyTitle, EmptyDescription, EmptyMedia } from '@/components/ui'
+import { PhArrowsClockwise, PhCircleNotch } from '@phosphor-icons/vue'
 import { ApiError } from '@/lib/api'
-import { agentLogoUrl, agentLogoInvertClass, statusVariant, statusLabel, variantLabel, getVariantFromId } from '@/composables/useAgentHelpers'
+import { agentLogoUrl, agentLogoInvertClass, statusVariant, statusLabel, variantLabel, normalizeVariant } from '@/composables/useAgentHelpers'
 import { useToast } from '@/composables/useToast'
+
 
 const { t } = useI18n()
 const agents = useAgentsStore()
-const mcp = useMcpStore()
 const toast = useToast()
 
 const detected = computed(() => agents.items.filter((a) => a.status !== 'not_found').length)
@@ -26,6 +25,15 @@ async function onRescan() {
     toast.error(t('agents.toast.scanFailed', { error: err.message }))
   }
 }
+
+async function toggleAgent(id: string, val: boolean) {
+  try {
+    await agents.toggle(id, val)
+  } catch (e) {
+    const apiError = ApiError.from(e)
+    toast.error(t('settings.toast.toggleAgentFailed', { error: apiError.message }))
+  }
+}
 </script>
 
 <template>
@@ -35,7 +43,7 @@ async function onRescan() {
       <div class="mx-auto max-w-6xl">
         <div class="flex items-end justify-between">
           <div>
-            <h1 class="text-2xl font-semibold tracking-tight">Agent</h1>
+            <h1 class="text-2xl font-semibold tracking-tight">Agents</h1>
             <p class="mt-1 text-sm text-muted-foreground">
               {{ t('agents.subtitle') }}
             </p>
@@ -49,7 +57,7 @@ async function onRescan() {
           </div>
         </div>
 
-        <div class="mt-4 grid grid-cols-3 gap-3">
+        <div class="mt-4 grid grid-cols-2 gap-3">
           <Card class="bg-card/50">
             <CardContent class="p-4">
               <div class="text-xs uppercase tracking-wider text-muted-foreground">{{ t('agents.detected') }}</div>
@@ -60,14 +68,6 @@ async function onRescan() {
             <CardContent class="p-4">
               <div class="text-xs uppercase tracking-wider text-muted-foreground">{{ t('agents.enabled') }}</div>
               <div class="mt-1 text-2xl font-semibold tabular-nums text-success">{{ enabled }}</div>
-            </CardContent>
-          </Card>
-          <Card class="bg-card/50">
-            <CardContent class="p-4">
-              <div class="text-xs uppercase tracking-wider text-muted-foreground">{{ t('agents.mcpCount') }}</div>
-              <div class="mt-1 text-2xl font-semibold tabular-nums">
-                {{ mcp.total }}
-              </div>
             </CardContent>
           </Card>
         </div>
@@ -91,7 +91,7 @@ async function onRescan() {
 
         <div v-else class="space-y-2">
           <Card
-            v-for="group in agents.mergedGroups"
+            v-for="group in agents.variantGroups"
             :key="group.id"
           >
             <CardContent class="flex items-center gap-4 p-4">
@@ -101,21 +101,18 @@ async function onRescan() {
               <div class="min-w-0 flex-1">
                 <div class="flex items-center gap-2">
                   <h3 class="text-sm font-semibold">{{ group.name }}</h3>
-                  <Badge v-if="group.ids.length <= 1" variant="outline">{{ variantLabel(getVariantFromId(group.id)) }}</Badge>
+                  <Badge variant="outline">{{ variantLabel(normalizeVariant(group.variant, group.id)) }}</Badge>
                   <Badge :variant="statusVariant(group.status)">{{ statusLabel(group.status) }}</Badge>
                 </div>
                 <p class="mt-0.5 truncate font-mono text-[11px] text-muted-foreground">
                   {{ group.configPath || t('agents.noConfigPath') }}
                 </p>
-                <div class="mt-2 flex items-center gap-3 text-xs text-muted-foreground">
-                  <span class="flex items-center gap-1">
-                    <PhCheckCircle v-if="group.status !== 'not_found'" :size="11" weight="fill" class="text-success" />
-                    <PhXCircle v-else :size="11" weight="fill" />
-                    <span class="tabular-nums">{{ group.ids.length }}</span> {{ t('agents.instances') }}
-                  </span>
-                </div>
               </div>
-
+              <Switch
+                :model-value="group.status === 'enabled'"
+                :disabled="group.status === 'error' || group.status === 'not_found'"
+                @update:model-value="(v) => toggleAgent(group.id, v)"
+              />
             </CardContent>
           </Card>
         </div>

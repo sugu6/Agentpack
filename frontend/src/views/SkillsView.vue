@@ -4,7 +4,7 @@ import { useI18n } from 'vue-i18n'
 import { useSkillsStore } from '@/stores/skills'
 import { useAgentsStore } from '@/stores/agents'
 import { Card, CardContent, Button, Badge, Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui'
-import { PhTrash, PhSparkle, PhMagnifyingGlass, PhFileArchive, PhFolderOpen, PhArrowClockwise } from '@phosphor-icons/vue'
+import { PhTrash, PhSparkle, PhMagnifyingGlass, PhFileArchive, PhFolderOpen, PhArrowClockwise, PhArrowUp } from '@phosphor-icons/vue'
 import { api, events, ApiError } from '@/lib/api'
 import { normalizeVariant, variantToBadge, agentDisplayName } from '@/composables/useAgentHelpers'
 import AgentToggleButton from '@/components/agent/AgentToggleButton.vue'
@@ -313,14 +313,14 @@ async function onCheckUpdates() {
     const updatesCount = skills.updateStatuses.filter(s => s.hasUpdate).length
     const errorCount = skills.updateStatuses.filter(s => s.error).length
     if (updatesCount > 0) {
-      toast.success(t('skills.toast.updatesFound', { count: updatesCount }))
+      toast.info(t('skills.toast.updatesFound', { count: updatesCount }))
     } else if (errorCount > 0 && errorCount === skills.updateStatuses.length) {
       // 所有 skill 都检测失败，可能是 rate limit
       toast.warning(t('update.message.rateLimited'))
     } else if (errorCount > 0) {
       toast.info(t('skills.toast.partialCheckFailed', { count: errorCount }))
     } else {
-      toast.info(t('skills.toast.allUpToDate'))
+      toast.success(t('skills.toast.allUpToDate'))
     }
   } catch (e: unknown) {
     const apiError = ApiError.from(e)
@@ -396,12 +396,12 @@ async function scanSkills() {
   <div class="flex h-full flex-col">
     <!-- Fixed header -->
     <div class="shrink-0 border-b border-border px-8 pt-8 pb-4">
-      <div class="mx-auto max-w-6xl flex items-end justify-between">
-        <div>
+      <div class="mx-auto max-w-6xl">
+        <div class="flex items-baseline justify-between gap-4">
           <h1 class="text-2xl font-semibold tracking-tight">Skills</h1>
-          <p class="mt-1 text-sm text-muted-foreground whitespace-nowrap">{{ t('skills.subtitle') }}</p>
+          <p class="text-sm text-muted-foreground">{{ t('skills.subtitle') }}</p>
         </div>
-        <div class="flex gap-2">
+        <div class="mt-3 flex justify-end gap-2">
           <Button variant="outline" size="sm" :disabled="importingUnmanaged" @click="openImportExisting">
             <PhFolderOpen :size="14" :class="{ 'animate-pulse': importingUnmanaged }" />
             <span>{{ importingUnmanaged ? t('skills.importing') : t('skills.importExisting') }}</span>
@@ -414,19 +414,13 @@ async function scanSkills() {
             <PhMagnifyingGlass :size="14" :class="{ 'animate-pulse': scanning }" />
             <span>{{ scanning ? t('skills.scanning') : t('skills.scan') }}</span>
           </Button>
-          <Button variant="outline" size="sm" :disabled="skills.checkingUpdates" @click="onCheckUpdates">
+          <Button v-if="skills.updateStatuses.some(s => s.hasUpdate)" variant="default" size="sm" :disabled="skills.updatingAll" @click="onUpdateAll">
+            <PhArrowUp :size="14" :class="{ 'animate-spin': skills.updatingAll }" />
+            <span>{{ skills.updatingAll ? t('skills.updatingAll') : t('skills.updateAll') }}</span>
+          </Button>
+          <Button v-else variant="outline" size="sm" :disabled="skills.checkingUpdates" @click="onCheckUpdates">
             <PhArrowClockwise :size="14" :class="{ 'animate-spin': skills.checkingUpdates }" />
             <span>{{ skills.checkingUpdates ? t('skills.checkingUpdates') : t('skills.checkUpdates') }}</span>
-          </Button>
-          <Button
-            v-if="skills.updateStatuses.some(s => s.hasUpdate)"
-            variant="outline"
-            size="sm"
-            :disabled="skills.updatingAll"
-            @click="onUpdateAll"
-          >
-            <PhArrowClockwise :size="14" :class="{ 'animate-spin': skills.updatingAll }" />
-            <span>{{ skills.updatingAll ? t('skills.updatingAll') : t('skills.updateAll') }}</span>
           </Button>
         </div>
       </div>
@@ -509,12 +503,13 @@ async function scanSkills() {
                   v-if="skills.updateStatusOf(skill.id)?.hasUpdate"
                   variant="outline"
                   size="icon"
+                  class="text-primary hover:bg-primary/10"
                   :disabled="skills.updatingSkillIds.has(skill.id)"
                   :aria-label="t('skills.update')"
                   :title="t('skills.update')"
                   @click="onUpdateSkill(skill.id)"
                 >
-                  <PhArrowClockwise :size="14" :class="{ 'animate-spin': skills.updatingSkillIds.has(skill.id) }" />
+                  <PhArrowUp :size="14" :class="{ 'animate-spin': skills.updatingSkillIds.has(skill.id) }" />
                 </Button>
                 
                 <Button variant="outline" size="icon" class="border-destructive/40 text-destructive hover:bg-destructive/10" :aria-label="t('common.uninstall')" @click="uninstallSkill(skill.id)">

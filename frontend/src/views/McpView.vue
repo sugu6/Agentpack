@@ -33,7 +33,7 @@ async function handleUpdated() {
       <div class="mx-auto max-w-6xl">
         <div class="flex items-end justify-between">
           <div>
-            <h1 class="text-2xl font-semibold tracking-tight">MCP Servers</h1>
+            <h1 class="text-2xl font-semibold tracking-tight">{{ t('nav.mcp') }}</h1>
             <p class="mt-1 text-sm text-muted-foreground">
               {{ t('mcp.subtitle') }}
             </p>

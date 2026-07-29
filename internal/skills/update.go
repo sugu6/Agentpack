@@ -74,6 +74,36 @@ func writeUpdateCache(skills map[string]updateCacheEntry) error {
 // fetchSkillCommitSHAFunc 是获取远程 commit SHA 的函数，可被测试替换
 var fetchSkillCommitSHAFunc = fetchSkillCommitSHAImpl
 
+var writeUpdateCacheFunc = writeUpdateCacheImpl
+
+func writeUpdateCacheImpl(skills map[string]updateCacheEntry) error {
+	return writeUpdateCache(skills)
+}
+
+// resolveDefaultBranch 返回 skill 实际使用的分支名
+// 若 RepoBranch 非空则直接返回；否则先返回 main，失败后再回退到 master
+func resolveDefaultBranch(sk *Skill) string {
+	if sk.RepoBranch != "" {
+		return sk.RepoBranch
+	}
+	return "main"
+}
+
+// fetchWithBranchFallback 先尝试 branch，失败后回退到 fallback
+func fetchWithBranchFallback(ctx context.Context, owner, repo, branch, fallback string) (string, error) {
+	if branch == "" {
+		branch = "main"
+	}
+	sha, err := fetchSkillCommitSHAFunc(ctx, owner, repo, branch)
+	if err == nil {
+		return sha, nil
+	}
+	if fallback != "" && fallback != branch {
+		return fetchSkillCommitSHAFunc(ctx, owner, repo, fallback)
+	}
+	return "", err
+}
+
 // fetchSkillCommitSHAImpl 使用 git ls-remote 获取指定 repo 分支的最新 commit SHA
 // 不受 GitHub REST API rate limit 限制
 func fetchSkillCommitSHAImpl(ctx context.Context, owner, repo, branch string) (string, error) {
@@ -123,7 +153,7 @@ func CacheSkillCommitSHA(skillID, owner, repo, branch string) error {
 		CommitSHA: sha,
 		CheckedAt: time.Now().UTC().Format(time.RFC3339),
 	}
-	return writeUpdateCache(cache)
+	return writeUpdateCacheFunc(cache)
 }
 
 // CheckUpdates 检查所有已安装 skills 的远程更新
@@ -153,9 +183,9 @@ func (s *Store) CheckUpdates(reg *agents.Registry) []UpdateStatus {
 	type repoKey struct {
 		owner, repo, branch string
 	}
-	repoSHAs := make(map[repoKey]string)   // repo -> commit SHA
-	repoErrors := make(map[repoKey]string)  // repo -> error
-	repoChecked := make(map[repoKey]bool)   // 是否已查询
+	repoSHAs := make(map[repoKey]string)         // repo -> commit SHA
+	repoErrors := make(map[repoKey]string)        // repo -> error
+	repoSkillIDs := make(map[repoKey][]string)    // repo -> 关联的 skill IDs（用于错误映射）
 	var repoMu sync.Mutex
 	sem := make(chan struct{}, 5) // 并发限制
 
@@ -163,15 +193,13 @@ func (s *Store) CheckUpdates(reg *agents.Registry) []UpdateStatus {
 	var uniqueRepos []repoKey
 	seen := make(map[repoKey]bool)
 	for _, sk := range skillsList {
-		branch := sk.RepoBranch
-		if branch == "" {
-			branch = "main"
-		}
+		branch := resolveDefaultBranch(&sk)
 		rk := repoKey{sk.RepoOwner, sk.RepoName, branch}
 		if !seen[rk] {
 			seen[rk] = true
 			uniqueRepos = append(uniqueRepos, rk)
 		}
+		repoSkillIDs[rk] = append(repoSkillIDs[rk], sk.ID)
 	}
 
 	// 并发查询每个唯一仓库的 commit SHA
@@ -186,7 +214,7 @@ func (s *Store) CheckUpdates(reg *agents.Registry) []UpdateStatus {
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
 
-			sha, err := fetchSkillCommitSHAFunc(ctx, key.owner, key.repo, key.branch)
+			sha, err := fetchWithBranchFallback(ctx, key.owner, key.repo, key.branch, "master")
 			repoMu.Lock()
 			defer repoMu.Unlock()
 			if err != nil {
@@ -194,7 +222,6 @@ func (s *Store) CheckUpdates(reg *agents.Registry) []UpdateStatus {
 			} else {
 				repoSHAs[key] = sha
 			}
-			repoChecked[key] = true
 		}(rk)
 	}
 	wg.Wait()
@@ -202,10 +229,7 @@ func (s *Store) CheckUpdates(reg *agents.Registry) []UpdateStatus {
 	// 为每个 skill 生成 UpdateStatus
 	results := make([]UpdateStatus, len(skillsList))
 	for i, sk := range skillsList {
-		branch := sk.RepoBranch
-		if branch == "" {
-			branch = "main"
-		}
+		branch := resolveDefaultBranch(&sk)
 		rk := repoKey{sk.RepoOwner, sk.RepoName, branch}
 
 		status := UpdateStatus{
@@ -215,6 +239,7 @@ func (s *Store) CheckUpdates(reg *agents.Registry) []UpdateStatus {
 		}
 
 		if errMsg, hasErr := repoErrors[rk]; hasErr {
+			// 查询失败：保留错误信息，但不更新缓存基线
 			status.Error = errMsg
 		} else if sha, ok := repoSHAs[rk]; ok {
 			status.RemoteHash = sha
@@ -224,7 +249,7 @@ func (s *Store) CheckUpdates(reg *agents.Registry) []UpdateStatus {
 					status.HasUpdate = true
 				}
 			}
-			// 更新缓存
+			// 仅在查询成功时更新缓存
 			cache[sk.ID] = updateCacheEntry{
 				CommitSHA: sha,
 				CheckedAt: status.CheckedAt,
@@ -234,9 +259,9 @@ func (s *Store) CheckUpdates(reg *agents.Registry) []UpdateStatus {
 		results[i] = status
 	}
 
-	// 持久化更新后的缓存（仅在有成功查询时写入，避免错误覆盖基线）
+	// 持久化更新后的缓存（仅在有成功查询时写入）
 	if len(repoSHAs) > 0 {
-		if err := writeUpdateCache(cache); err != nil {
+		if err := writeUpdateCacheFunc(cache); err != nil {
 			log.Printf("warning: write update cache: %v", err)
 		}
 	}
@@ -260,10 +285,7 @@ func (s *Store) UpdateSkill(skillID string, reg *agents.Registry) (Skill, error)
 	boundAgents := copySlice(sk.BoundAgents)
 	s.mu.RUnlock()
 
-	branch := sk.RepoBranch
-	if branch == "" {
-		branch = "main"
-	}
+	branch := resolveDefaultBranch(&sk)
 
 	// Get FullPath from skill or lock file
 	fullPath := sk.FullPath

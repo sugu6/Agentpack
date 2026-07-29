@@ -4,17 +4,15 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useSettingsStore } from '@/stores/settings'
-import { useAgentsStore } from '@/stores/agents'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription, Switch, Button, Separator, Input, Label, Tabs, TabsList, TabsTrigger, Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter, Checkbox, RadioGroup, RadioGroupItem } from '@/components/ui'
-import AgentToggleButton from '@/components/agent/AgentToggleButton.vue'
+
 import { PhFolderOpen, PhArrowsClockwise, PhDownload, PhUpload, PhPlus, PhTrash, PhPencilSimple } from '@phosphor-icons/vue'
 import { api, ApiError, events, type SkillRepo, type UpdateCheckResult } from '@/lib/api'
-import { normalizeVariant, variantToBadge, agentDisplayName } from '@/composables/useAgentHelpers'
+
 import { useToast } from '@/composables/useToast'
 import { useI18n } from 'vue-i18n'
 
 const settings = useSettingsStore()
-const agents = useAgentsStore()
 const toast = useToast()
 const { t } = useI18n()
 
@@ -196,28 +194,7 @@ function setBackupRetention(v: string | number) {
   })
 }
 
-async function toggleAgent(agentId: string, enabled: boolean) {
-  try {
-    await agents.toggle(agentId, enabled)
-    toast.success(enabled ? t('settings.toast.agentEnabled') : t('settings.toast.agentDisabled'))
-  } catch (e) {
-    const apiError = ApiError.from(e)
-    toast.error(t('settings.toast.toggleAgentFailed', { error: apiError.message }))
-  }
-}
 
-async function toggleAgentGroup(group: { ids: string[] }, enabled: boolean) {
-  const uniqueIds = [...new Set(group.ids)]
-  const results = await Promise.allSettled(
-    uniqueIds.map(id => agents.toggle(id, enabled))
-  )
-  const failures = results.filter(r => r.status === 'rejected')
-  if (failures.length > 0) {
-    toast.error(t('settings.toast.toggleAgentFailed', { error: failures.length + ' failed' }))
-  } else {
-    toast.success(enabled ? t('settings.toast.agentEnabled') : t('settings.toast.agentDisabled'))
-  }
-}
 
 async function createBackup() {
   backupLoading.value = 'create'
@@ -742,34 +719,6 @@ const marketSourceList = computed(() => {
           </div>
           <p class="text-[11px] text-muted-foreground">{{ t('settings.skills.repoHint') }}</p>
           <p v-if="repoError" class="text-xs text-destructive">{{ repoError }}</p>
-        </div>
-      </CardContent>
-    </Card>
-
-    <Card>
-      <CardHeader>
-        <CardTitle>{{ t('settings.agents.title') }}</CardTitle>
-        <CardDescription>{{ t('settings.agents.desc') }}</CardDescription>
-      </CardHeader>
-      <CardContent>
-        <div v-if="agents.items.length > 0" class="flex flex-wrap items-center gap-2">
-          <div
-            v-for="agent in agents.sorted"
-            :key="agent.id"
-            class="flex items-center"
-          >
-            <AgentToggleButton
-              :agent-id="agent.id"
-              :agent-name="agentDisplayName(agent)"
-              :model-value="agent.status === 'enabled'"
-              :disabled="agent.status === 'error' || agent.status === 'not_found'"
-              :badge="variantToBadge(normalizeVariant(agent.variant, agent.id))"
-              @update:model-value="(v) => toggleAgent(agent.id, v)"
-            />
-          </div>
-        </div>
-        <div v-else class="py-2 text-center text-xs text-muted-foreground">
-          {{ t('settings.agents.empty') }}
         </div>
       </CardContent>
     </Card>
