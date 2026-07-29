@@ -3,6 +3,7 @@ node_modules
 frontend/dist
 frontend/wailsjs
 frontend/bindings
+.task/
 *.exe
 *.log
 *.tmp
