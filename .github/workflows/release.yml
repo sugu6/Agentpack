@@ -49,7 +49,7 @@ jobs:
           git diff
           echo "---"
           echo "build/config.yml version:"
-          grep -E '^\s+version:\s*"[0-9]+\.[0-9]+\.[0-9]+"' build/config.yml
+          grep -E '^[[:space:]]+version:[[:space:]]*"[0-9]+\.[0-9]+\.[0-9]+"' build/config.yml
           echo "frontend/package.json version:"
           grep -o '"version"[[:space:]]*:[[:space:]]*"[^"]*"' frontend/package.json | head -1
 
