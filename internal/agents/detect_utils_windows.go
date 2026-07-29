@@ -3,11 +3,19 @@
 package agents
 
 import (
+	"os/exec"
 	"strings"
+	"syscall"
 	"time"
 
 	"golang.org/x/sys/windows/registry"
 )
+
+// hideConsoleWindow 抑制子进程弹出命令行窗口。
+// HideWindow 是 Windows 专有字段，其他平台的 syscall.SysProcAttr 没有该字段。
+func hideConsoleWindow(cmd *exec.Cmd) {
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+}
 
 // loadRegistryCache 从 Windows 注册表加载已安装应用列表
 func loadRegistryCache() {
