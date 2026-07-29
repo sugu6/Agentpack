@@ -138,9 +138,19 @@ jobs:
         if: runner.os == 'Linux'
         run: wails3 task linux:build
 
-      - name: Package NSIS installer (Windows)
+      - name: Package (Linux)
+        if: runner.os == 'Linux'
+        run: wails3 task linux:package
+
+      - name: Create NSIS installer (Windows)
         if: runner.os == 'Windows'
-        run: wails3 task windows:package
+        shell: bash
+        working-directory: build/windows/nsis
+        env:
+          BINARY_FLAG: ${{ matrix.name == 'windows-arm64' && 'ARM64' || 'AMD64' }}
+        run: |
+          wails3 generate webview2bootstrapper -dir .
+          makensis -DARG_WAILS_${BINARY_FLAG}_BINARY="$(pwd)/../../../bin/AgentPack.exe" project.nsi
 
       - name: Package (Windows)
         if: runner.os == 'Windows'
