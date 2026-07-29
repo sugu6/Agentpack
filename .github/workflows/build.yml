@@ -144,13 +144,14 @@ jobs:
 
       - name: Create NSIS installer (Windows)
         if: runner.os == 'Windows'
-        shell: bash
+        shell: pwsh
         working-directory: build/windows/nsis
         env:
           BINARY_FLAG: ${{ matrix.name == 'windows-arm64' && 'ARM64' || 'AMD64' }}
         run: |
           wails3 generate webview2bootstrapper -dir .
-          makensis -DARG_WAILS_${BINARY_FLAG}_BINARY='${{ github.workspace }}\bin\AgentPack.exe' project.nsi
+          $binary = "${{ github.workspace }}\bin\AgentPack.exe"
+          makensis "-DARG_WAILS_${env:BINARY_FLAG}_BINARY=$binary" project.nsi
 
       - name: Package (Windows)
         if: runner.os == 'Windows'
