@@ -7,6 +7,21 @@ versioned by [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Features
+
+- Skills update detection improved: failed queries no longer overwrite the local cache baseline, preventing bad state from corrupting future checks; empty branches now try `main` first, then fall back to `master`; multiple skills from the same repo share the same error message while preserving per-skill failure mapping
+
+### Changed
+
+- Agents page title changed to "Agents"; agent cards now split by variant with individual Switch toggles; removed MCP count card; agent management consolidated on the Agents page, and the Agents management card was removed from Settings
+- Skills page header layout adjusted: long English subtitles sit inline with the title on the same row, while action buttons stay on a second right-aligned row so the description never crowds the buttons
+- Skills update buttons improved: when updates are found, "Update all" replaces "Check for updates" in the same position instead of sitting beside it; the per-skill update icon was changed to an upward arrow for clearer upgrade meaning
+- Skills update toast colors adjusted: "all up to date" now shows green success, while "updates found" shows blue info
+
+### Fixed
+
+- MCP page title switched to i18n translation instead of hard-coded "MCP 服务器"
+
 ## [0.2.2] - 2026-07-30
 
 ### Features
