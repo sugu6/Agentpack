@@ -15,13 +15,13 @@ import (
 )
 
 var (
-	user32Proc            = syscall.NewLazyDLL("user32.dll")
-	gdi32Proc             = syscall.NewLazyDLL("gdi32.dll")
-	dwmapiProc            = syscall.NewLazyDLL("dwmapi.dll")
-	procSetClassLongPtr   = user32Proc.NewProc("SetClassLongPtrW")
-	procCreateSolidBrush  = gdi32Proc.NewProc("CreateSolidBrush")
-	procSetWindowPos      = user32Proc.NewProc("SetWindowPos")
-	procDwmSetWindowAttr  = dwmapiProc.NewProc("DwmSetWindowAttribute")
+	user32Proc           = syscall.NewLazyDLL("user32.dll")
+	gdi32Proc            = syscall.NewLazyDLL("gdi32.dll")
+	dwmapiProc           = syscall.NewLazyDLL("dwmapi.dll")
+	procSetClassLongPtr  = user32Proc.NewProc("SetClassLongPtrW")
+	procCreateSolidBrush = gdi32Proc.NewProc("CreateSolidBrush")
+	procSetWindowPos     = user32Proc.NewProc("SetWindowPos")
+	procDwmSetWindowAttr = dwmapiProc.NewProc("DwmSetWindowAttribute")
 )
 
 // EmptyWorkingSet 位于 psapi.dll，GetCurrentProcess 位于 kernel32.dll
@@ -34,7 +34,7 @@ var (
 
 const (
 	// GCLP_HBRBACKGROUND = -10 用二进制补码表示
-	gclpHbrBackground = ^uintptr(10)
+	gclpHbrBackground         = ^uintptr(10)
 	swpFrameChanged           = 0x0020
 	swpNoMove                 = 0x0002
 	swpNoSize                 = 0x0001
@@ -89,7 +89,10 @@ func WndProcHook(hwnd uintptr, msg uint32, wParam, lParam uintptr) (uintptr, boo
 	case 0x001A: // WM_SETTINGCHANGE — 检测系统主题切换
 		// lParam 指向变更的设置名称字符串
 		if lParam != 0 {
-			setting := windows.UTF16PtrToString((*uint16)(unsafe.Pointer(lParam)))
+			// WM_SETTINGCHANGE 的 lParam 是指向 NUL 结尾 UTF-16 字符串的指针。
+			// 通过取 lParam 变量地址再解引用还原该指针，避免 uintptr→Pointer
+			// 转换（go vet unsafeptr 检查）。
+			setting := windows.UTF16PtrToString(*(**uint16)(unsafe.Pointer(&lParam)))
 			if setting == "ImmersiveColorSet" {
 				hwndMu.RLock()
 				h := mainWindowHWND
