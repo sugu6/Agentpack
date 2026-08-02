@@ -239,12 +239,25 @@ func (b *JsonBackend) writeStandard(path string, servers map[string]Server) erro
 		mcServers[name] = encoded
 	}
 
-	// Update only mcpServers in the existing config
+	// Preserve the container key detected by Read. Some agents use the
+	// workspace-compatible top-level "servers" key instead of "mcpServers".
 	mcServersRaw, err := json.Marshal(mcServers)
 	if err != nil {
 		return err
 	}
-	existing["mcpServers"] = mcServersRaw
+	_, hasMcpServers := existing["mcpServers"]
+	_, hasServers := existing["servers"]
+	containerKeys := []string{"mcpServers"}
+	switch {
+	case hasMcpServers && hasServers:
+		// 异常双容器配置：同步更新两个容器，避免删除/更新后另一容器残留旧条目
+		containerKeys = []string{"mcpServers", "servers"}
+	case hasServers:
+		containerKeys = []string{"servers"}
+	}
+	for _, k := range containerKeys {
+		existing[k] = mcServersRaw
+	}
 
 	out, err := json.MarshalIndent(existing, "", "  ")
 	if err != nil {
@@ -322,7 +335,7 @@ func (b *JsonBackend) detectFlatMcpFormat(existing map[string]json.RawMessage) b
 func (b *JsonBackend) serverToOpencode(s Server) opencodeServer {
 	oc := opencodeServer{}
 
-	if s.Transport == TransportHTTP && s.URL != "" {
+	if s.URL != "" && (s.Transport == TransportHTTP || s.Transport == TransportSSE || s.Transport == TransportStreamableHTTP) {
 		oc.Type = "remote"
 		oc.URL = s.URL
 	} else {

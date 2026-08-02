@@ -1,8 +1,12 @@
 package skills
 
 import (
+	"agentpack/internal/agents"
+	"agentpack/internal/config"
 	"context"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"sync/atomic"
@@ -13,10 +17,34 @@ import (
 // mockFetchSHA 返回一个可编程的 fetchSkillCommitSHAFunc 替换
 func mockFetchSHA(sha string, err error) func() {
 	orig := fetchSkillCommitSHAFunc
+	origJS := jsDelivrDataBase
+	origGH := gitHubAPIBases
+	// 强制 jsDelivr 主链路立即失败，使检测/更新走 git/tarball fallback，
+	// 避免测试打到真实网络（jsDelivr 与真实仓库均不可达）。
+	jsDelivrDataBase = "http://127.0.0.1:1"
+	gitHubAPIBases = []string{"http://127.0.0.1:1"}
 	fetchSkillCommitSHAFunc = func(ctx context.Context, owner, repo, branch string) (string, error) {
 		return sha, err
 	}
-	return func() { fetchSkillCommitSHAFunc = orig }
+	return func() {
+		fetchSkillCommitSHAFunc = orig
+		jsDelivrDataBase = origJS
+		gitHubAPIBases = origGH
+	}
+}
+
+// forceGitFallbackForTest 隔离 jsDelivr/GitHub 真实网络，强制走 git fallback。
+// 供直接替换 fetchSkillCommitSHAFunc 的测试使用（它们未走 mockFetchSHA）。
+func forceGitFallbackForTest(t *testing.T) {
+	t.Helper()
+	origJS := jsDelivrDataBase
+	origGH := gitHubAPIBases
+	jsDelivrDataBase = "http://127.0.0.1:1"
+	gitHubAPIBases = []string{"http://127.0.0.1:1"}
+	t.Cleanup(func() {
+		jsDelivrDataBase = origJS
+		gitHubAPIBases = origGH
+	})
 }
 
 func setupTestHome(t *testing.T) {
@@ -32,10 +60,8 @@ func setupTestHome(t *testing.T) {
 }
 
 func TestFetchSkillCommitSHAImpl_Success(t *testing.T) {
-	// 测试真实 git ls-remote 调用（可能因网络失败，不作为必须通过的测试）
-	if testing.Short() {
-		t.Skip("skipping real git ls-remote test in short mode")
-	}
+	// 真实 git ls-remote 测试必须显式启用，避免普通测试触发网络认证。
+	realTestRequired(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	sha, err := fetchSkillCommitSHAImpl(ctx, "obra", "superpowers", "main")
@@ -49,6 +75,8 @@ func TestFetchSkillCommitSHAImpl_Success(t *testing.T) {
 }
 
 func TestFetchSkillCommitSHAImpl_InvalidRepo(t *testing.T) {
+	// 真实 git ls-remote 测试必须显式启用，避免普通测试触发网络认证。
+	realTestRequired(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	_, err := fetchSkillCommitSHAImpl(ctx, "nonexistent-owner-xyz", "nonexistent-repo-xyz", "main")
@@ -215,6 +243,7 @@ func TestCheckUpdates_APIError(t *testing.T) {
 
 func TestCheckUpdates_MultipleSkills(t *testing.T) {
 	setupTestHome(t)
+	forceGitFallbackForTest(t)
 
 	// mock 返回不同 repo 不同 SHA
 	orig := fetchSkillCommitSHAFunc
@@ -273,6 +302,7 @@ func TestCheckUpdates_MultipleSkills(t *testing.T) {
 
 func TestCheckUpdates_DeduplicatesRepos(t *testing.T) {
 	setupTestHome(t)
+	forceGitFallbackForTest(t)
 
 	// 同一仓库下有多个 skill
 	orig := fetchSkillCommitSHAFunc
@@ -341,6 +371,7 @@ func TestCacheSkillCommitSHA(t *testing.T) {
 
 func TestCacheSkillCommitSHA_SetsBaselineForCheckUpdates(t *testing.T) {
 	setupTestHome(t)
+	forceGitFallbackForTest(t)
 
 	orig := fetchSkillCommitSHAFunc
 	defer func() { fetchSkillCommitSHAFunc = orig }()
@@ -398,6 +429,101 @@ func TestUpdateSkill_NotFound(t *testing.T) {
 	}
 }
 
+func TestUpdateSkill_FailedDownloadPreservesOldVersion(t *testing.T) {
+	setupSkillCapableAgentHome(t)
+	tmp := t.TempDir()
+	ssotDir := filepath.Join(tmp, "ssot")
+	makeSkillDir(t, ssotDir, "demo", "---\nname: demo\n---\n# old")
+
+	// 隔离备用代理与直连，确保所有 tarball 候选都指向 mock（500），
+	// 避免测试在 CI/有网环境真实请求 ghfast.top / codeload 导致结果不稳定。
+	origFallback := tarballFallbackURLs
+	tarballFallbackURLs = nil
+	t.Cleanup(func() { tarballFallbackURLs = origFallback })
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+	originalProxy := config.DefaultGitHubProxy
+	config.DefaultGitHubProxy = server.URL + "/"
+	t.Cleanup(func() { config.DefaultGitHubProxy = originalProxy })
+	cleanupSHA := mockFetchSHA("new-sha", nil)
+	defer cleanupSHA()
+
+	store := NewStore(ssotDir, SyncMethodCopy)
+	store.skills["skill:demo"] = Skill{
+		ID: "skill:demo", Directory: "demo", RepoOwner: "owner", RepoName: "repo", RepoBranch: "main",
+	}
+	reg := newSkillTestRegistry()
+	store.bindings["skill:demo"] = map[string]bool{"claude-code": true}
+
+	if _, err := store.UpdateSkill("skill:demo", reg); err == nil {
+		t.Fatal("expected update to fail when the new tarball cannot be downloaded")
+	}
+	content, err := os.ReadFile(filepath.Join(ssotDir, "demo", "SKILL.md"))
+	if err != nil {
+		t.Fatalf("old skill was removed after failed update: %v", err)
+	}
+	if string(content) != "---\nname: demo\n---\n# old" {
+		t.Fatalf("old skill content changed after failed update: %q", content)
+	}
+}
+
+func TestUpdateSkill_UsesLiveBindings(t *testing.T) {
+	setupSkillCapableAgentHome(t)
+	tmp := t.TempDir()
+	ssotDir := filepath.Join(tmp, "ssot")
+	makeSkillDir(t, ssotDir, "demo", "---\nname: demo\n---\n# old")
+
+	tarball := createTestTarball(t, "repo", map[string]string{
+		"demo": "---\nname: demo\n---\n# new",
+	})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(tarball)
+	}))
+	defer server.Close()
+	originalProxy := config.DefaultGitHubProxy
+	config.DefaultGitHubProxy = server.URL + "/"
+	t.Cleanup(func() { config.DefaultGitHubProxy = originalProxy })
+	cleanupSHA := mockFetchSHA("new-sha", nil)
+	defer cleanupSHA()
+
+	store := NewStore(ssotDir, SyncMethodCopy)
+	store.skills["skill:demo"] = Skill{
+		ID: "skill:demo", Directory: "demo", BoundAgents: []string{"claude-code", "opencode"},
+		RepoOwner: "owner", RepoName: "repo", RepoBranch: "main",
+	}
+	// opencode is disabled; only claude-code is a live binding.
+	store.bindings["skill:demo"] = map[string]bool{"claude-code": true}
+	reg := newSkillTestRegistry()
+	reg.Register(agents.Agent{ID: "opencode", Name: "OpenCode", Status: agents.StatusEnabled})
+
+	if _, err := store.UpdateSkill("skill:demo", reg); err != nil {
+		t.Fatalf("update failed: %v", err)
+	}
+
+	newContent, err := os.ReadFile(filepath.Join(ssotDir, "demo", "SKILL.md"))
+	if err != nil {
+		t.Fatalf("read updated SSOT skill: %v", err)
+	}
+	if string(newContent) != "---\nname: demo\n---\n# new" {
+		t.Fatalf("expected new SSOT content, got %q", newContent)
+	}
+	activeTarget := filepath.Join(reg.AgentSkillsDir("claude-code"), "demo", "SKILL.md")
+	activeContent, err := os.ReadFile(activeTarget)
+	if err != nil {
+		t.Fatalf("active agent was not synchronized: %v", err)
+	}
+	if string(activeContent) != string(newContent) {
+		t.Fatalf("active agent content mismatch: %q", activeContent)
+	}
+	disabledTarget := filepath.Join(reg.AgentSkillsDir("opencode"), "demo")
+	if _, err := os.Stat(disabledTarget); !os.IsNotExist(err) {
+		t.Fatalf("disabled agent was synchronized during update: %v", err)
+	}
+}
+
 func TestUpdateSkills_EmptyList(t *testing.T) {
 	store := NewStore(t.TempDir(), SyncMethodSymlink)
 	result := store.UpdateSkills(nil, nil)
@@ -448,6 +574,7 @@ func TestCheckUpdates_DefaultBranch(t *testing.T) {
 
 func TestCheckUpdates_DifferentBranchesSameRepo(t *testing.T) {
 	setupTestHome(t)
+	forceGitFallbackForTest(t)
 
 	orig := fetchSkillCommitSHAFunc
 	defer func() { fetchSkillCommitSHAFunc = orig }()
@@ -602,6 +729,7 @@ func TestCacheSkillCommitSHA_OverwritesExisting(t *testing.T) {
 
 func TestCheckUpdates_FailedSkill_DoesNotOverwriteCacheBaseline(t *testing.T) {
 	setupTestHome(t)
+	forceGitFallbackForTest(t)
 
 	orig := fetchSkillCommitSHAFunc
 	defer func() { fetchSkillCommitSHAFunc = orig }()
@@ -614,8 +742,8 @@ func TestCheckUpdates_FailedSkill_DoesNotOverwriteCacheBaseline(t *testing.T) {
 	}
 
 	cache := map[string]updateCacheEntry{
-		"skill:ok":     {CommitSHA: "old-sha", CheckedAt: "2026-07-01T00:00:00Z"},
-		"skill:fail":   {CommitSHA: "baseline-sha", CheckedAt: "2026-07-01T00:00:00Z"},
+		"skill:ok":   {CommitSHA: "old-sha", CheckedAt: "2026-07-01T00:00:00Z"},
+		"skill:fail": {CommitSHA: "baseline-sha", CheckedAt: "2026-07-01T00:00:00Z"},
 	}
 	if err := writeUpdateCache(cache); err != nil {
 		t.Fatalf("writeUpdateCache failed: %v", err)
@@ -671,6 +799,7 @@ func TestCheckUpdates_FailedSkill_DoesNotOverwriteCacheBaseline(t *testing.T) {
 
 func TestCheckUpdates_MasterFallback(t *testing.T) {
 	setupTestHome(t)
+	forceGitFallbackForTest(t)
 
 	orig := fetchSkillCommitSHAFunc
 	defer func() { fetchSkillCommitSHAFunc = orig }()
@@ -706,6 +835,7 @@ func TestCheckUpdates_MasterFallback(t *testing.T) {
 
 func TestCheckUpdates_ErrorsPerSkill(t *testing.T) {
 	setupTestHome(t)
+	forceGitFallbackForTest(t)
 
 	orig := fetchSkillCommitSHAFunc
 	defer func() { fetchSkillCommitSHAFunc = orig }()

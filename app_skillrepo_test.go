@@ -124,6 +124,23 @@ func TestUpdateSkillRepo_EmptyUpdatedReturnsError(t *testing.T) {
 	}
 }
 
+// TestRequireMcpStoreReadyLocked_PartialLoadBlocksWrites 验证部分配置损坏时
+// MCP 写操作被阻断（mcpStoreReady=false + mcpStoreErr 有值），
+// 避免基于不完整状态覆盖 agent 配置。
+func TestRequireMcpStoreReadyLocked_PartialLoadBlocksWrites(t *testing.T) {
+	a := &App{
+		mu:            sync.RWMutex{},
+		mcpStore:      mcp.NewStore(),
+		mcpStoreReady: false,
+		mcpStoreErr:   "load: 1 config(s) failed: read config x: parse error",
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if err := a.requireMcpStoreReadyLocked(); err == nil {
+		t.Fatal("expected write operations to be blocked when store partially loaded")
+	}
+}
+
 func readAgentsLockForTest(t *testing.T) skills.AgentsLockFile {
 	t.Helper()
 	home, err := os.UserHomeDir()

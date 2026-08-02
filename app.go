@@ -131,7 +131,9 @@ func (a *App) ServiceStartup(ctx context.Context, options application.ServiceOpt
 	a.mcpStore = mcp.NewStore()
 	if err := a.mcpStore.Load(a.registry); err != nil {
 		addErr("mcp store load", err)
-		a.mcpStoreReady = a.mcpStore.Ready()
+		// 部分配置损坏时 store 仍加载了可用数据（可读），但阻断写操作，
+		// 避免基于不完整状态覆盖 agent 配置；错误详情经 requireMcpStoreReadyLocked 暴露。
+		a.mcpStoreReady = false
 		a.mcpStoreErr = err.Error()
 	} else {
 		a.mcpStoreReady = true

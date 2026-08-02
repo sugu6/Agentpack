@@ -4,6 +4,7 @@ import (
 	"agentpack/internal/agents"
 	"agentpack/internal/config"
 	"archive/tar"
+	"bytes"
 	"compress/gzip"
 	"context"
 	"crypto/tls"
@@ -72,8 +73,10 @@ func (s *Store) InstallFromTarball(ctx context.Context, input TarballInstallInpu
 		return Skill{}, err
 	}
 
-	// 4. 调用现有 Import 纳管到 SSOT
-	skill, err := s.Import(skillRoot, agentIDs, reg, input.RepoOwner, input.RepoName)
+	// 4. 调用现有 Import 纳管到 SSOT。
+	// 显式传入 input.Directory：当仓库根目录本身就是 skill（SKILL.md 直接位于
+	// {repo}-{hash}/ 下）时，skillRoot 的目录名是随机 hash，不能作为 SSOT 目录名。
+	skill, err := s.ImportWithDirName(skillRoot, input.Directory, agentIDs, reg, input.RepoOwner, input.RepoName)
 	if err != nil {
 		return Skill{}, fmt.Errorf("import skill from tarball: %w", err)
 	}
@@ -115,32 +118,40 @@ func isSafeGitHubIdent(s string) bool {
 	return true
 }
 
-// downloadAndExtractTarball 下载 tar.gz 并安全解压到目标目录
-func downloadAndExtractTarball(ctx context.Context, tarballURL, dest string) error {
-	if strings.HasPrefix(tarballURL, "https://codeload.github.com/") {
-		tarballURL = config.DefaultGitHubProxy + strings.TrimPrefix(tarballURL, "https://")
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, tarballURL, nil)
-	if err != nil {
-		return fmt.Errorf("create request: %w", err)
-	}
-	req.Header.Set("User-Agent", "AgentPack/0.1 (+https://github.com/anomalyco/agentpack)")
+// tarballFallbackURLs 是配置代理之外的备用代理前缀（可覆盖，便于测试隔离）。
+// 条目为空字符串表示直连 codeload。
+var tarballFallbackURLs = []string{"https://ghfast.top/", ""}
 
-	resp, err := tarballHTTPClient.Do(req)
+// tarballCandidateURLs 生成 tarball 下载候选 URL：
+// 配置的代理优先，随后按 tarballFallbackURLs 补充备用代理，最后直连 codeload。
+func tarballCandidateURLs(tarballURL string) []string {
+	if !strings.HasPrefix(tarballURL, "https://codeload.github.com/") {
+		return []string{tarballURL}
+	}
+	rest := strings.TrimPrefix(tarballURL, "https://")
+	var urls []string
+	if p := strings.TrimSpace(config.DefaultGitHubProxy); p != "" {
+		urls = append(urls, strings.TrimSuffix(p, "/")+"/"+rest)
+	}
+	for _, p := range tarballFallbackURLs {
+		if strings.TrimSpace(p) == "" {
+			urls = append(urls, "https://"+rest) // 直连兜底
+			continue
+		}
+		urls = append(urls, strings.TrimSuffix(p, "/")+"/"+rest)
+	}
+	return urls
+}
+
+// downloadAndExtractTarball 下载 tar.gz（多代理候选）并安全解压到目标目录
+func downloadAndExtractTarball(ctx context.Context, tarballURL, dest string) error {
+	data, err := httpGetBody(ctx, tarballCandidateURLs(tarballURL))
 	if err != nil {
 		return fmt.Errorf("download tarball: %w", err)
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != 200 {
-		return fmt.Errorf("download tarball: status %d", resp.StatusCode)
-	}
-
-	// 限制读取大小
-	limitReader := io.LimitReader(resp.Body, maxTarballSize)
 
 	// gzip 解压
-	gzReader, err := gzip.NewReader(limitReader)
+	gzReader, err := gzip.NewReader(bytes.NewReader(data))
 	if err != nil {
 		return fmt.Errorf("gzip reader: %w", err)
 	}
@@ -203,9 +214,18 @@ func extractTarEntry(reader *tar.Reader, header *tar.Header, dest, destAbs strin
 			return fmt.Errorf("create file %s: %w", target, err)
 		}
 		defer w.Close()
-		// 限制单个文件大小，防止 zip bomb
-		if _, err := io.Copy(w, io.LimitReader(reader, maxTarEntrySize)); err != nil {
+		// 限制单个文件大小，防止 zip bomb。
+		// 先按 tar 头声明的 size 预检，再用 LimitReader+1 校验实际流，
+		// 超过上限时报错而不是静默截断后安装损坏文件。
+		if header.Size > maxTarEntrySize {
+			return fmt.Errorf("tar entry %s too large: %d bytes (max %d)", header.Name, header.Size, maxTarEntrySize)
+		}
+		written, err := io.Copy(w, io.LimitReader(reader, maxTarEntrySize+1))
+		if err != nil {
 			return fmt.Errorf("write file %s: %w", target, err)
+		}
+		if written > maxTarEntrySize {
+			return fmt.Errorf("tar entry %s exceeds size limit: more than %d bytes", header.Name, maxTarEntrySize)
 		}
 		return nil
 	case tar.TypeSymlink, tar.TypeLink:
@@ -243,7 +263,9 @@ func findSkillRootInTarball(dir, directory, fullPath string) (string, error) {
 		}
 
 		// 情况 1：顶层目录直接含 SKILL.md（repo 本身就是一个 skill）
-		if directory != "" && entry.Name() == directory && HasSkillManifest(topDir) {
+		// GitHub codeload 顶层目录为 {repo}-{hash}，目录名需要兼容该后缀。
+		if directory != "" && HasSkillManifest(topDir) &&
+			(entry.Name() == directory || strings.HasPrefix(entry.Name(), directory+"-")) {
 			return topDir, nil
 		}
 
