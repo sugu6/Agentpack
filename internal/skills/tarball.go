@@ -34,6 +34,12 @@ const maxTarballSize = 50 * 1024 * 1024
 // maxTarEntrySize 限制单个解压文件大小为 10MB，防止 zip bomb
 const maxTarEntrySize = 10 * 1024 * 1024
 
+// maxTarFileCount 限制 tarball 条目数，防止海量小文件耗尽磁盘/内存。
+const maxTarFileCount = 5000
+
+// maxTarTotalSize 限制解压后总大小（与下载大小上限一致），防 zip bomb。
+const maxTarTotalSize = 50 * 1024 * 1024
+
 // tarballHTTPClient 是 tarball 下载用的 HTTP client（独立于 market.HTTPClient，避免循环依赖）
 var tarballHTTPClient = &http.Client{
 	Timeout: 5 * time.Minute, // tarball 下载可能较大
@@ -165,6 +171,8 @@ func downloadAndExtractTarball(ctx context.Context, tarballURL, dest string) err
 		return fmt.Errorf("resolve dest abs: %w", err)
 	}
 
+	var fileCount int
+	var totalSize int64
 	for {
 		header, err := tarReader.Next()
 		if err == io.EOF {
@@ -172,6 +180,16 @@ func downloadAndExtractTarball(ctx context.Context, tarballURL, dest string) err
 		}
 		if err != nil {
 			return fmt.Errorf("tar read: %w", err)
+		}
+		if header.Typeflag == tar.TypeReg {
+			fileCount++
+			totalSize += header.Size
+			if fileCount > maxTarFileCount {
+				return fmt.Errorf("tar contains too many files: %d (max %d)", fileCount, maxTarFileCount)
+			}
+			if totalSize > maxTarTotalSize {
+				return fmt.Errorf("tar total uncompressed size exceeds limit: %d bytes (max %d)", totalSize, maxTarTotalSize)
+			}
 		}
 
 		if err := extractTarEntry(tarReader, header, dest, destAbs); err != nil {

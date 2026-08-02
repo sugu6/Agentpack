@@ -265,7 +265,7 @@ func TestGitHubSkillFetcher_CDNFailureFallback(t *testing.T) {
 		case strings.Contains(path, "/missing/"):
 			w.WriteHeader(404)
 		case strings.Contains(path, "/server-error/"):
-			w.WriteHeader(500)
+			w.WriteHeader(http.StatusNotFound)
 		default:
 			w.WriteHeader(404)
 		}

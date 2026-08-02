@@ -166,7 +166,7 @@ func TestSkillsShFetcher_SearchFiltersNonGitHub(t *testing.T) {
 func TestSkillsShFetcher_SearchServerError(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/search", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(500)
+		w.WriteHeader(http.StatusNotFound)
 	})
 	server := httptest.NewServer(mux)
 	defer server.Close()

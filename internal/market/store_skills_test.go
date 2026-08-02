@@ -39,8 +39,8 @@ func TestSearchAllSkills_MergeAndSort(t *testing.T) {
 	store.RegisterSkillFetcher(&stubSkillFetcher{
 		source: SourceGitHub,
 		skills: []MarketSkill{
-			{ID: "gh1", Name: "Alpha", Directory: "alpha", Source: SourceGitHub, RepoOwner: "a", RepoName: "repo", Installs: 0},
-			{ID: "gh2", Name: "Beta", Directory: "beta", Source: SourceGitHub, RepoOwner: "b", RepoName: "repo", Installs: 0},
+			{ID: "gh1", Name: "Alpha", Directory: "alpha", Source: SourceGitHub, RepoOwner: "a", RepoName: "repo", Installs: 0, ContentHash: "stub"},
+			{ID: "gh2", Name: "Beta", Directory: "beta", Source: SourceGitHub, RepoOwner: "b", RepoName: "repo", Installs: 0, ContentHash: "stub"},
 		},
 	})
 
@@ -48,8 +48,8 @@ func TestSearchAllSkills_MergeAndSort(t *testing.T) {
 	store.RegisterSkillFetcher(&stubSkillFetcher{
 		source: SourceSkillsSh,
 		skills: []MarketSkill{
-			{ID: "ss1", Name: "Gamma", Directory: "gamma", Source: SourceSkillsSh, RepoOwner: "c", RepoName: "repo", Installs: 1000},
-			{ID: "ss2", Name: "Delta", Directory: "delta", Source: SourceSkillsSh, RepoOwner: "d", RepoName: "repo", Installs: 500},
+			{ID: "ss1", Name: "Gamma", Directory: "gamma", Source: SourceSkillsSh, RepoOwner: "c", RepoName: "repo", Installs: 1000, ContentHash: "stub"},
+			{ID: "ss2", Name: "Delta", Directory: "delta", Source: SourceSkillsSh, RepoOwner: "d", RepoName: "repo", Installs: 500, ContentHash: "stub"},
 		},
 	})
 
@@ -78,14 +78,14 @@ func TestSearchAllSkills_DedupPreferSkillsSh(t *testing.T) {
 	store.RegisterSkillFetcher(&stubSkillFetcher{
 		source: SourceGitHub,
 		skills: []MarketSkill{
-			{ID: "gh1", Name: "Alpha-GH", Directory: "alpha", Source: SourceGitHub, RepoOwner: "a", RepoName: "repo", Installs: 0},
+			{ID: "gh1", Name: "Alpha-GH", Directory: "alpha", Source: SourceGitHub, RepoOwner: "a", RepoName: "repo", Installs: 0, ContentHash: "stub"},
 		},
 	})
 
 	store.RegisterSkillFetcher(&stubSkillFetcher{
 		source: SourceSkillsSh,
 		skills: []MarketSkill{
-			{ID: "ss1", Name: "Alpha-SS", Directory: "alpha", Source: SourceSkillsSh, RepoOwner: "a", RepoName: "repo", Installs: 100},
+			{ID: "ss1", Name: "Alpha-SS", Directory: "alpha", Source: SourceSkillsSh, RepoOwner: "a", RepoName: "repo", Installs: 100, ContentHash: "stub"},
 		},
 	})
 
@@ -115,7 +115,7 @@ func TestSearchAllSkills_PartialFailure(t *testing.T) {
 	store.RegisterSkillFetcher(&stubSkillFetcher{
 		source: SourceGitHub,
 		skills: []MarketSkill{
-			{ID: "gh1", Name: "Alpha", Directory: "alpha", Source: SourceGitHub, RepoOwner: "a", RepoName: "repo", Installs: 0},
+			{ID: "gh1", Name: "Alpha", Directory: "alpha", Source: SourceGitHub, RepoOwner: "a", RepoName: "repo", Installs: 0, ContentHash: "stub"},
 		},
 	})
 
@@ -154,11 +154,11 @@ func TestSearchAllSkills_PageSizeTruncation(t *testing.T) {
 
 	// 注册 5 个 skills
 	skills := []MarketSkill{
-		{ID: "s1", Name: "S1", Directory: "d1", Source: SourceSkillsSh, RepoOwner: "a", RepoName: "repo", Installs: 100},
-		{ID: "s2", Name: "S2", Directory: "d2", Source: SourceSkillsSh, RepoOwner: "b", RepoName: "repo", Installs: 90},
-		{ID: "s3", Name: "S3", Directory: "d3", Source: SourceSkillsSh, RepoOwner: "c", RepoName: "repo", Installs: 80},
-		{ID: "s4", Name: "S4", Directory: "d4", Source: SourceSkillsSh, RepoOwner: "d", RepoName: "repo", Installs: 70},
-		{ID: "s5", Name: "S5", Directory: "d5", Source: SourceSkillsSh, RepoOwner: "e", RepoName: "repo", Installs: 60},
+		{ID: "s1", Name: "S1", Directory: "d1", Source: SourceSkillsSh, RepoOwner: "a", RepoName: "repo", Installs: 100, ContentHash: "stub"},
+		{ID: "s2", Name: "S2", Directory: "d2", Source: SourceSkillsSh, RepoOwner: "b", RepoName: "repo", Installs: 90, ContentHash: "stub"},
+		{ID: "s3", Name: "S3", Directory: "d3", Source: SourceSkillsSh, RepoOwner: "c", RepoName: "repo", Installs: 80, ContentHash: "stub"},
+		{ID: "s4", Name: "S4", Directory: "d4", Source: SourceSkillsSh, RepoOwner: "d", RepoName: "repo", Installs: 70, ContentHash: "stub"},
+		{ID: "s5", Name: "S5", Directory: "d5", Source: SourceSkillsSh, RepoOwner: "e", RepoName: "repo", Installs: 60, ContentHash: "stub"},
 	}
 	store.RegisterSkillFetcher(&stubSkillFetcher{
 		source: SourceSkillsSh,
