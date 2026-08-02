@@ -36,8 +36,12 @@ func updateCachePath() (string, error) {
 
 // updateCacheEntry 是缓存中单个 skill 的条目
 type updateCacheEntry struct {
-	CommitSHA string `json:"commitSha"`
-	CheckedAt string `json:"checkedAt"`
+	CommitSHA    string   `json:"commitSha"`
+	CheckedAt    string   `json:"checkedAt"`
+	TreeHash     string   `json:"treeHash,omitempty"`     // 远程树聚合 hash（内容级检测）
+	LocalHash    string   `json:"localHash,omitempty"`    // 本地内容聚合 hash（内容级检测）
+	HasUpdate    bool     `json:"hasUpdate,omitempty"`    // 上次确认的结果
+	ChangedFiles []string `json:"changedFiles,omitempty"` // 上次确认的差异文件
 }
 
 // updateCacheFile 是缓存文件的结构
@@ -272,7 +276,7 @@ func (s *Store) CheckUpdates(reg *agents.Registry) []UpdateStatus {
 	// 为每个 skill 生成 UpdateStatus
 	now := time.Now().UTC().Format(time.RFC3339)
 	results := make([]UpdateStatus, len(skillsList))
-	gitWroteCache := false
+	wroteCache := false
 	for i, sk := range skillsList {
 		branch := resolveDefaultBranch(&sk)
 		rk := repoKey{sk.RepoOwner, sk.RepoName, branch}
@@ -325,6 +329,19 @@ func (s *Store) CheckUpdates(reg *agents.Registry) []UpdateStatus {
 					log.Printf("warning: persist full path for %s: %v", sk.Directory, err)
 				}
 			}
+			treeAgg := remoteTreeHash(res.tree, fullPath)
+			localAgg := localTreeHash(res.tree.hashFn, localDir)
+			// 远程树与本地内容均未变化时复用上次确认的结果，
+			// 跳过逐文件 diff 与差异文件下载验证（检查的主要耗时来源）。
+			if cached, ok := cache[sk.ID]; ok &&
+				cached.TreeHash == treeAgg && cached.LocalHash == localAgg {
+				status.RemoteHash = treeAgg
+				status.LocalHash = localAgg
+				status.HasUpdate = cached.HasUpdate
+				status.ChangedFiles = cached.ChangedFiles
+				results[i] = status
+				continue
+			}
 			changed, hasDiff := skillRemoteDiffWith(res.tree, fullPath, localDir)
 			if hasDiff {
 				// jsDelivr 树 hash 可能与实际文件内容不一致（实测存在），
@@ -357,10 +374,18 @@ func (s *Store) CheckUpdates(reg *agents.Registry) []UpdateStatus {
 			}
 			if hasDiff {
 				status.HasUpdate = true
-				status.RemoteHash = remoteTreeHash(res.tree, fullPath)
-				status.LocalHash = localTreeHash(res.tree.hashFn, localDir)
+				status.RemoteHash = treeAgg
+				status.LocalHash = localAgg
 				status.ChangedFiles = changed
 			}
+			cache[sk.ID] = updateCacheEntry{
+				TreeHash:     treeAgg,
+				LocalHash:    localAgg,
+				HasUpdate:    status.HasUpdate,
+				ChangedFiles: status.ChangedFiles,
+				CheckedAt:    status.CheckedAt,
+			}
+			wroteCache = true
 		case res.gitSHA != "":
 			// git fallback：与缓存基线对比
 			status.RemoteHash = res.gitSHA
@@ -373,14 +398,14 @@ func (s *Store) CheckUpdates(reg *agents.Registry) []UpdateStatus {
 				CommitSHA: res.gitSHA,
 				CheckedAt: status.CheckedAt,
 			}
-			gitWroteCache = true
+			wroteCache = true
 		}
 
 		results[i] = status
 	}
 
-	// 仅在 git fallback 模式持久化缓存基线
-	if gitWroteCache {
+	// 内容级或 git fallback 任一产生新结果时持久化缓存
+	if wroteCache {
 		updateCacheMu.Lock()
 		if err := writeUpdateCacheFunc(cache); err != nil {
 			log.Printf("warning: write update cache: %v", err)

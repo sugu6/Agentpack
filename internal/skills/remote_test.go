@@ -917,6 +917,80 @@ func TestCheckUpdates_RemovesInvalidSourceWhenNotLocatable(t *testing.T) {
 	}
 }
 
+// TestCheckUpdates_CacheSkipsDownloadVerification 验证结果缓存：
+// 远程树与本地内容未变化时，第二次检查直接复用上次结果（不再下载差异文件）；
+// 本地内容变化后缓存失效并重查。
+func TestCheckUpdates_CacheSkipsDownloadVerification(t *testing.T) {
+	setupTestHome(t)
+	tmp := t.TempDir()
+	ssotDir := filepath.Join(tmp, "ssot")
+	makeSkillDir(t, ssotDir, "demo", "old")
+
+	var downloads atomic.Int32
+	treeJSON := fmt.Sprintf(`{"name":"repo","type":"directory","files":[
+	  {"name":"skills","type":"directory","files":[
+	    {"name":"demo","type":"directory","files":[
+	      {"name":"SKILL.md","type":"file","hash":%q}
+	    ]}
+	  ]}
+	]}`, contentSHAB64("new"))
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/v1/packages/") {
+			_, _ = w.Write([]byte(treeJSON))
+			return
+		}
+		if strings.HasPrefix(r.URL.Path, "/gh/") {
+			downloads.Add(1)
+			_, _ = w.Write([]byte("new"))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	origBase, origHosts := jsDelivrDataBase, jsDelivrFileHosts
+	origGH, origRawP, origRawD := gitHubAPIBases, gitHubRawProxies, gitHubRawDirect
+	jsDelivrDataBase, jsDelivrFileHosts = server.URL, []string{server.URL}
+	gitHubAPIBases, gitHubRawProxies, gitHubRawDirect = []string{server.URL}, []string{server.URL}, server.URL
+	defer func() {
+		jsDelivrDataBase, jsDelivrFileHosts = origBase, origHosts
+		gitHubAPIBases, gitHubRawProxies, gitHubRawDirect = origGH, origRawP, origRawD
+	}()
+
+	store := NewStore(ssotDir, SyncMethodSymlink)
+	store.skills["skill:demo"] = Skill{
+		ID: "skill:demo", Directory: "demo",
+		RepoOwner: "owner", RepoName: "repo", RepoBranch: "main",
+		FullPath: "skills/demo",
+	}
+
+	first := store.CheckUpdates(nil)
+	if len(first) != 1 || !first[0].HasUpdate {
+		t.Fatalf("expected update on first check, got %+v", first)
+	}
+	d1 := downloads.Load()
+	if d1 == 0 {
+		t.Fatal("expected download verification on first check")
+	}
+
+	second := store.CheckUpdates(nil)
+	if len(second) != 1 || !second[0].HasUpdate {
+		t.Fatalf("expected cached update on second check, got %+v", second)
+	}
+	if got := downloads.Load(); got != d1 {
+		t.Fatalf("expected no download on cached check, got %d -> %d", d1, got)
+	}
+
+	// 本地内容变化 → 缓存失效 → 重查
+	if err := os.WriteFile(filepath.Join(ssotDir, "demo", "SKILL.md"), []byte("new"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	third := store.CheckUpdates(nil)
+	if len(third) != 1 || third[0].HasUpdate {
+		t.Fatalf("expected no update after local sync, got %+v", third)
+	}
+}
+
 // TestDownloadRemoteFile_404StopsImmediately 验证 4xx（资源不存在）时
 // 不再轮询其余 CDN 域名，避免每个域名空等。
 func TestDownloadRemoteFile_404StopsImmediately(t *testing.T) {
