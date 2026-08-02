@@ -5,6 +5,10 @@ import (
 	"agentpack/internal/config"
 	"agentpack/internal/market"
 	"agentpack/internal/mcp"
+	"agentpack/internal/skills"
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 )
@@ -117,5 +121,54 @@ func TestUpdateSkillRepo_EmptyUpdatedReturnsError(t *testing.T) {
 	updated := config.SkillRepo{Owner: "", Name: "skills"}
 	if err := a.UpdateSkillRepo(original, updated); err == nil {
 		t.Fatal("expected error for empty updated owner, got nil")
+	}
+}
+
+func readAgentsLockForTest(t *testing.T) skills.AgentsLockFile {
+	t.Helper()
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(home, ".agents", ".skill-lock.json"))
+	if err != nil {
+		t.Fatalf("read lock file: %v", err)
+	}
+	var lock skills.AgentsLockFile
+	if err := json.Unmarshal(data, &lock); err != nil {
+		t.Fatalf("unmarshal lock file: %v", err)
+	}
+	return lock
+}
+
+func TestApplyBackfillMatches(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	directories := []string{"code-simplifier", "debugger", "shared"}
+	matches := map[string]market.BackfillMatch{
+		"code-simplifier": {Owner: "simonwong", Repo: "agent-skills", Installs: 1702},
+		"debugger":        {Owner: "shubhamsaboo", Repo: "awesome-llm-apps", Installs: 3238},
+	}
+	res := applyBackfillMatches(matches, directories)
+	if len(res.Matched) != 2 || len(res.Unmatched) != 1 || len(res.Failed) != 0 {
+		t.Fatalf("unexpected result: %+v", res)
+	}
+	if len(res.Unmatched) != 1 || res.Unmatched[0] != "shared" {
+		t.Fatalf("expected shared unmatched, got %v", res.Unmatched)
+	}
+	lock := readAgentsLockForTest(t)
+	entry, ok := lock.Skills["code-simplifier"]
+	if !ok {
+		t.Fatal("expected lock entry for code-simplifier")
+	}
+	if entry.Source != "simonwong/agent-skills" || entry.SourceType != "github" || entry.Branch != "main" {
+		t.Fatalf("unexpected lock entry: %+v", entry)
+	}
+	if entry.SourceURL != "https://github.com/simonwong/agent-skills" {
+		t.Fatalf("unexpected source url: %q", entry.SourceURL)
+	}
+	if _, ok := lock.Skills["shared"]; ok {
+		t.Fatal("expected no lock entry for unmatched shared")
 	}
 }

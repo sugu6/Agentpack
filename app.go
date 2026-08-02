@@ -131,7 +131,7 @@ func (a *App) ServiceStartup(ctx context.Context, options application.ServiceOpt
 	a.mcpStore = mcp.NewStore()
 	if err := a.mcpStore.Load(a.registry); err != nil {
 		addErr("mcp store load", err)
-		a.mcpStoreReady = false
+		a.mcpStoreReady = a.mcpStore.Ready()
 		a.mcpStoreErr = err.Error()
 	} else {
 		a.mcpStoreReady = true
@@ -833,6 +833,10 @@ func (a *App) AddSkillRepo(repo config.SkillRepo) error {
 	if err := a.assertInit(); err != nil {
 		return err
 	}
+	// 与 UpdateSettings / ToggleAgent 等整份 config 保存操作串行化，
+	// 避免并发 Save 时互相覆盖（丢失对方的变更）。
+	a.storeOpMu.Lock()
+	defer a.storeOpMu.Unlock()
 	if repo.Owner == "" || repo.Name == "" {
 		return fmt.Errorf("repo owner and name required")
 	}
@@ -869,6 +873,8 @@ func (a *App) RemoveSkillRepo(repo config.SkillRepo) error {
 	if err := a.assertInit(); err != nil {
 		return err
 	}
+	a.storeOpMu.Lock()
+	defer a.storeOpMu.Unlock()
 
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -907,6 +913,8 @@ func (a *App) UpdateSkillRepo(original, updated config.SkillRepo) error {
 	if err := a.assertInit(); err != nil {
 		return err
 	}
+	a.storeOpMu.Lock()
+	defer a.storeOpMu.Unlock()
 	if original.Owner == "" || original.Name == "" {
 		return fmt.Errorf("original repo owner and name required")
 	}
@@ -1081,6 +1089,7 @@ func (a *App) UpdateSettings(s config.Settings) error {
 	var skillsStore *skills.Store
 	var registry *agents.Registry
 	var backups *backup.Manager
+	var oldLang string
 
 	a.mu.Lock()
 	if a.cfg == nil {
@@ -1104,38 +1113,58 @@ func (a *App) UpdateSettings(s config.Settings) error {
 	oldLiteDelay := a.cfg.Settings.LiteAutoDelay
 	oldSkillStorage = a.cfg.Settings.SkillStorage
 	oldSkillSyncMethod = a.cfg.Settings.SkillSyncMethod
+	oldLang = i18n.ResolveLanguage(a.cfg.Settings.Language)
 	skillsStore = a.skillsStore
 	registry = a.registry
 	backups = a.backups
 	a.mu.Unlock()
 
+	// 在释放锁之后执行文件 I/O 操作
+	if skillsStore != nil {
+		if s.SkillSyncMethod != oldSkillSyncMethod {
+			skillsStore.SetSyncMethod(skills.SyncMethod(s.SkillSyncMethod))
+			if err := skillsStore.Resync(registry); err != nil {
+				skillsStore.SetSyncMethod(skills.SyncMethod(oldSkillSyncMethod))
+				return fmt.Errorf("resync skills after method change: %w", err)
+			}
+		}
+		if s.SkillStorage != oldSkillStorage {
+			newDir := skills.ResolveSSOTDir(skills.StorageLocation(s.SkillStorage))
+			result, err := skillsStore.MigrateStorage(newDir, registry)
+			if err != nil {
+				if s.SkillSyncMethod != oldSkillSyncMethod {
+					skillsStore.SetSyncMethod(skills.SyncMethod(oldSkillSyncMethod))
+				}
+				return fmt.Errorf("migrate skill storage: %w", err)
+			}
+			if result.Migrated > 0 {
+				log.Printf("migrated %d skills to %s", result.Migrated, newDir)
+			}
+		}
+	}
+
 	if err := config.Save(&newCfg); err != nil {
+		// Keep runtime and persisted settings aligned when the final config
+		// write fails after a filesystem migration.
+		if skillsStore != nil && s.SkillStorage != oldSkillStorage {
+			oldDir := skills.ResolveSSOTDir(skills.StorageLocation(oldSkillStorage))
+			if _, rollbackErr := skillsStore.MigrateStorage(oldDir, registry); rollbackErr != nil {
+				log.Printf("rollback skill storage after settings save failure: %v", rollbackErr)
+			}
+		}
+		if skillsStore != nil && s.SkillSyncMethod != oldSkillSyncMethod {
+			skillsStore.SetSyncMethod(skills.SyncMethod(oldSkillSyncMethod))
+			if rollbackErr := skillsStore.Resync(registry); rollbackErr != nil {
+				log.Printf("rollback skill sync method after settings save failure: %v", rollbackErr)
+			}
+		}
 		return err
 	}
 
 	a.mu.Lock()
-	oldLang := i18n.ResolveLanguage(a.cfg.Settings.Language)
 	a.cfg.Settings = newSettings
 	a.refreshBackupHooksLocked()
 	a.mu.Unlock()
-
-	// 在释放锁之后执行文件 I/O 操作
-	if skillsStore != nil {
-		if s.SkillStorage != oldSkillStorage {
-			newDir := skills.ResolveSSOTDir(skills.StorageLocation(s.SkillStorage))
-			if result, err := skillsStore.MigrateStorage(newDir, registry); err != nil {
-				log.Printf("migrate skill storage: %v", err)
-			} else if result.Migrated > 0 {
-				log.Printf("migrated %d skills to %s", result.Migrated, newDir)
-			}
-		}
-		if s.SkillSyncMethod != oldSkillSyncMethod {
-			skillsStore.SetSyncMethod(skills.SyncMethod(s.SkillSyncMethod))
-			if err := skillsStore.Resync(registry); err != nil {
-				log.Printf("resync skills after method change: %v", err)
-			}
-		}
-	}
 	if backups != nil {
 		if err := backups.SetRetention(s.BackupRetention); err != nil {
 			log.Printf("set backup retention: %v", err)
@@ -1444,49 +1473,65 @@ func (a *App) ImportBackupFromFile(src string, opts backup.ImportOptions) (backu
 		return res, err
 	}
 
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if a.closed {
-		return res, nil
+	var importedSettings *config.Settings
+	if opts.ApplySettings && len(res.ExportedSettings) > 0 {
+		data, marshalErr := json.Marshal(res.ExportedSettings)
+		if marshalErr != nil {
+			return res, fmt.Errorf("import: encode settings: %w", marshalErr)
+		}
+		var settings config.Settings
+		if unmarshalErr := json.Unmarshal(data, &settings); unmarshalErr != nil {
+			return res, fmt.Errorf("import: decode settings: %w", unmarshalErr)
+		}
+		if settings.BackupRetention <= 0 {
+			if settings.BackupCount > 0 {
+				settings.BackupRetention = settings.BackupCount
+			} else {
+				settings.BackupRetention = config.DefaultSettings().BackupRetention
+			}
+		}
+		if settings.BackupCount <= 0 {
+			settings.BackupCount = settings.BackupRetention
+		}
+		importedSettings = &settings
 	}
 
-	// 应用导入的设置（直接保存，不走 UpdateSettings 以避免 storeOpMu 死锁）
-	if opts.ApplySettings && len(res.ExportedSettings) > 0 {
-		if data, err := json.Marshal(res.ExportedSettings); err == nil {
-			var s config.Settings
-			if err := json.Unmarshal(data, &s); err == nil {
-				if s.BackupRetention <= 0 {
-					if s.BackupCount > 0 {
-						s.BackupRetention = s.BackupCount
-					} else {
-						s.BackupRetention = config.DefaultSettings().BackupRetention
-					}
-				}
-				if s.BackupCount <= 0 {
-					s.BackupCount = s.BackupRetention
-				}
-				if a.cfg == nil {
-					a.cfg = config.Default()
-				}
-				a.cfg.Settings = s
-				if err := config.Save(a.cfg); err != nil {
-					log.Printf("import: save settings: %v", err)
-				} else {
-					a.refreshBackupHooksLocked()
-					if a.backups != nil {
-						if err := a.backups.SetRetention(s.BackupRetention); err != nil {
-							log.Printf("import: set retention: %v", err)
-						}
-					}
-				}
-			}
+	a.mu.Lock()
+	if a.closed {
+		a.mu.Unlock()
+		return res, nil
+	}
+	if a.cfg == nil {
+		a.cfg = config.Default()
+	}
+	if opts.ApplyAgentStatus && a.registry != nil {
+		a.cfg.DisabledAgents = a.registry.DisabledIDs()
+	}
+	cfgAfterAgentStatus := *a.cfg
+	a.mu.Unlock()
+
+	// Apply imported settings through the normal runtime-aware path. The
+	// current function already owns storeOpMu, so release it before calling
+	// UpdateSettings, which acquires the same lock.
+	if importedSettings != nil {
+		a.storeOpMu.Unlock()
+		settingsErr := a.UpdateSettings(*importedSettings)
+		a.storeOpMu.Lock()
+		if settingsErr != nil {
+			return res, fmt.Errorf("import: apply settings: %w", settingsErr)
+		}
+	} else if opts.ApplyAgentStatus {
+		if err := config.Save(&cfgAfterAgentStatus); err != nil {
+			return res, fmt.Errorf("import: save agent status: %w", err)
 		}
 	}
 
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
 	a.emitAgentsChangedLocked()
-	a.emitLocked("mcp:changed", a.mcpStore.List())
-	if opts.ApplySettings {
-		a.emitLocked("settings:changed", a.cfg.Settings)
+	if a.mcpStore != nil {
+		a.emitLocked("mcp:changed", a.mcpStore.List())
 	}
 	return res, nil
 }
@@ -1747,4 +1792,71 @@ func (a *App) MigrateSkillStorage(target string) (skills.MigrationResult, error)
 	}
 	a.emitLocked("skills:changed", a.skillsStore.List())
 	return result, nil
+}
+
+// SkillSourceBackfillResult 是从 skills.sh 回填技能来源的结果统计。
+type SkillSourceBackfillResult struct {
+	Matched   []string `json:"matched"`
+	Unmatched []string `json:"unmatched"`
+	Failed    []string `json:"failed"`
+}
+
+// BackfillSkillSources 从 skills.sh 回填缺少仓库来源的技能，使其支持后续更新。
+// 仅处理 RepoOwner/RepoName 均为空的技能，已有来源的不覆盖。
+func (a *App) BackfillSkillSources() (SkillSourceBackfillResult, error) {
+	if err := a.assertInit(); err != nil {
+		return SkillSourceBackfillResult{}, err
+	}
+	a.mu.RLock()
+	closed := a.closed
+	var directories []string
+	if a.skillsStore != nil {
+		for _, sk := range a.skillsStore.List() {
+			if sk.RepoOwner == "" && sk.RepoName == "" {
+				directories = append(directories, sk.Directory)
+			}
+		}
+	}
+	a.mu.RUnlock()
+	if closed {
+		return SkillSourceBackfillResult{}, fmt.Errorf("app is shutting down")
+	}
+	if len(directories) == 0 {
+		return SkillSourceBackfillResult{}, nil
+	}
+
+	ctx, cancel := market.ContextWithTimeout(120 * time.Second)
+	defer cancel()
+	matches, err := market.BackfillSkillSources(ctx, directories)
+	if err != nil {
+		return SkillSourceBackfillResult{}, err
+	}
+	return applyBackfillMatches(matches, directories), nil
+}
+
+// applyBackfillMatches 把查询结果写入 ~/.agents/.skill-lock.json 并返回统计。
+// 拆分为独立函数便于单元测试（网络查询由 market.BackfillSkillSources 承担）。
+func applyBackfillMatches(matches map[string]market.BackfillMatch, directories []string) SkillSourceBackfillResult {
+	var res SkillSourceBackfillResult
+	for _, dir := range directories {
+		m, ok := matches[dir]
+		if !ok {
+			res.Unmatched = append(res.Unmatched, dir)
+			continue
+		}
+		entry := skills.AgentsLockEntry{
+			Directory:  dir,
+			Source:     m.Owner + "/" + m.Repo,
+			SourceType: "github",
+			SourceURL:  "https://github.com/" + m.Owner + "/" + m.Repo,
+			Branch:     "main",
+		}
+		if err := skills.WriteAgentsLock(entry); err != nil {
+			log.Printf("backfill source for %s: %v", dir, err)
+			res.Failed = append(res.Failed, dir)
+			continue
+		}
+		res.Matched = append(res.Matched, dir)
+	}
+	return res
 }
