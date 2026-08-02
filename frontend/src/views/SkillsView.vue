@@ -3,7 +3,7 @@ import { ref, onMounted, onUnmounted, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useSkillsStore } from '@/stores/skills'
 import { useAgentsStore } from '@/stores/agents'
-import { Card, CardContent, Button, Badge, Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui'
+import { Card, CardContent, Button, Badge, Spinner, Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui'
 import { PhTrash, PhSparkle, PhMagnifyingGlass, PhFileArchive, PhFolderOpen, PhArrowClockwise, PhArrowUp } from '@phosphor-icons/vue'
 import { api, events, ApiError } from '@/lib/api'
 import { normalizeVariant, variantToBadge, agentDisplayName } from '@/composables/useAgentHelpers'
@@ -473,7 +473,8 @@ async function scanSkills() {
                 <div class="flex items-center gap-2">
                   <h3 class="text-sm font-semibold">{{ skill.name }}</h3>
                   <Badge variant="outline">{{ skill.directory }}</Badge>
-                  <Badge v-if="skills.updateStatusOf(skill.id)?.hasUpdate" variant="warning">{{ t('skills.hasUpdate') }}</Badge>
+                  <Badge v-if="skills.updatingSkillIds.has(skill.id)" variant="outline">{{ t('skills.updating') }}</Badge>
+                  <Badge v-else-if="skills.updateStatusOf(skill.id)?.hasUpdate" variant="warning">{{ t('skills.hasUpdate') }}</Badge>
                   <Badge v-else-if="skills.updateStatusOf(skill.id)?.error" variant="destructive" :title="skills.updateStatusOf(skill.id)!.error">{{ t('skills.checkFailed') }}</Badge>
                   <span v-if="skill.boundAgents && skill.boundAgents.length > 0" class="text-[11px] text-muted-foreground">{{ t('skills.boundAgentCount', { count: skill.boundAgents.length }) }}</span>
                 </div>
@@ -505,11 +506,13 @@ async function scanSkills() {
                   size="icon"
                   class="text-primary hover:bg-primary/10"
                   :disabled="skills.updatingSkillIds.has(skill.id)"
+                  :aria-busy="skills.updatingSkillIds.has(skill.id)"
                   :aria-label="t('skills.update')"
-                  :title="t('skills.update')"
+                  :title="skills.updatingSkillIds.has(skill.id) ? t('skills.updating') : t('skills.update')"
                   @click="onUpdateSkill(skill.id)"
                 >
-                  <PhArrowUp :size="14" :class="{ 'animate-spin': skills.updatingSkillIds.has(skill.id) }" />
+                  <Spinner v-if="skills.updatingSkillIds.has(skill.id)" class="size-3.5" />
+                  <PhArrowUp v-else :size="14" />
                 </Button>
                 
                 <Button variant="outline" size="icon" class="border-destructive/40 text-destructive hover:bg-destructive/10" :aria-label="t('common.uninstall')" @click="uninstallSkill(skill.id)">

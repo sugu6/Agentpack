@@ -764,6 +764,64 @@ func TestStore_SharedConfigPathRemoveOnce(t *testing.T) {
 	}
 }
 
+func TestStore_AddRejectsExistingServerNameOnAgent(t *testing.T) {
+	resetTestDB(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("APPDATA", "")
+
+	claudePath := filepath.Join(home, ".claude.json")
+	writeFile(t, claudePath, `{"mcpServers":{"github":{"command":"old","args":["server"]}}}`)
+	reg := agents.NewRegistry()
+	reg.Register(agents.Agent{
+		ID: "claude-code", Name: "Claude Code", Type: agents.TypeClaudeCode,
+		Status: agents.StatusEnabled, ConfigPath: claudePath, ConfigFormat: agents.FormatJSON,
+	})
+	store := NewStore()
+	if err := store.Load(reg); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := store.Add(Server{
+		Name: "github", Command: "new", Args: []string{"server"}, Transport: TransportStdio,
+	}, []string{"claude-code"}, reg)
+	if err == nil {
+		t.Fatal("expected same-name add to be rejected")
+	}
+	disk, err := NewBackend("claude-code").Read(claudePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if disk["github"].Command != "old" {
+		t.Fatalf("existing server was overwritten: %#v", disk["github"])
+	}
+}
+
+func TestStore_LoadKeepsValidConfigsWhenAnotherConfigIsMalformed(t *testing.T) {
+	resetTestDB(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("APPDATA", "")
+	validPath := filepath.Join(home, ".claude.json")
+	invalidPath := filepath.Join(home, ".cursor", "mcp.json")
+	writeFile(t, validPath, `{"mcpServers":{"valid":{"command":"echo"}}}`)
+	writeFile(t, invalidPath, `{"mcpServers":`)
+
+	reg := agents.NewRegistry()
+	reg.Register(agents.Agent{ID: "claude-code", Name: "Claude Code", Type: agents.TypeClaudeCode, Status: agents.StatusEnabled, ConfigPath: validPath, ConfigFormat: agents.FormatJSON})
+	reg.Register(agents.Agent{ID: "cursor", Name: "Cursor", Type: agents.TypeCursor, Status: agents.StatusEnabled, ConfigPath: invalidPath, ConfigFormat: agents.FormatJSON})
+
+	store := NewStore()
+	if err := store.Load(reg); err == nil {
+		t.Fatal("expected malformed config error")
+	}
+	if got := store.List(); len(got) != 1 || got[0].Name != "valid" {
+		t.Fatalf("valid config was discarded with malformed config: %#v", got)
+	}
+}
+
 func TestStore_MergeWithCmdCWrapper(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

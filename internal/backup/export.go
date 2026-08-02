@@ -11,13 +11,14 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
 type Exporter struct {
-	mcpStore   *mcp.Store
-	registry   *agents.Registry
-	baseDir    string
+	mcpStore    *mcp.Store
+	registry    *agents.Registry
+	baseDir     string
 	cfgProvider func() map[string]any // 返回应用设置，用于导出
 }
 
@@ -100,9 +101,9 @@ type ImportOptions struct {
 }
 
 type ImportResult struct {
-	MCPApplied       int            `json:"mcpApplied"`
-	MCPSkipped       int            `json:"mcpSkipped"`
-	AgentStatusApplied int          `json:"agentStatusApplied"`
+	MCPApplied         int            `json:"mcpApplied"`
+	MCPSkipped         int            `json:"mcpSkipped"`
+	AgentStatusApplied int            `json:"agentStatusApplied"`
 	ExportedSettings   map[string]any `json:"exportedSettings,omitempty"` // 快照中的应用设置，由上层决定是否应用
 }
 
@@ -125,8 +126,12 @@ func (e *Exporter) Import(snap Snapshot, opts ImportOptions) (ImportResult, erro
 		}
 	}
 	if opts.ApplyMCP && e.mcpStore != nil {
+		beforeMCP := e.mcpStore.List()
 		count, err := e.applyMCP(snap.MCPServers, opts, &res)
 		if err != nil {
+			if rollbackErr := e.rollbackMCP(beforeMCP); rollbackErr != nil {
+				return res, fmt.Errorf("apply mcp: %w; rollback: %v", err, rollbackErr)
+			}
 			return res, fmt.Errorf("apply mcp: %w", err)
 		}
 		res.MCPApplied = count
@@ -149,6 +154,38 @@ func (e *Exporter) Import(snap Snapshot, opts ImportOptions) (ImportResult, erro
 		}
 	}
 	return res, nil
+}
+
+// rollbackMCP restores the complete MCP state captured before an import.
+// Import currently only adds or updates servers, so restoring the pre-import
+// set means removing new IDs and updating existing IDs back to their previous
+// definitions and bindings.
+func (e *Exporter) rollbackMCP(before []mcp.Server) error {
+	if e.mcpStore == nil || e.registry == nil {
+		return nil
+	}
+	beforeByID := make(map[string]mcp.Server, len(before))
+	for _, srv := range before {
+		beforeByID[srv.ID] = srv
+	}
+
+	var errs []string
+	for _, current := range e.mcpStore.List() {
+		old, existed := beforeByID[current.ID]
+		if !existed {
+			if err := e.mcpStore.Remove(current.ID, e.registry); err != nil {
+				errs = append(errs, fmt.Sprintf("remove %s: %v", current.Name, err))
+			}
+			continue
+		}
+		if err := e.mcpStore.Update(old.ID, old, old.BoundAgents, e.registry); err != nil {
+			errs = append(errs, fmt.Sprintf("restore %s: %v", old.Name, err))
+		}
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("MCP rollback failed: %s", strings.Join(errs, "; "))
+	}
+	return nil
 }
 
 // applyAgentStatus 根据快照中的 Agent 状态恢复启用/禁用

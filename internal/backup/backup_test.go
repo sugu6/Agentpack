@@ -305,6 +305,46 @@ func TestExporterImportNoAgents(t *testing.T) {
 	}
 }
 
+func TestExporterImport_RollsBackEarlierMCPChangesOnFailure(t *testing.T) {
+	dir := t.TempDir()
+	if err := database.Init(filepath.Join(dir, "test.db")); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	configPath := filepath.Join(dir, "claude.json")
+	if err := os.WriteFile(configPath, []byte(`{}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	reg := agents.NewRegistry()
+	reg.Register(agents.Agent{
+		ID: "claude-code", Name: "Claude Code", Type: agents.TypeClaudeCode,
+		Status: agents.StatusEnabled, ConfigPath: configPath, ConfigFormat: agents.FormatJSON,
+	})
+	store := mcp.NewStore()
+	if err := store.Load(reg); err != nil {
+		t.Fatal(err)
+	}
+	ex := NewExporter(store, reg)
+
+	snap := Snapshot{MCPServers: []SnapshotMCP{
+		{Name: "first", Command: "echo", Transport: "stdio"},
+		{Name: "second", Command: "echo", Transport: "stdio", BoundAgents: []string{"missing-agent"}},
+	}}
+	if _, err := ex.Import(snap, ImportOptions{ApplyMCP: true}); err == nil {
+		t.Fatal("expected restore to fail on invalid second agent binding")
+	}
+	if _, ok := store.FindByName("first"); ok {
+		t.Fatal("first MCP mutation remained after restore failure")
+	}
+	disk, err := mcp.NewBackend(string(agents.TypeClaudeCode)).Read(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(disk) != 0 {
+		t.Fatalf("agent config was not rolled back: %#v", disk)
+	}
+}
+
 func TestManifestFromSnapshot(t *testing.T) {
 	snap := Snapshot{
 		Version:       1,

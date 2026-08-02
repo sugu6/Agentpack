@@ -1,8 +1,8 @@
 package skills
 
 import (
-	"archive/zip"
 	"agentpack/internal/agents"
+	"archive/zip"
 	"fmt"
 	"io"
 	"os"
@@ -43,8 +43,30 @@ func (s *Store) InstallFromZip(zipPath string, agentIDs []string, reg *agents.Re
 		return Skill{}, err
 	}
 
+	// 当 zip 根目录直接含 SKILL.md 时，skillRoot 即解压临时目录，
+	// filepath.Base 是随机名（如 skill-zip-123456），不能作为 SSOT 中的
+	// 技能目录名，需从 zip 文件名推导。
+	if skillRoot == tmpDir {
+		dirName, nameErr := skillDirNameFromZip(zipPath)
+		if nameErr != nil {
+			return Skill{}, nameErr
+		}
+		return s.ImportWithDirName(skillRoot, dirName, agentIDs, reg, "", "")
+	}
+
 	// 3. 调用 Import 纳管（zip 来源无仓库信息）
 	return s.Import(skillRoot, agentIDs, reg, "", "")
+}
+
+// skillDirNameFromZip 从 zip 文件名推导 skill 目录名（去掉扩展名）。
+// 仅用于 zip 根目录直接含 SKILL.md 的场景。
+func skillDirNameFromZip(zipPath string) (string, error) {
+	base := filepath.Base(zipPath)
+	name := strings.TrimSpace(strings.TrimSuffix(base, filepath.Ext(base)))
+	if err := ValidateDirectoryName(name); err != nil {
+		return "", fmt.Errorf("cannot derive skill directory name from %q: %w", base, err)
+	}
+	return name, nil
 }
 
 // extractZip 安全解压 zip 文件到目标目录，防止 Zip Slip（路径穿越）和 zip bomb。
@@ -118,9 +140,14 @@ func extractZipEntry(f *zip.File, dest, destAbs string) error {
 	}
 	defer w.Close()
 
-	// 纵深防御：即使 UncompressedSize64 被篡改，LimitReader 也会阻止超量写入
-	if _, err := io.Copy(w, io.LimitReader(rc, maxZipEntrySize+1)); err != nil {
+	// 纵深防御：即使 UncompressedSize64 被篡改，LimitReader 也会阻止超量写入。
+	// 写入量超过上限时必须报错，不能静默截断后安装一个损坏的 skill。
+	written, err := io.Copy(w, io.LimitReader(rc, maxZipEntrySize+1))
+	if err != nil {
 		return fmt.Errorf("write file %s: %w", target, err)
+	}
+	if written > maxZipEntrySize {
+		return fmt.Errorf("zip entry %s exceeds size limit: more than %d bytes", f.Name, maxZipEntrySize)
 	}
 	return nil
 }

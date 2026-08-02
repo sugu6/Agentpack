@@ -87,13 +87,14 @@ type SkillConflict struct {
 
 // UpdateStatus 表示已安装 skill 与远端的差异
 type UpdateStatus struct {
-	SkillID    string `json:"skillId"`
-	Directory  string `json:"directory"`
-	LocalHash  string `json:"localHash"`
-	RemoteHash string `json:"remoteHash"`
-	HasUpdate  bool   `json:"hasUpdate"`
-	CheckedAt  string `json:"checkedAt"`
-	Error      string `json:"error,omitempty"` // 检查失败时的错误信息
+	SkillID      string   `json:"skillId"`
+	Directory    string   `json:"directory"`
+	LocalHash    string   `json:"localHash"`
+	RemoteHash   string   `json:"remoteHash"`
+	HasUpdate    bool     `json:"hasUpdate"`
+	CheckedAt    string   `json:"checkedAt"`
+	ChangedFiles []string `json:"changedFiles,omitempty"` // 与远端有差异的文件（相对技能目录）
+	Error        string   `json:"error,omitempty"`        // 检查失败时的错误信息
 }
 
 // UpdateError records a single skill update failure

@@ -41,6 +41,7 @@ type Store struct {
 	mu       sync.RWMutex
 	servers  map[string]Server
 	bindings map[string]map[string]bool
+	loaded   bool
 	hook     MutationHandler
 }
 
@@ -49,6 +50,15 @@ func NewStore() *Store {
 		servers:  make(map[string]Server),
 		bindings: make(map[string]map[string]bool),
 	}
+}
+
+// Ready reports whether the last Load completed its state/database commit.
+// A true value may still be accompanied by a partial-load error for one or
+// more malformed agent configs.
+func (s *Store) Ready() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.loaded
 }
 
 func (s *Store) SetMutationHandler(h MutationHandler) {
@@ -78,6 +88,9 @@ func (s *Store) notify(action string, detail MutationDetail) {
 }
 
 func (s *Store) Load(reg *agents.Registry) error {
+	s.mu.Lock()
+	s.loaded = false
+	s.mu.Unlock()
 	servers := make(map[string]Server)
 	bindings := make(map[string]map[string]bool)
 
@@ -124,8 +137,9 @@ func (s *Store) Load(reg *agents.Registry) error {
 		}
 	}
 
+	var loadErr error
 	if len(loadErrs) > 0 {
-		return fmt.Errorf("load: %d config(s) failed: %s", len(loadErrs), strings.Join(loadErrs, "; "))
+		loadErr = fmt.Errorf("load: %d config(s) failed: %s", len(loadErrs), strings.Join(loadErrs, "; "))
 	}
 	s.mu.Lock()
 	oldServers := s.servers
@@ -140,10 +154,17 @@ func (s *Store) Load(reg *agents.Registry) error {
 		s.mu.Lock()
 		s.servers = oldServers
 		s.bindings = oldBindings
+		s.loaded = false
 		s.mu.Unlock()
+		if loadErr != nil {
+			return fmt.Errorf("%v; syncDB after load: %w", loadErr, dbErr)
+		}
 		return fmt.Errorf("syncDB after load: %w", dbErr)
 	}
-	return nil
+	s.mu.Lock()
+	s.loaded = true
+	s.mu.Unlock()
+	return loadErr
 }
 
 func recordBinding(bindings map[string]map[string]bool, serverID, agentID string) {
@@ -1081,6 +1102,15 @@ func (s *Store) writeToAgentLocked(server Server, agentID string, reg *agents.Re
 	current, err := backend.Read(ag.ConfigPath)
 	if err != nil {
 		return fmt.Errorf("read: %w", err)
+	}
+	if _, exists := current[server.Name]; exists {
+		managedExisting := false
+		if existing, ok := s.servers[server.ID]; ok && existing.Name == server.Name {
+			managedExisting = s.bindings[server.ID][agentID]
+		}
+		if !managedExisting {
+			return fmt.Errorf("server name %q already exists in agent %s", server.Name, agentID)
+		}
 	}
 	current[server.Name] = server
 	if err := backend.Write(ag.ConfigPath, current); err != nil {

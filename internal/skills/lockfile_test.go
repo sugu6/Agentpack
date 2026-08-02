@@ -222,11 +222,11 @@ func TestWriteAgentsLock_PreservesOtherEntries(t *testing.T) {
 		existingLock := AgentsLockFile{
 			Skills: map[string]AgentsLockSkill{
 				"other-tool-skill": {
-					Source:      "other/repo",
-					SourceType:  "github",
-					SourceURL:   "https://github.com/other/repo",
-					SkillPath:   "/other/path",
-					Branch:      "main",
+					Source:       "other/repo",
+					SourceType:   "github",
+					SourceURL:    "https://github.com/other/repo",
+					SkillPath:    "/other/path",
+					Branch:       "main",
 					SourceBranch: "main",
 				},
 			},
@@ -296,6 +296,55 @@ func TestWriteAgentsLock_CorruptedFileNotOverwritten(t *testing.T) {
 		}
 		if string(data) != "{invalid json}" {
 			t.Errorf("expected corrupted file to be preserved, got %q", string(data))
+		}
+	})
+}
+
+func TestRemoveAgentsLockEntry_RemovesEntryAndPreservesOthers(t *testing.T) {
+	withTempHome(t, func(homeDir string) {
+		if err := WriteAgentsLock(AgentsLockEntry{
+			Directory:  "skill-a",
+			Source:     "owner-a/repo",
+			SourceType: "github",
+			SourceURL:  "https://github.com/owner-a/repo",
+			SkillPath:  "/path/a",
+			Branch:     "main",
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := WriteAgentsLock(AgentsLockEntry{
+			Directory:  "skill-b",
+			Source:     "owner-b/repo",
+			SourceType: "github",
+			SourceURL:  "https://github.com/owner-b/repo",
+			SkillPath:  "/path/b",
+			Branch:     "main",
+		}); err != nil {
+			t.Fatal(err)
+		}
+
+		if err := RemoveAgentsLockEntry("skill-a"); err != nil {
+			t.Fatalf("RemoveAgentsLockEntry: %v", err)
+		}
+
+		lock := readLockFile(t, homeDir)
+		if _, ok := lock.Skills["skill-a"]; ok {
+			t.Error("expected 'skill-a' entry to be removed")
+		}
+		if _, ok := lock.Skills["skill-b"]; !ok {
+			t.Error("expected 'skill-b' entry to be preserved")
+		}
+	})
+}
+
+func TestRemoveAgentsLockEntry_NotFoundIsIdempotent(t *testing.T) {
+	withTempHome(t, func(homeDir string) {
+		if err := RemoveAgentsLockEntry("never-existed"); err != nil {
+			t.Fatalf("expected nil for missing entry, got: %v", err)
+		}
+		// 文件不存在时同样应返回 nil 且不报错
+		if _, err := os.Stat(filepath.Join(homeDir, ".agents", ".skill-lock.json")); !os.IsNotExist(err) {
+			t.Error("expected lock file to remain absent")
 		}
 	})
 }

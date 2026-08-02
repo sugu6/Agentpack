@@ -227,6 +227,133 @@ func TestStorageLocation_Valid(t *testing.T) {
 	}
 }
 
+func setupSkillCapableAgentHome(t *testing.T) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("HOME", home)
+	agents.ResetSkillDirCacheForTesting()
+	t.Cleanup(func() {
+		agents.ResetSkillDirCacheForTesting()
+	})
+}
+
+func newSkillTestRegistry() *agents.Registry {
+	reg := agents.NewRegistry()
+	reg.Register(agents.Agent{
+		ID:     "claude-code",
+		Name:   "Claude Code",
+		Status: agents.StatusEnabled,
+	})
+	return reg
+}
+
+func TestImport_DuplicateDoesNotRemoveExistingSSOT(t *testing.T) {
+	setupSkillCapableAgentHome(t)
+	tmp := t.TempDir()
+	ssotDir := filepath.Join(tmp, "ssot")
+	sourceRoot := filepath.Join(tmp, "source")
+	makeSkillDir(t, ssotDir, "duplicate", "---\nname: original\n---\n# original")
+	makeSkillDir(t, sourceRoot, "duplicate", "---\nname: imported\n---\n# imported")
+
+	store := NewStore(ssotDir, SyncMethodCopy)
+	store.skills["skill:duplicate"] = Skill{
+		ID:        "skill:duplicate",
+		Name:      "original",
+		Directory: "duplicate",
+	}
+
+	_, err := store.Import(filepath.Join(sourceRoot, "duplicate"), []string{"claude-code"}, newSkillTestRegistry(), "", "")
+	if err == nil {
+		t.Fatal("expected duplicate import to fail")
+	}
+
+	content, readErr := os.ReadFile(filepath.Join(ssotDir, "duplicate", "SKILL.md"))
+	if readErr != nil {
+		t.Fatalf("existing SSOT skill was removed: %v", readErr)
+	}
+	if string(content) != "---\nname: original\n---\n# original" {
+		t.Fatalf("existing SSOT skill was changed: %q", content)
+	}
+}
+
+func TestImport_SyncFailureDoesNotRegisterSkill(t *testing.T) {
+	setupSkillCapableAgentHome(t)
+	tmp := t.TempDir()
+	ssotDir := filepath.Join(tmp, "ssot")
+	sourceRoot := filepath.Join(tmp, "source")
+	makeSkillDir(t, sourceRoot, "sync-failure", "---\nname: sync-failure\n---\n# body")
+
+	store := NewStore(ssotDir, SyncMethod("invalid"))
+	_, err := store.Import(filepath.Join(sourceRoot, "sync-failure"), []string{"claude-code"}, newSkillTestRegistry(), "", "")
+	if err == nil {
+		t.Fatal("expected import to fail when agent synchronization fails")
+	}
+	if HasSkillManifest(filepath.Join(ssotDir, "sync-failure")) {
+		t.Fatal("failed import left a managed SSOT directory behind")
+	}
+	if _, ok := store.Get("skill:sync-failure"); ok {
+		t.Fatal("failed import registered a skill")
+	}
+}
+
+// TestUninstall_ClearsAgentsLockEntry 验证卸载技能时会同步清理
+// ~/.agents/.skill-lock.json 中的旧仓库记录，避免重装同名技能被错误关联。
+func TestUninstall_ClearsAgentsLockEntry(t *testing.T) {
+	setupSkillCapableAgentHome(t)
+	tmp := t.TempDir()
+	ssotDir := filepath.Join(tmp, "ssot")
+	makeSkillDir(t, ssotDir, "my-skill", "---\nname: my-skill\n---\n# body")
+
+	if err := WriteAgentsLock(AgentsLockEntry{
+		Directory:  "my-skill",
+		Source:     "owner/repo",
+		SourceType: "github",
+		SourceURL:  "https://github.com/owner/repo",
+		SkillPath:  filepath.Join(ssotDir, "my-skill"),
+		Branch:     "main",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	s := NewStore(ssotDir, SyncMethodCopy)
+	s.skills["skill:my-skill"] = Skill{ID: "skill:my-skill", Directory: "my-skill", RepoOwner: "owner", RepoName: "repo"}
+	s.bindings["skill:my-skill"] = map[string]bool{}
+
+	if _, err := s.Uninstall("skill:my-skill", newSkillTestRegistry()); err != nil {
+		t.Fatalf("Uninstall: %v", err)
+	}
+	if _, ok := ParseAgentsLock()["my-skill"]; ok {
+		t.Error("expected lock entry to be removed after uninstall")
+	}
+}
+
+func TestMigrateStorage_ResyncErrorsAreReturned(t *testing.T) {
+	setupSkillCapableAgentHome(t)
+	tmp := t.TempDir()
+	oldDir := filepath.Join(tmp, "old")
+	targetDir := filepath.Join(tmp, "target")
+	makeSkillDir(t, oldDir, "migrate-me", "---\nname: migrate-me\n---\n# body")
+
+	store := NewStore(oldDir, SyncMethod("invalid"))
+	store.skills["skill:migrate-me"] = Skill{ID: "skill:migrate-me", Directory: "migrate-me"}
+	store.bindings["skill:migrate-me"] = map[string]bool{"claude-code": true}
+
+	result, err := store.MigrateStorage(targetDir, newSkillTestRegistry())
+	if err == nil {
+		t.Fatalf("expected migration error, got nil with result errors: %v", result.Errors)
+	}
+	if len(result.Errors) == 0 {
+		t.Fatalf("expected migration errors to be preserved, got %+v", result)
+	}
+	if got := store.SSOTDir(); got != oldDir {
+		t.Fatalf("expected SSOT directory rollback to %q, got %q", oldDir, got)
+	}
+	if !HasSkillManifest(filepath.Join(oldDir, "migrate-me")) {
+		t.Fatal("old SSOT skill was not restored after migration failure")
+	}
+}
+
 // makeSkillDir 在 dir 下创建一个含 SKILL.md 的 skill 子目录
 func makeSkillDir(t *testing.T, dir, name, body string) {
 	t.Helper()

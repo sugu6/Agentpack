@@ -451,6 +451,12 @@ func (a *App) startDownload(url string, offset int64) error {
 				break
 			}
 			if readErr != nil {
+				// 用户主动取消（CancelDownload）时静默退出，不再把状态改写为 Error，
+				// 避免取消后 UI 仍收到"下载失败"的错误事件。
+				if ctx.Err() != nil {
+					removeTmp()
+					return
+				}
 				removeTmp()
 				emitError("update.download.failed", map[string]interface{}{"error": readErr.Error()})
 				return
