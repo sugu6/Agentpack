@@ -263,6 +263,13 @@ func (s *Store) Get(id string) (Skill, bool) {
 }
 
 func (s *Store) Import(path string, agentIDs []string, reg *agents.Registry, repoOwner, repoName string) (Skill, error) {
+	return s.ImportWithDirName(path, filepath.Base(path), agentIDs, reg, repoOwner, repoName)
+}
+
+// ImportWithDirName 与 Import 相同，但允许调用方显式指定 skill 的目录名。
+// 当源目录本身来自解压临时目录（zip/tarball 根目录直接含 SKILL.md）时，
+// filepath.Base(path) 是随机临时目录名，不能作为 SSOT 中的技能目录名。
+func (s *Store) ImportWithDirName(path, dirName string, agentIDs []string, reg *agents.Registry, repoOwner, repoName string) (Skill, error) {
 	// Validate source path
 	info, err := os.Stat(path)
 	if err != nil {
@@ -286,7 +293,6 @@ func (s *Store) Import(path string, agentIDs []string, reg *agents.Registry, rep
 		return Skill{}, fmt.Errorf("read SKILL.md: %w", err)
 	}
 
-	dirName := filepath.Base(path)
 	if err := ValidateDirectoryName(dirName); err != nil {
 		return Skill{}, fmt.Errorf("invalid directory name %q: %w", dirName, err)
 	}
@@ -309,6 +315,28 @@ func (s *Store) Import(path string, agentIDs []string, reg *agents.Registry, rep
 	s.importMu.Lock()
 	defer s.importMu.Unlock()
 
+	// Reject duplicate managed directories before touching the existing SSOT
+	// directory. Importing a duplicate must never delete or overwrite the
+	// already managed skill.
+	dest := filepath.Join(ssotDir, dirName)
+	destExists := false
+	if _, statErr := os.Stat(dest); statErr == nil {
+		destExists = true
+	} else if !os.IsNotExist(statErr) {
+		return Skill{}, fmt.Errorf("stat destination: %w", statErr)
+	}
+	// 磁盘上不存在同名目录时允许替换（如技能目录被外部删除、内存仍保留记录）；
+	// 否则同名即拒绝，防止覆盖已有托管技能。
+	allowReplace := !destExists
+	s.mu.RLock()
+	for _, existing := range s.skills {
+		if existing.Directory == dirName && !allowReplace {
+			s.mu.RUnlock()
+			return Skill{}, fmt.Errorf("skill with directory %q already exists (id: %s)", dirName, existing.ID)
+		}
+	}
+	s.mu.RUnlock()
+
 	// 获取 syncMethod（不在此时检查重复，仅在最终写入阶段检查一次以避免 TOCTOU）
 	var method SyncMethod
 	s.mu.Lock()
@@ -316,7 +344,7 @@ func (s *Store) Import(path string, agentIDs []string, reg *agents.Registry, rep
 	s.mu.Unlock()
 
 	// Copy to SSOT (filesystem I/O — outside the lock)
-	dest := filepath.Join(ssotDir, dirName)
+	copiedDest := false
 	info, err = os.Stat(dest)
 	if err != nil {
 		if !os.IsNotExist(err) {
@@ -326,7 +354,9 @@ func (s *Store) Import(path string, agentIDs []string, reg *agents.Registry, rep
 		if err := os.MkdirAll(ssotDir, 0755); err != nil {
 			return Skill{}, fmt.Errorf("create ssot dir: %w", err)
 		}
+		copiedDest = true
 		if err := copyDirRecursive(path, dest); err != nil {
+			_ = RemovePath(dest)
 			return Skill{}, fmt.Errorf("copy to ssot: %w", err)
 		}
 	}
@@ -337,16 +367,67 @@ func (s *Store) Import(path string, agentIDs []string, reg *agents.Registry, rep
 		log.Printf("warning: skill content hash may be incomplete for %s", dest)
 	}
 
-	// Sync to agent directories (filesystem I/O — outside the lock)
+	// Sync to agent directories (filesystem I/O — outside the lock). Existing
+	// targets are moved aside first so a failed import can restore them.
+	type syncRollback struct {
+		target string
+		backup string
+	}
+	var rollbackDir string
+	var rollbackEntries []syncRollback
+	rollback := func() {
+		for i := len(rollbackEntries) - 1; i >= 0; i-- {
+			entry := rollbackEntries[i]
+			_ = RemovePath(entry.target)
+			if entry.backup != "" {
+				if err := os.Rename(entry.backup, entry.target); err != nil {
+					log.Printf("import rollback: restore %s: %v", entry.target, err)
+				}
+			}
+		}
+		if rollbackDir != "" {
+			_ = RemovePath(rollbackDir)
+		}
+		if copiedDest {
+			_ = RemovePath(dest)
+		}
+	}
+	defer func() {
+		if rollbackDir != "" {
+			_ = RemovePath(rollbackDir)
+		}
+	}()
+
+	var syncErrs []string
 	for _, agID := range agentIDs {
 		agentDir := reg.AgentSkillsDir(agID)
 		if agentDir == "" {
 			continue
 		}
 		target := filepath.Join(agentDir, dirName)
-		if err := SyncToAgentDir(dest, target, method); err != nil {
-			log.Printf("sync skill %s to agent %s: %v", dirName, agID, err)
+		entry := syncRollback{target: target}
+		if _, statErr := os.Lstat(target); statErr == nil {
+			if rollbackDir == "" {
+				rollbackDir, err = os.MkdirTemp("", "skill-import-rollback-")
+				if err != nil {
+					rollback()
+					return Skill{}, fmt.Errorf("create import rollback dir: %w", err)
+				}
+			}
+			entry.backup = filepath.Join(rollbackDir, fmt.Sprintf("target-%d", len(rollbackEntries)))
+			if err := os.Rename(target, entry.backup); err != nil {
+				rollback()
+				return Skill{}, fmt.Errorf("backup existing agent skill %s: %w", target, err)
+			}
 		}
+		rollbackEntries = append(rollbackEntries, entry)
+		if err := SyncToAgentDir(dest, target, method); err != nil {
+			syncErrs = append(syncErrs, fmt.Sprintf("agent %s: %v", agID, err))
+		}
+	}
+	if len(syncErrs) > 0 {
+		rollback()
+		return Skill{}, fmt.Errorf("sync skill %s failed: %s", dirName, strings.Join(syncErrs, "; "))
 	}
 
 	// Re-acquire the lock to update in-memory state.
@@ -357,10 +438,13 @@ func (s *Store) Import(path string, agentIDs []string, reg *agents.Registry, rep
 
 	for _, existing := range s.skills {
 		if existing.Directory == dirName {
-			// 清理已复制到 SSOT 的目录，避免孤立文件残留
-			if removeErr := RemovePath(dest); removeErr != nil {
-				log.Printf("import cleanup: failed to remove duplicate ssot dir %s: %v", dest, removeErr)
+			if allowReplace {
+				break
 			}
+			// Another state-changing operation added the skill while the file
+			// I/O was in progress. Roll back only this import's changes; never
+			// remove the existing managed SSOT directory.
+			rollback()
 			return Skill{}, fmt.Errorf("skill with directory %q already exists (id: %s)", dirName, existing.ID)
 		}
 	}
@@ -399,7 +483,6 @@ func (s *Store) Import(path string, agentIDs []string, reg *agents.Registry, rep
 	for _, agID := range agentIDs {
 		s.recordBindingLocked(skillID, agID)
 	}
-
 	return sk, nil
 }
 
@@ -533,6 +616,11 @@ func (s *Store) Uninstall(skillID string, reg *agents.Registry) (UninstallResult
 		if _, statErr := os.Stat(ssotPath); statErr == nil {
 			return result, fmt.Errorf("failed to remove skill from ssot: %w", err)
 		}
+	}
+	// 清理 ~/.agents/.skill-lock.json 中的旧仓库来源记录，
+	// 避免重装同名技能时被残留的 RepoOwner/RepoName 错误关联。
+	if err := RemoveAgentsLockEntry(dirName); err != nil {
+		log.Printf("remove skill %s from agents lock: %v", dirName, err)
 	}
 
 	// Re-acquire the lock to delete from in-memory state
@@ -944,10 +1032,7 @@ func (s *Store) MigrateStorage(targetDir string, reg *agents.Registry) (Migratio
 	s.ssotDir = targetDir
 	s.mu.Unlock()
 
-	// Resync all skills to agent dirs with new SSOT path
-	if err := s.Resync(reg); err != nil {
-		// Resync 失败，回滚：将文件从 targetDir 移回 oldDir，并恢复 ssotDir 指针
-		log.Printf("migrate storage: resync failed, rolling back: %v", err)
+	rollbackMigration := func() {
 		if rollbackMigrated, rollbackErrs := MigrateSSOTDir(targetDir, oldDir); rollbackErrs != nil {
 			errs = append(errs, rollbackErrs...)
 		} else {
@@ -956,17 +1041,36 @@ func (s *Store) MigrateStorage(targetDir string, reg *agents.Registry) (Migratio
 		s.mu.Lock()
 		s.ssotDir = oldDir
 		s.mu.Unlock()
-		errs = append(errs, fmt.Sprintf("resync after migration: %v", err))
-		// 重新加载以恢复与文件系统一致的状态
 		if loadErr := s.Load(reg); loadErr != nil {
 			errs = append(errs, fmt.Sprintf("reload after rollback: %v", loadErr))
 		}
 	}
 
-	return MigrationResult{
+	// MigrateSSOTDir can move some entries and fail on others. Roll back the
+	// successful moves as well; otherwise the configured and actual SSOT roots
+	// can diverge even before agent resync begins.
+	if len(errs) > 0 {
+		rollbackMigration()
+		result := MigrationResult{Migrated: migrated, Errors: errs}
+		return result, fmt.Errorf("migrate storage completed with %d errors: %s", len(errs), strings.Join(errs, "; "))
+	}
+
+	// Resync all skills to agent dirs with new SSOT path
+	if err := s.Resync(reg); err != nil {
+		// Resync 失败，回滚：将文件从 targetDir 移回 oldDir，并恢复 ssotDir 指针
+		log.Printf("migrate storage: resync failed, rolling back: %v", err)
+		errs = append(errs, fmt.Sprintf("resync after migration: %v", err))
+		rollbackMigration()
+	}
+
+	result := MigrationResult{
 		Migrated: migrated,
 		Errors:   errs,
-	}, nil
+	}
+	if len(errs) > 0 {
+		return result, fmt.Errorf("migrate storage completed with %d errors: %s", len(errs), strings.Join(errs, "; "))
+	}
+	return result, nil
 }
 
 func (s *Store) recordBindingLocked(skillID, agentID string) {

@@ -145,6 +145,48 @@ func parseBranchFromURL(sourceURL string) string {
 	return ""
 }
 
+// readAgentsLock 读取并解析 ~/.agents/.skill-lock.json；
+// 文件不存在时返回空结构（Skills 已初始化）。解析失败返回错误且不改动文件。
+func readAgentsLock() (AgentsLockFile, error) {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return AgentsLockFile{}, fmt.Errorf("get home dir: %w", err)
+	}
+	lockPath := filepath.Join(homeDir, ".agents", ".skill-lock.json")
+	data, err := os.ReadFile(lockPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return AgentsLockFile{Skills: make(map[string]AgentsLockSkill)}, nil
+		}
+		return AgentsLockFile{}, fmt.Errorf("read lock file: %w", err)
+	}
+	var lock AgentsLockFile
+	if err := json.Unmarshal(data, &lock); err != nil {
+		return AgentsLockFile{}, fmt.Errorf("parse lock file: %w", err)
+	}
+	if lock.Skills == nil {
+		lock.Skills = make(map[string]AgentsLockSkill)
+	}
+	return lock, nil
+}
+
+// writeAgentsLock 原子写入 ~/.agents/.skill-lock.json（权限 0600）。
+func writeAgentsLock(lock AgentsLockFile) error {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("get home dir: %w", err)
+	}
+	lockPath := filepath.Join(homeDir, ".agents", ".skill-lock.json")
+	out, err := json.MarshalIndent(lock, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal lock file: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0700); err != nil {
+		return fmt.Errorf("create lock dir: %w", err)
+	}
+	return iowriter.WriteAtomic(lockPath, out, 0600)
+}
+
 // AgentsLockEntry 是写入 ~/.agents/.skill-lock.json 的条目
 type AgentsLockEntry struct {
 	Directory  string // skill 目录名（= key）
@@ -160,27 +202,10 @@ type AgentsLockEntry struct {
 // 存根记录的 Source 和 SourceType 为空，表明来源未知（如 TRAE 内置 / 手动安装）。
 // 后续从市场安装后，InstallMarketSkill 会通过 WriteAgentsLock 更新为正确的 repo 信息。
 func WriteDefaultLockEntries(ssotDir string) error {
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return fmt.Errorf("get home dir: %w", err)
-	}
-	lockPath := filepath.Join(homeDir, ".agents", ".skill-lock.json")
-
 	// 1. 读取现有 lock 文件
-	var lock AgentsLockFile
-	data, err := os.ReadFile(lockPath)
+	lock, err := readAgentsLock()
 	if err != nil {
-		if !os.IsNotExist(err) {
-			return fmt.Errorf("read lock file: %w", err)
-		}
-		lock = AgentsLockFile{Skills: make(map[string]AgentsLockSkill)}
-	} else {
-		if err := json.Unmarshal(data, &lock); err != nil {
-			return fmt.Errorf("parse lock file: %w", err)
-		}
-		if lock.Skills == nil {
-			lock.Skills = make(map[string]AgentsLockSkill)
-		}
+		return err
 	}
 
 	// 2. 扫描 SSOT 目录
@@ -225,16 +250,7 @@ func WriteDefaultLockEntries(ssotDir string) error {
 	if !changed {
 		return nil
 	}
-
-	// 4. 原子写入
-	out, err := json.MarshalIndent(lock, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshal lock file: %w", err)
-	}
-	if err := os.MkdirAll(filepath.Dir(lockPath), 0700); err != nil {
-		return fmt.Errorf("create lock dir: %w", err)
-	}
-	return iowriter.WriteAtomic(lockPath, out, 0600)
+	return writeAgentsLock(lock)
 }
 
 // WriteAgentsLock 向 ~/.agents/.skill-lock.json 追加/更新一条 skill 记录
@@ -244,30 +260,10 @@ func WriteAgentsLock(entry AgentsLockEntry) error {
 		return fmt.Errorf("directory is required")
 	}
 
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return fmt.Errorf("get home dir: %w", err)
-	}
-
-	lockPath := filepath.Join(homeDir, ".agents", ".skill-lock.json")
-
 	// 1. 读取现有 lock 文件
-	var lock AgentsLockFile
-	data, err := os.ReadFile(lockPath)
+	lock, err := readAgentsLock()
 	if err != nil {
-		if !os.IsNotExist(err) {
-			return fmt.Errorf("read lock file: %w", err)
-		}
-		// 文件不存在，初始化空的
-		lock = AgentsLockFile{Skills: make(map[string]AgentsLockSkill)}
-	} else {
-		if err := json.Unmarshal(data, &lock); err != nil {
-			// 读取现有内容失败时**不覆盖**（避免丢失其他工具的记录）
-			return fmt.Errorf("parse existing lock file (not overwriting): %w", err)
-		}
-		if lock.Skills == nil {
-			lock.Skills = make(map[string]AgentsLockSkill)
-		}
+		return err
 	}
 
 	// 2. 更新或新增条目
@@ -285,20 +281,26 @@ func WriteAgentsLock(entry AgentsLockEntry) error {
 		FullPath:     entry.FullPath,
 	}
 
-	// 3. 原子写入（权限 0600）
-	out, err := json.MarshalIndent(lock, "", "  ")
+	return writeAgentsLock(lock)
+}
+
+// RemoveAgentsLockEntry 从 ~/.agents/.skill-lock.json 中删除指定 skill 的记录。
+// 用于卸载技能后清理旧仓库来源，避免重新安装同名技能时被残留的
+// RepoOwner/RepoName 错误关联到已卸载来源的仓库。
+// 文件不存在或条目不存在时返回 nil（幂等）。
+func RemoveAgentsLockEntry(directory string) error {
+	if directory == "" {
+		return fmt.Errorf("directory is required")
+	}
+
+	lock, err := readAgentsLock()
 	if err != nil {
-		return fmt.Errorf("marshal lock file: %w", err)
+		return err
+	}
+	if _, exists := lock.Skills[directory]; !exists {
+		return nil
 	}
 
-	// 确保目录存在
-	if err := os.MkdirAll(filepath.Dir(lockPath), 0700); err != nil {
-		return fmt.Errorf("create lock dir: %w", err)
-	}
-
-	if err := iowriter.WriteAtomic(lockPath, out, 0600); err != nil {
-		return fmt.Errorf("write lock file: %w", err)
-	}
-
-	return nil
+	delete(lock.Skills, directory)
+	return writeAgentsLock(lock)
 }
