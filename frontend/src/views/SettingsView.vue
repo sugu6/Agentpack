@@ -20,6 +20,7 @@ const scrollContainer = ref<HTMLElement | null>(null)
 
 const saving = ref(false)
 const backupLoading = ref<'create' | 'export' | 'import' | null>(null)
+const backfillingSources = ref(false)
 const updateChecking = ref(false)
 const updateResult = ref<UpdateCheckResult | null>(null)
 let saveDirty = false
@@ -163,6 +164,9 @@ async function confirmMigrate() {
   migrateDialog.value.migrating = true
   try {
     const result = await api.skills.migrateStorage(target)
+    if (result?.errors?.length) {
+      throw new Error(result.errors.join('; '))
+    }
     const count = result?.migrated ?? 0
     const next = cloneConfig()
     next.skillStorage = target as 'agentpack' | 'unified'
@@ -206,6 +210,26 @@ async function createBackup() {
     toast.error(t('settings.toast.backupFailed', { error: apiError.message }))
   } finally {
     backupLoading.value = null
+  }
+}
+
+// 从 skills.sh 回填缺失的仓库来源（按下载量优先），方便后续检查/更新
+async function backfillSources() {
+  backfillingSources.value = true
+  try {
+    const res = await api.skills.backfillSources()
+    const matched = res?.matched?.length ?? 0
+    const failed = res?.failed?.length ?? 0
+    if (matched > 0) {
+      toast.success(t('settings.toast.backfillSuccess', { count: matched, failed }))
+    } else {
+      toast.info(t('settings.toast.backfillNoMatch'))
+    }
+    await refreshSkillRepos()
+  } catch (e: unknown) {
+    toast.error(t('settings.toast.backfillFailed', { error: toast.fromError(e, String(e)) }))
+  } finally {
+    backfillingSources.value = false
   }
 }
 
@@ -610,6 +634,17 @@ const marketSourceList = computed(() => {
         <CardDescription>{{ t('settings.skills.reposDesc') }}</CardDescription>
       </CardHeader>
       <CardContent class="space-y-4">
+        <div class="flex items-center justify-between">
+          <div>
+            <Label>{{ t('settings.skills.backfillSource') }}</Label>
+            <p class="text-xs text-muted-foreground">{{ t('settings.skills.backfillDesc') }}</p>
+          </div>
+          <Button variant="outline" size="sm" :disabled="backfillingSources" @click="backfillSources">
+            <PhArrowsClockwise :size="14" :class="{ 'animate-spin': backfillingSources }" />
+            <span>{{ backfillingSources ? t('settings.skills.backfilling') : t('settings.skills.backfillSource') }}</span>
+          </Button>
+        </div>
+        <Separator />
         <div v-if="skillRepos.length === 0" class="text-xs text-muted-foreground">
           {{ t('settings.skills.reposEmpty') }}
         </div>

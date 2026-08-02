@@ -37,6 +37,7 @@ import {
   UninstallSkill,
   AddMcpServer,
   AddSkillRepo,
+  BackfillSkillSources,
   CancelDownload,
   CheckSkillUpdates,
   CheckUpdate,
@@ -289,6 +290,8 @@ export interface UpdateStatus {
   remoteHash: string
   hasUpdate: boolean
   checkedAt: string
+  /** 与远端有差异的文件（相对技能目录），jsDelivr 内容级检测填充 */
+  changedFiles?: string[]
   error?: string
 }
 
@@ -296,6 +299,12 @@ export interface UpdateError {
   skillId: string
   directory: string
   error: string
+}
+
+export interface SkillSourceBackfillResult {
+  matched: string[]
+  unmatched: string[]
+  failed: string[]
 }
 
 function normalizeTheme(theme: string): Theme {
@@ -358,6 +367,7 @@ export const api = {
   skills: {
     list: async () => optimizeToPlainObject(await ListSkills()) as Skill[],
     listCapableAgents: async () => optimizeToPlainObject(await ListSkillCapableAgents()) as Agent[],
+    backfillSources: () => safeCall(() => BackfillSkillSources()) as Promise<SkillSourceBackfillResult>,
     importDirectory: (path: string, agentIDs: string[]) => safeCall(() => ImportSkillDirectory(path, agentIDs)),
     installFromZip: (zipPath: string, agentIDs: string[]) => safeCall(() => InstallSkillFromZip(zipPath, agentIDs)),
     toggleAgent: (id: string, agentID: string, enabled: boolean) => safeCall(() => ToggleSkillAgent(id, agentID, enabled)),
