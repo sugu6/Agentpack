@@ -397,13 +397,12 @@ func VerifySkillSource(ctx context.Context, dir, owner, repo, branch, localDir s
 	if err != nil {
 		return "", false, fmt.Errorf("fetch remote tree: %w", err)
 	}
-	localSKILL, lerr := os.ReadFile(filepath.Join(localDir, "SKILL.md"))
-	if lerr != nil {
-		return "", false, fmt.Errorf("read local SKILL.md: %w", lerr)
-	}
-
 	// 1) 名字优先：skills/{dir} 或 {dir} 目录
 	if fp := resolveSkillDirInTree(tree.files, dir); fp != "" {
+		localSKILL, lerr := os.ReadFile(filepath.Join(localDir, "SKILL.md"))
+		if lerr != nil {
+			return "", false, fmt.Errorf("read local SKILL.md: %w", lerr)
+		}
 		match, verr := remoteSkillMatches(ctx, tree, owner, repo, branch, fp, localSKILL)
 		if verr != nil {
 			return fp, false, verr
@@ -414,6 +413,24 @@ func VerifySkillSource(ctx context.Context, dir, owner, repo, branch, localDir s
 	}
 
 	// 2) 内容优先：扫描仓库中所有含 SKILL.md 的目录（名字不同但内容一致也匹配）
+	fp, serr := findSkillDirByContent(ctx, tree, owner, repo, branch, localDir)
+	if serr != nil {
+		return "", false, serr
+	}
+	if fp != "" {
+		return fp, true, nil
+	}
+	return "", false, nil
+}
+
+// findSkillDirByContent 在远程树中扫描含 SKILL.md 的目录，下载并与本地
+// SKILL.md 字节对比，返回内容一致的首个目录路径（目录名可与本地不同）。
+// 树中无内容一致的技能时返回空串。
+func findSkillDirByContent(ctx context.Context, tree remoteTree, owner, repo, branch, localDir string) (string, error) {
+	localSKILL, lerr := os.ReadFile(filepath.Join(localDir, "SKILL.md"))
+	if lerr != nil {
+		return "", lerr
+	}
 	scanCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	sem := make(chan struct{}, 3)
@@ -454,12 +471,12 @@ func VerifySkillSource(ctx context.Context, dir, owner, repo, branch, localDir s
 	}
 	wg.Wait()
 	if found != "" {
-		return found, true, nil
+		return found, nil
 	}
 	if firstErr != nil {
-		return "", false, firstErr
+		return "", firstErr
 	}
-	return "", false, nil
+	return "", nil
 }
 
 // remoteSkillMatches 下载远程技能目录的 SKILL.md 并与本地内容字节对比。

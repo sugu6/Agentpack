@@ -823,6 +823,100 @@ func TestVerifySkillSource_NameMismatchContentMatch(t *testing.T) {
 	}
 }
 
+// TestCheckUpdates_LocatesByContentWhenNameMismatch 验证：lock fullPath 缺失且
+// 仓库目录名与本地不同（内容优先回填场景）时，检查更新能按内容定位技能目录，
+// 不报"cannot locate"错误、不误报，并把 fullPath 回写 lock。
+func TestCheckUpdates_LocatesByContentWhenNameMismatch(t *testing.T) {
+	setupTestHome(t)
+	tmp := t.TempDir()
+	ssotDir := filepath.Join(tmp, "ssot")
+	makeSkillDir(t, ssotDir, "demo", "same-content")
+	// 树里只有 skills/taste/SKILL.md（目录名不同，内容与本地一致）
+	treeJSON := fmt.Sprintf(`{"name":"repo","type":"directory","files":[
+	  {"name":"skills","type":"directory","files":[
+	    {"name":"taste","type":"directory","files":[
+	      {"name":"SKILL.md","type":"file","hash":%q}
+	    ]}
+	  ]}
+	]}`, contentSHAB64("same-content"))
+	files := map[string]string{
+		"/gh/owner/repo@main/skills/taste/SKILL.md": "same-content",
+	}
+	mockJsDelivr(t, treeJSON, files)
+
+	store := NewStore(ssotDir, SyncMethodSymlink)
+	store.skills["skill:demo"] = Skill{
+		ID: "skill:demo", Directory: "demo",
+		RepoOwner: "owner", RepoName: "repo", RepoBranch: "main",
+		// FullPath 故意缺失（内容优先回填的存量数据）
+	}
+	results := store.CheckUpdates(nil)
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if results[0].Error != "" {
+		t.Fatalf("expected no error when located by content, got %s", results[0].Error)
+	}
+	if results[0].HasUpdate {
+		t.Fatalf("expected no update when content matches, got %+v", results[0])
+	}
+	lockInfo, ok := ParseAgentsLock()["demo"]
+	if !ok || lockInfo.FullPath != "skills/taste" {
+		t.Fatalf("expected lock fullPath fixed to skills/taste, got %+v", lockInfo)
+	}
+}
+
+// TestCheckUpdates_RemovesInvalidSourceWhenNotLocatable 验证：回填关联的仓库
+// 中实际不存在该技能（名字与内容都定位不到）时，检查更新静默跳过（不显示失败）
+// 并移除错误的 lock 来源，避免反复失败。
+func TestCheckUpdates_RemovesInvalidSourceWhenNotLocatable(t *testing.T) {
+	setupTestHome(t)
+	tmp := t.TempDir()
+	ssotDir := filepath.Join(tmp, "ssot")
+	makeSkillDir(t, ssotDir, "demo", "local-content")
+	treeJSON := fmt.Sprintf(`{"name":"repo","type":"directory","files":[
+	  {"name":"skills","type":"directory","files":[
+	    {"name":"other","type":"directory","files":[
+	      {"name":"SKILL.md","type":"file","hash":%q}
+	    ]}
+	  ]}
+	]}`, contentSHAB64("other-content"))
+	files := map[string]string{
+		"/gh/owner/repo@main/skills/other/SKILL.md": "other-content",
+	}
+	mockJsDelivr(t, treeJSON, files)
+
+	// 预置早期回填的错误关联（仓库中不存在 demo 技能）
+	if err := WriteAgentsLock(AgentsLockEntry{
+		Directory:  "demo",
+		Source:     "owner/repo",
+		SourceType: "github",
+		SourceURL:  "https://github.com/owner/repo",
+		Branch:     "main",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	store := NewStore(ssotDir, SyncMethodSymlink)
+	store.skills["skill:demo"] = Skill{
+		ID: "skill:demo", Directory: "demo",
+		RepoOwner: "owner", RepoName: "repo", RepoBranch: "main",
+	}
+	results := store.CheckUpdates(nil)
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if results[0].Error != "" {
+		t.Fatalf("expected no error for invalid source, got %s", results[0].Error)
+	}
+	if results[0].HasUpdate {
+		t.Fatalf("expected no update for invalid source, got %+v", results[0])
+	}
+	if _, ok := ParseAgentsLock()["demo"]; ok {
+		t.Fatal("expected invalid lock entry to be removed")
+	}
+}
+
 // TestDownloadRemoteFile_404StopsImmediately 验证 4xx（资源不存在）时
 // 不再轮询其余 CDN 域名，避免每个域名空等。
 func TestDownloadRemoteFile_404StopsImmediately(t *testing.T) {
