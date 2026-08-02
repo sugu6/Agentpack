@@ -141,21 +141,32 @@ func readAgentsLockForTest(t *testing.T) skills.AgentsLockFile {
 	return lock
 }
 
-func TestApplyBackfillMatches(t *testing.T) {
+func TestApplyBackfillWithVerification(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
-	directories := []string{"code-simplifier", "debugger", "shared"}
+	directories := []string{"code-simplifier", "debugger", "ui-ux-pro-max", "shared"}
 	matches := map[string]market.BackfillMatch{
 		"code-simplifier": {Owner: "simonwong", Repo: "agent-skills", Installs: 1702},
 		"debugger":        {Owner: "shubhamsaboo", Repo: "awesome-llm-apps", Installs: 3238},
+		"ui-ux-pro-max":   {Owner: "nextlevelbuilder", Repo: "ui-ux-pro-max-skill", Installs: 296028},
 	}
-	res := applyBackfillMatches(matches, directories)
-	if len(res.Matched) != 2 || len(res.Unmatched) != 1 || len(res.Failed) != 0 {
+	verify := func(dir string, m market.BackfillMatch) (string, bool, error) {
+		if dir == "ui-ux-pro-max" {
+			// 模拟内容不一致：验证通过但被拒绝写入
+			return "skills/ui-ux-pro-max", false, nil
+		}
+		return "skills/" + dir, true, nil
+	}
+	res := applyBackfillWithVerification(matches, directories, verify)
+	if len(res.Matched) != 2 || len(res.Mismatched) != 1 || len(res.Unmatched) != 1 || len(res.Failed) != 0 {
 		t.Fatalf("unexpected result: %+v", res)
 	}
 	if len(res.Unmatched) != 1 || res.Unmatched[0] != "shared" {
 		t.Fatalf("expected shared unmatched, got %v", res.Unmatched)
+	}
+	if len(res.Mismatched) != 1 || res.Mismatched[0] != "ui-ux-pro-max" {
+		t.Fatalf("expected ui-ux-pro-max mismatched, got %v", res.Mismatched)
 	}
 	lock := readAgentsLockForTest(t)
 	entry, ok := lock.Skills["code-simplifier"]
@@ -168,7 +179,13 @@ func TestApplyBackfillMatches(t *testing.T) {
 	if entry.SourceURL != "https://github.com/simonwong/agent-skills" {
 		t.Fatalf("unexpected source url: %q", entry.SourceURL)
 	}
+	if entry.FullPath != "skills/code-simplifier" {
+		t.Fatalf("expected verified fullPath written to lock, got %q", entry.FullPath)
+	}
 	if _, ok := lock.Skills["shared"]; ok {
 		t.Fatal("expected no lock entry for unmatched shared")
+	}
+	if _, ok := lock.Skills["ui-ux-pro-max"]; ok {
+		t.Fatal("expected no lock entry for mismatched ui-ux-pro-max")
 	}
 }

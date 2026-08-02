@@ -1796,13 +1796,16 @@ func (a *App) MigrateSkillStorage(target string) (skills.MigrationResult, error)
 
 // SkillSourceBackfillResult 是从 skills.sh 回填技能来源的结果统计。
 type SkillSourceBackfillResult struct {
-	Matched   []string `json:"matched"`
-	Unmatched []string `json:"unmatched"`
-	Failed    []string `json:"failed"`
+	Matched    []string `json:"matched"`
+	Mismatched []string `json:"mismatched"`
+	Unmatched  []string `json:"unmatched"`
+	Failed     []string `json:"failed"`
 }
 
 // BackfillSkillSources 从 skills.sh 回填缺少仓库来源的技能，使其支持后续更新。
 // 仅处理 RepoOwner/RepoName 均为空的技能，已有来源的不覆盖。
+// 写入前验证仓库中确实存在同名技能且远程 SKILL.md 与本地一致，
+// 防止把不同来源/版本的技能错误关联到仓库。
 func (a *App) BackfillSkillSources() (SkillSourceBackfillResult, error) {
 	if err := a.assertInit(); err != nil {
 		return SkillSourceBackfillResult{}, err
@@ -1824,6 +1827,7 @@ func (a *App) BackfillSkillSources() (SkillSourceBackfillResult, error) {
 	if len(directories) == 0 {
 		return SkillSourceBackfillResult{}, nil
 	}
+	ssotDir := a.skillsStore.SSOTDir()
 
 	ctx, cancel := market.ContextWithTimeout(120 * time.Second)
 	defer cancel()
@@ -1831,17 +1835,59 @@ func (a *App) BackfillSkillSources() (SkillSourceBackfillResult, error) {
 	if err != nil {
 		return SkillSourceBackfillResult{}, err
 	}
-	return applyBackfillMatches(matches, directories), nil
+	verify := func(dir string, m market.BackfillMatch) (string, bool, error) {
+		return skills.VerifySkillSource(ctx, dir, m.Owner, m.Repo, "main",
+			filepath.Join(ssotDir, dir))
+	}
+	return applyBackfillWithVerification(matches, directories, verify), nil
 }
 
-// applyBackfillMatches 把查询结果写入 ~/.agents/.skill-lock.json 并返回统计。
-// 拆分为独立函数便于单元测试（网络查询由 market.BackfillSkillSources 承担）。
-func applyBackfillMatches(matches map[string]market.BackfillMatch, directories []string) SkillSourceBackfillResult {
+// backfillVerifier 验证单个匹配：返回定位到的 fullPath、是否通过内容验证、错误。
+type backfillVerifier func(dir string, m market.BackfillMatch) (fullPath string, ok bool, err error)
+
+// applyBackfillWithVerification 并发验证匹配项并把通过验证的写入 lock。
+// 拆分为独立函数便于单元测试（网络查询/验证由调用方注入）。
+func applyBackfillWithVerification(matches map[string]market.BackfillMatch, directories []string, verify backfillVerifier) SkillSourceBackfillResult {
+	type verified struct {
+		dir      string
+		fullPath string
+		ok       bool
+		err      error
+	}
+	verifiedMap := make(map[string]verified, len(matches))
+	var mu sync.Mutex
+	sem := make(chan struct{}, 5)
+	var wg sync.WaitGroup
+	for dir, m := range matches {
+		dir, m := dir, m
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			fullPath, ok, err := verify(dir, m)
+			mu.Lock()
+			verifiedMap[dir] = verified{dir: dir, fullPath: fullPath, ok: ok, err: err}
+			mu.Unlock()
+		}()
+	}
+	wg.Wait()
+
 	var res SkillSourceBackfillResult
 	for _, dir := range directories {
 		m, ok := matches[dir]
 		if !ok {
 			res.Unmatched = append(res.Unmatched, dir)
+			continue
+		}
+		v := verifiedMap[dir]
+		if v.err != nil {
+			log.Printf("backfill verify %s: %v", dir, v.err)
+			res.Failed = append(res.Failed, dir)
+			continue
+		}
+		if !v.ok {
+			res.Mismatched = append(res.Mismatched, dir)
 			continue
 		}
 		entry := skills.AgentsLockEntry{
@@ -1850,6 +1896,7 @@ func applyBackfillMatches(matches map[string]market.BackfillMatch, directories [
 			SourceType: "github",
 			SourceURL:  "https://github.com/" + m.Owner + "/" + m.Repo,
 			Branch:     "main",
+			FullPath:   v.fullPath,
 		}
 		if err := skills.WriteAgentsLock(entry); err != nil {
 			log.Printf("backfill source for %s: %v", dir, err)

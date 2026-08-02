@@ -303,6 +303,7 @@ export interface UpdateError {
 
 export interface SkillSourceBackfillResult {
   matched: string[]
+  mismatched: string[]
   unmatched: string[]
   failed: string[]
 }
