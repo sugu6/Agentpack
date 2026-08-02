@@ -19,6 +19,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -381,10 +382,10 @@ func verifyChangedFiles(ctx context.Context, sk Skill, fullPath, branch, ssotPat
 	return realChanged, nil
 }
 
-// VerifySkillSource 验证 skills.sh 匹配到的仓库是否确实包含同名技能，
-// 且远程 SKILL.md 与本地内容一致。用于回填来源前防止把不同来源/版本的
-// 技能错误关联到仓库（错误关联会导致后续更新覆盖本地内容）。
-// 返回定位到的 fullPath（可写入 lock）；仓库中不存在或内容不一致时 ok=false。
+// VerifySkillSource 验证 skills.sh 匹配到的仓库中是否存在与本地内容一致的技能。
+// 先按目录名（skills/{dir}、{dir}）定位验证；名字不符时按内容扫描仓库中
+// 所有含 SKILL.md 的目录——内容一致即可匹配（名字不同也能写入）。
+// 返回定位到的 fullPath（可写入 lock）；仓库中无内容一致的技能时 ok=false。
 func VerifySkillSource(ctx context.Context, dir, owner, repo, branch, localDir string) (fullPath string, ok bool, err error) {
 	if dir == "" || owner == "" || repo == "" {
 		return "", false, fmt.Errorf("dir/owner/repo required")
@@ -396,21 +397,99 @@ func VerifySkillSource(ctx context.Context, dir, owner, repo, branch, localDir s
 	if err != nil {
 		return "", false, fmt.Errorf("fetch remote tree: %w", err)
 	}
-	fullPath = resolveSkillDirInTree(tree.files, dir)
-	if fullPath == "" {
-		return "", false, nil
+	localSKILL, lerr := os.ReadFile(filepath.Join(localDir, "SKILL.md"))
+	if lerr != nil {
+		return "", false, fmt.Errorf("read local SKILL.md: %w", lerr)
 	}
-	remotePath := fullPath + "/SKILL.md"
-	data, err := downloadRemoteFile(ctx, owner, repo, branch, remotePath,
+
+	// 1) 名字优先：skills/{dir} 或 {dir} 目录
+	if fp := resolveSkillDirInTree(tree.files, dir); fp != "" {
+		match, verr := remoteSkillMatches(ctx, tree, owner, repo, branch, fp, localSKILL)
+		if verr != nil {
+			return fp, false, verr
+		}
+		if match {
+			return fp, true, nil
+		}
+	}
+
+	// 2) 内容优先：扫描仓库中所有含 SKILL.md 的目录（名字不同但内容一致也匹配）
+	scanCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	sem := make(chan struct{}, 3)
+	var mu sync.Mutex
+	var found string
+	var firstErr error
+	var wg sync.WaitGroup
+	for _, fp := range skillDirsInTree(tree.files, 30) {
+		fp := fp
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			select {
+			case <-scanCtx.Done():
+				return
+			default:
+			}
+			match, verr := remoteSkillMatches(scanCtx, tree, owner, repo, branch, fp, localSKILL)
+			if verr != nil {
+				mu.Lock()
+				if firstErr == nil {
+					firstErr = verr
+				}
+				mu.Unlock()
+				return
+			}
+			if match {
+				mu.Lock()
+				if found == "" {
+					found = fp
+				}
+				mu.Unlock()
+				cancel()
+			}
+		}()
+	}
+	wg.Wait()
+	if found != "" {
+		return found, true, nil
+	}
+	if firstErr != nil {
+		return "", false, firstErr
+	}
+	return "", false, nil
+}
+
+// remoteSkillMatches 下载远程技能目录的 SKILL.md 并与本地内容字节对比。
+func remoteSkillMatches(ctx context.Context, tree remoteTree, owner, repo, branch, fullPath string, local []byte) (bool, error) {
+	data, err := downloadRemoteFile(ctx, owner, repo, branch, fullPath+"/SKILL.md",
 		tree.source == treeSourceJsDelivr)
 	if err != nil {
-		return "", false, fmt.Errorf("download SKILL.md: %w", err)
+		return false, err
 	}
-	local, lerr := os.ReadFile(filepath.Join(localDir, "SKILL.md"))
-	if lerr != nil || !bytes.Equal(local, data) {
-		return fullPath, false, nil
+	return bytes.Equal(local, data), nil
+}
+
+// skillDirsInTree 返回树中所有含 SKILL.md 的目录路径（排序、去重、限量）。
+func skillDirsInTree(tree map[string]string, max int) []string {
+	seen := make(map[string]bool)
+	var out []string
+	for p := range tree {
+		if strings.HasSuffix(p, "/SKILL.md") {
+			dir := strings.TrimSuffix(p, "/SKILL.md")
+			if !seen[dir] {
+				seen[dir] = true
+				out = append(out, dir)
+			}
+		}
 	}
-	return fullPath, true, nil
+	sort.Strings(out)
+	if len(out) > max {
+		out = out[:max]
+	}
+	return out
 }
 
 // remoteFileURLs 生成同一文件在多个 jsDelivr CDN 主机上的 URL。

@@ -1835,39 +1835,53 @@ func (a *App) BackfillSkillSources() (SkillSourceBackfillResult, error) {
 	if err != nil {
 		return SkillSourceBackfillResult{}, err
 	}
-	verify := func(dir string, m market.BackfillMatch) (string, bool, error) {
-		return skills.VerifySkillSource(ctx, dir, m.Owner, m.Repo, "main",
-			filepath.Join(ssotDir, dir))
+	verify := func(dir string, cands []market.BackfillCandidate) (market.BackfillCandidate, string, bool, bool) {
+		hadNetworkErr := false
+		for _, c := range cands {
+			fp, ok, verr := skills.VerifySkillSource(ctx, dir, c.Owner, c.Repo, "main",
+				filepath.Join(ssotDir, dir))
+			if verr != nil {
+				hadNetworkErr = true
+				continue
+			}
+			if ok {
+				return c, fp, true, false
+			}
+		}
+		return market.BackfillCandidate{}, "", false, hadNetworkErr
 	}
 	return applyBackfillWithVerification(matches, directories, verify), nil
 }
 
-// backfillVerifier 验证单个匹配：返回定位到的 fullPath、是否通过内容验证、错误。
-type backfillVerifier func(dir string, m market.BackfillMatch) (fullPath string, ok bool, err error)
+// backfillVerifier 验证候选列表：按序验证（下载量降序），返回首个内容一致的
+// 匹配（含 fullPath）。ok=false 且 networkErr=true 表示候选全部因网络失败未验证；
+// ok=false 且 networkErr=false 表示候选都验证过但内容不一致。
+type backfillVerifier func(dir string, candidates []market.BackfillCandidate) (match market.BackfillCandidate, fullPath string, ok bool, networkErr bool)
 
 // applyBackfillWithVerification 并发验证匹配项并把通过验证的写入 lock。
 // 拆分为独立函数便于单元测试（网络查询/验证由调用方注入）。
-func applyBackfillWithVerification(matches map[string]market.BackfillMatch, directories []string, verify backfillVerifier) SkillSourceBackfillResult {
+func applyBackfillWithVerification(matches map[string][]market.BackfillCandidate, directories []string, verify backfillVerifier) SkillSourceBackfillResult {
 	type verified struct {
-		dir      string
-		fullPath string
-		ok       bool
-		err      error
+		dir        string
+		match      market.BackfillCandidate
+		fullPath   string
+		ok         bool
+		networkErr bool
 	}
 	verifiedMap := make(map[string]verified, len(matches))
 	var mu sync.Mutex
 	sem := make(chan struct{}, 5)
 	var wg sync.WaitGroup
-	for dir, m := range matches {
-		dir, m := dir, m
+	for dir, cands := range matches {
+		dir, cands := dir, cands
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			fullPath, ok, err := verify(dir, m)
+			m, fullPath, ok, networkErr := verify(dir, cands)
 			mu.Lock()
-			verifiedMap[dir] = verified{dir: dir, fullPath: fullPath, ok: ok, err: err}
+			verifiedMap[dir] = verified{dir: dir, match: m, fullPath: fullPath, ok: ok, networkErr: networkErr}
 			mu.Unlock()
 		}()
 	}
@@ -1875,14 +1889,13 @@ func applyBackfillWithVerification(matches map[string]market.BackfillMatch, dire
 
 	var res SkillSourceBackfillResult
 	for _, dir := range directories {
-		m, ok := matches[dir]
-		if !ok {
+		cands, ok := matches[dir]
+		if !ok || len(cands) == 0 {
 			res.Unmatched = append(res.Unmatched, dir)
 			continue
 		}
 		v := verifiedMap[dir]
-		if v.err != nil {
-			log.Printf("backfill verify %s: %v", dir, v.err)
+		if v.networkErr && !v.ok {
 			res.Failed = append(res.Failed, dir)
 			continue
 		}
@@ -1892,9 +1905,9 @@ func applyBackfillWithVerification(matches map[string]market.BackfillMatch, dire
 		}
 		entry := skills.AgentsLockEntry{
 			Directory:  dir,
-			Source:     m.Owner + "/" + m.Repo,
+			Source:     v.match.Owner + "/" + v.match.Repo,
 			SourceType: "github",
-			SourceURL:  "https://github.com/" + m.Owner + "/" + m.Repo,
+			SourceURL:  "https://github.com/" + v.match.Owner + "/" + v.match.Repo,
 			Branch:     "main",
 			FullPath:   v.fullPath,
 		}

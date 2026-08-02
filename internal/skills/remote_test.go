@@ -752,8 +752,8 @@ func TestVerifySkillSource_ContentMismatchRejected(t *testing.T) {
 	if ok {
 		t.Fatalf("expected ok=false when content differs (fullPath=%q)", fullPath)
 	}
-	if fullPath != "skills/demo" {
-		t.Fatalf("expected located fullPath skills/demo, got %q", fullPath)
+	if fullPath != "" {
+		t.Fatalf("expected empty fullPath when content differs, got %q", fullPath)
 	}
 }
 
@@ -766,15 +766,17 @@ func TestVerifySkillSource_MissingInTree(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(localDir, "SKILL.md"), []byte("x"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	// 树里没有 demo 技能（只有 other）
+	// 树里没有 demo 技能，且其他技能内容也与本地不同 → 不应匹配
 	treeJSON := fmt.Sprintf(`{"name":"repo","type":"directory","files":[
 	  {"name":"skills","type":"directory","files":[
 	    {"name":"other","type":"directory","files":[
 	      {"name":"SKILL.md","type":"file","hash":%q}
 	    ]}
 	  ]}
-	]}`, contentSHAB64("x"))
-	mockJsDelivr(t, treeJSON, nil)
+	]}`, contentSHAB64("other-content"))
+	mockJsDelivr(t, treeJSON, map[string]string{
+		"/gh/owner/repo@main/skills/other/SKILL.md": "other-content",
+	})
 
 	_, ok, err := VerifySkillSource(context.Background(), "demo", "owner", "repo", "main", localDir)
 	if err != nil {
@@ -782,6 +784,42 @@ func TestVerifySkillSource_MissingInTree(t *testing.T) {
 	}
 	if ok {
 		t.Fatal("expected ok=false when skill directory missing in tree")
+	}
+}
+
+// TestVerifySkillSource_NameMismatchContentMatch 验证"内容优先"：
+// 仓库中目录名与本地不同但 SKILL.md 内容一致时，也可匹配并返回真实 fullPath。
+func TestVerifySkillSource_NameMismatchContentMatch(t *testing.T) {
+	tmp := t.TempDir()
+	localDir := filepath.Join(tmp, "demo")
+	if err := os.MkdirAll(localDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(localDir, "SKILL.md"), []byte("same-content"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// 树里只有 skills/taste/SKILL.md（名字不同），内容与本地一致
+	treeJSON := fmt.Sprintf(`{"name":"repo","type":"directory","files":[
+	  {"name":"skills","type":"directory","files":[
+	    {"name":"taste","type":"directory","files":[
+	      {"name":"SKILL.md","type":"file","hash":%q}
+	    ]}
+	  ]}
+	]}`, contentSHAB64("same-content"))
+	files := map[string]string{
+		"/gh/owner/repo@main/skills/taste/SKILL.md": "same-content",
+	}
+	mockJsDelivr(t, treeJSON, files)
+
+	fullPath, ok, err := VerifySkillSource(context.Background(), "demo", "owner", "repo", "main", localDir)
+	if err != nil {
+		t.Fatalf("VerifySkillSource: %v", err)
+	}
+	if !ok {
+		t.Fatalf("expected ok=true when content matches despite name mismatch")
+	}
+	if fullPath != "skills/taste" {
+		t.Fatalf("expected fullPath skills/taste, got %q", fullPath)
 	}
 }
 

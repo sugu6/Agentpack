@@ -146,17 +146,24 @@ func TestApplyBackfillWithVerification(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
 	directories := []string{"code-simplifier", "debugger", "ui-ux-pro-max", "shared"}
-	matches := map[string]market.BackfillMatch{
-		"code-simplifier": {Owner: "simonwong", Repo: "agent-skills", Installs: 1702},
-		"debugger":        {Owner: "shubhamsaboo", Repo: "awesome-llm-apps", Installs: 3238},
-		"ui-ux-pro-max":   {Owner: "nextlevelbuilder", Repo: "ui-ux-pro-max-skill", Installs: 296028},
+	matches := map[string][]market.BackfillCandidate{
+		"code-simplifier": {{Owner: "simonwong", Repo: "agent-skills", Installs: 1702}},
+		"debugger": {
+			{Owner: "software-mansion", Repo: "argent", Installs: 9999},
+			{Owner: "shubhamsaboo", Repo: "awesome-llm-apps", Installs: 500},
+		},
+		"ui-ux-pro-max": {{Owner: "nextlevelbuilder", Repo: "ui-ux-pro-max-skill", Installs: 296028}},
 	}
-	verify := func(dir string, m market.BackfillMatch) (string, bool, error) {
-		if dir == "ui-ux-pro-max" {
-			// 模拟内容不一致：验证通过但被拒绝写入
-			return "skills/ui-ux-pro-max", false, nil
+	verify := func(dir string, cands []market.BackfillCandidate) (market.BackfillCandidate, string, bool, bool) {
+		if dir == "debugger" {
+			// 第一个候选（argent）内容不一致，第二个（awesome-llm-apps）内容一致
+			return cands[1], "skills/debugger", true, false
 		}
-		return "skills/" + dir, true, nil
+		if dir == "ui-ux-pro-max" {
+			// 内容不一致：验证过但被拒绝
+			return market.BackfillCandidate{}, "", false, false
+		}
+		return cands[0], "skills/" + dir, true, false
 	}
 	res := applyBackfillWithVerification(matches, directories, verify)
 	if len(res.Matched) != 2 || len(res.Mismatched) != 1 || len(res.Unmatched) != 1 || len(res.Failed) != 0 {
@@ -181,6 +188,14 @@ func TestApplyBackfillWithVerification(t *testing.T) {
 	}
 	if entry.FullPath != "skills/code-simplifier" {
 		t.Fatalf("expected verified fullPath written to lock, got %q", entry.FullPath)
+	}
+	// debugger 应写入内容一致的第二候选（awesome-llm-apps）
+	dbgEntry, ok := lock.Skills["debugger"]
+	if !ok {
+		t.Fatal("expected lock entry for debugger")
+	}
+	if dbgEntry.Source != "shubhamsaboo/awesome-llm-apps" {
+		t.Fatalf("expected content-matched candidate written, got %q", dbgEntry.Source)
 	}
 	if _, ok := lock.Skills["shared"]; ok {
 		t.Fatal("expected no lock entry for unmatched shared")

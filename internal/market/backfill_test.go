@@ -26,7 +26,7 @@ func skillJSON(id, skillID, name, source string, installs int64) string {
 		id, skillID, name, installs, source)
 }
 
-func TestBackfillSkillSources_ExactMatchPicksHighestInstalls(t *testing.T) {
+func TestBackfillSkillSources_ReturnsCandidatesByInstallsDesc(t *testing.T) {
 	mockSkillsSh(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Query().Get("q") != "code-simplifier" {
 			t.Errorf("unexpected query %q", r.URL.Query().Get("q"))
@@ -39,16 +39,19 @@ func TestBackfillSkillSources_ExactMatchPicksHighestInstalls(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m, ok := matches["code-simplifier"]
-	if !ok {
-		t.Fatal("expected match for code-simplifier")
+	cands, ok := matches["code-simplifier"]
+	if !ok || len(cands) != 2 {
+		t.Fatalf("expected 2 candidates for code-simplifier, got %v", cands)
 	}
-	if m.Owner != "b" || m.Repo != "repo" || m.Installs != 900 {
-		t.Fatalf("expected highest-installs match b/repo, got %+v", m)
+	if cands[0].Owner != "b" || cands[0].Repo != "repo" || cands[0].Installs != 900 {
+		t.Fatalf("expected highest-installs candidate first, got %+v", cands[0])
+	}
+	if cands[1].Installs != 100 {
+		t.Fatalf("expected lower-installs candidate second, got %+v", cands[1])
 	}
 }
 
-func TestBackfillSkillSources_RejectsSubstringMatch(t *testing.T) {
+func TestBackfillSkillSources_IncludesAllGithubCandidates(t *testing.T) {
 	mockSkillsSh(t, func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(searchResponse(
 			skillJSON("mansion/argent/argent-metro-debugger", "argent-metro-debugger", "argent-metro-debugger", "software-mansion/argent", 9999) + "," +
@@ -58,26 +61,31 @@ func TestBackfillSkillSources_RejectsSubstringMatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m, ok := matches["debugger"]
-	if !ok {
-		t.Fatal("expected exact match for debugger")
+	cands, ok := matches["debugger"]
+	if !ok || len(cands) != 2 {
+		t.Fatalf("expected both candidates (content decides), got %v", cands)
 	}
-	if m.Owner != "shubhamsaboo" || m.Repo != "awesome-llm-apps" {
-		t.Fatalf("expected exact skillId match, got %+v", m)
+	if cands[0].Owner != "software-mansion" || cands[0].Installs != 9999 {
+		t.Fatalf("expected argent candidate first by installs, got %+v", cands[0])
 	}
 }
 
-func TestBackfillSkillSources_NoExactMatchSkipped(t *testing.T) {
+func TestBackfillSkillSources_NonGithubSourceFiltered(t *testing.T) {
 	mockSkillsSh(t, func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(searchResponse(
-			skillJSON("x/y/shared-utils", "shared-utils", "shared-utils", "x/y", 100))))
+			skillJSON("smithery/shared", "shared", "shared", "smithery.ai", 9999) + "," +
+				skillJSON("x/y/shared", "shared", "shared", "x/y", 100))))
 	})
 	matches, err := BackfillSkillSources(context.Background(), []string{"shared"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := matches["shared"]; ok {
-		t.Fatal("expected no match for non-exact directory")
+	cands, ok := matches["shared"]
+	if !ok || len(cands) != 1 {
+		t.Fatalf("expected only github candidate (domain filtered), got %v", cands)
+	}
+	if cands[0].Owner != "x" || cands[0].Repo != "y" {
+		t.Fatalf("expected x/y candidate, got %+v", cands[0])
 	}
 }
 

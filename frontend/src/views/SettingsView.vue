@@ -219,12 +219,12 @@ async function backfillSources() {
   try {
     const res = await api.skills.backfillSources()
     const matched = res?.matched?.length ?? 0
-    const mismatched = res?.mismatched?.length ?? 0
+    const skipped = (res?.mismatched?.length ?? 0) + (res?.unmatched?.length ?? 0)
     const failed = res?.failed?.length ?? 0
     if (matched > 0) {
-      toast.success(t('settings.toast.backfillSuccess', { count: matched, mismatched, failed }))
-    } else if (mismatched > 0) {
-      toast.info(t('settings.toast.backfillMismatch', { count: mismatched }))
+      toast.success(t('settings.toast.backfillSuccess', { count: matched, skipped, failed }))
+    } else if (skipped > 0) {
+      toast.info(t('settings.toast.backfillSkipped', { count: skipped }))
     } else {
       toast.info(t('settings.toast.backfillNoMatch'))
     }
