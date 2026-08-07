@@ -3,10 +3,14 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -15,6 +19,7 @@ import (
 	"agentpack/internal/backup"
 	"agentpack/internal/config"
 	"agentpack/internal/database"
+	"agentpack/internal/i18n"
 	"agentpack/internal/market"
 	"agentpack/internal/mcp"
 	"agentpack/internal/skills"
@@ -127,10 +132,14 @@ func (a *App) ServiceStartup(ctx context.Context, options application.ServiceOpt
 	a.mcpStore = mcp.NewStore()
 	if err := a.mcpStore.Load(a.registry); err != nil {
 		addErr("mcp store load", err)
-		// 部分配置损坏时 store 仍加载了可用数据（可读），但阻断写操作，
-		// 避免基于不完整状态覆盖 agent 配置；错误详情经 requireMcpStoreReadyLocked 暴露。
-		a.mcpStoreReady = false
-		a.mcpStoreErr = err.Error()
+		// Store 采用"部分加载"设计：损坏的配置被跳过，其余正常配置仍可管理。
+		// 所有写操作均先读后写（读失败即拒绝写），失败配置不会被覆盖，
+		// 因此不锁死整个模块；仅当数据库同步失败（内存状态已回滚）时才禁止操作。
+		a.mcpStoreReady = a.mcpStore.Ready()
+		a.mcpStoreErr = ""
+		if !a.mcpStoreReady {
+			a.mcpStoreErr = err.Error()
+		}
 	} else {
 		a.mcpStoreReady = true
 		a.mcpStoreErr = ""
@@ -364,8 +373,102 @@ func (a *App) snapshot() (reg *agents.Registry, ms *mcp.Store, mks *market.Store
 	return a.registry, a.mcpStore, a.marketStore, a.skillsStore, a.backups, a.exporter
 }
 
+
+// withStoreOp acquires storeOpMu then mu in order, checks closed, runs fn.
+func (a *App) withStoreOp(fn func() error) error {
+	if err := a.assertInit(); err != nil {
+		return err
+	}
+	a.storeOpMu.Lock()
+	defer a.storeOpMu.Unlock()
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.closed {
+		return fmt.Errorf("app is shutting down")
+	}
+	return fn()
+}
+
+// withStoreOpMcp wraps withStoreOp with an additional mcp store ready check.
+func (a *App) withStoreOpMcp(fn func() error) error {
+	return a.withStoreOp(func() error {
+		if err := a.requireMcpStoreReadyLocked(); err != nil {
+			return err
+		}
+		return fn()
+	})
+}
+
+// withBackups checks closed/nil and invokes fn with the backup manager.
+func (a *App) withBackups(fn func(*backup.Manager) (any, error)) (any, error) {
+	a.mu.RLock()
+	closed, backups := a.closed, a.backups
+	a.mu.RUnlock()
+	if closed {
+		return nil, fmt.Errorf("app is shutting down")
+	}
+	if backups == nil {
+		return nil, fmt.Errorf("backup manager not initialized")
+	}
+	return fn(backups)
+}
+
+// typed snapshot getters - eliminates 5+ ignored underscore values per call.
+func (a *App) getMcp() *mcp.Store       { _, ms, _, _, _, _ := a.snapshot(); return ms }
+func (a *App) getMarket() *market.Store  { _, _, mks, _, _, _ := a.snapshot(); return mks }
+func (a *App) getSkills() *skills.Store  { _, _, _, ss, _, _ := a.snapshot(); return ss }
+func (a *App) getRegistry() *agents.Registry      { reg, _, _, _, _, _ := a.snapshot(); return reg }
+func (a *App) getBackups() *backup.Manager { _, _, _, _, bm, _ := a.snapshot(); return bm }
+func (a *App) getExporterFn() *backup.Exporter   { _, _, _, _, _, ex := a.snapshot(); return ex }
+
+// emitMcpChangedLocked emits agents:changed + mcp:changed (a.mu already held).
+func (a *App) emitMcpChangedLocked() {
+	a.emitAgentsChangedLocked()
+	a.emitLocked("mcp:changed", a.mcpStore.List())
+}
+
+// emitAgentsAndMcpLocked emits agents:changed + mcp:changed (a.mu already held).
+// Safe when mcpStore may be nil.
+func (a *App) emitAgentsAndMcpLocked() {
+	a.emitAgentsChangedLocked()
+	if a.mcpStore != nil {
+		a.emitLocked("mcp:changed", a.mcpStore.List())
+	}
+}
+
+// saveConfigAndClearMarketCache persists config and clears the market cache.
+func (a *App) saveConfigAndClearMarketCache() error {
+	if err := config.Save(a.cfg); err != nil {
+		return err
+	}
+	if a.marketStore != nil {
+		n, _ := a.marketStore.ClearAllCache()
+		log.Printf("saveConfigAndClearMarketCache: cleared %d cache files", n)
+	}
+	return nil
+}
+
+// rebuildTrayIfNeeded rebuilds the tray menu when language changes.
+func (a *App) rebuildTrayIfNeeded(oldLang, newLang string) {
+	if oldLang == newLang || a.tray == nil {
+		return
+	}
+	application.InvokeAsync(func() { rebuildTrayMenu(a.tray, newLang) })
+}
+
+// syncLiteModeIfNeeded restarts/stops the idle timer when lite config changes.
+func (a *App) syncLiteModeIfNeeded(oldEnabled, newEnabled bool) {
+	if oldEnabled == newEnabled {
+		return
+	}
+	if newEnabled {
+		a.restartLiteTimer()
+	} else {
+		a.stopLiteTimer()
+	}
+}
 func (a *App) ListAgents() ([]*agents.Agent, error) {
-	reg, ms, _, _, _, _ := a.snapshot()
+	reg, ms := a.getRegistry(), a.getMcp()
 	if reg == nil {
 		return []*agents.Agent{}, nil
 	}
@@ -410,7 +513,12 @@ func (a *App) RescanAgents() ([]*agents.Agent, error) {
 
 	newMcpStore := mcp.NewStore()
 	if err := newMcpStore.Load(newReg); err != nil {
-		return nil, fmt.Errorf("mcp reload: %w", err)
+		// 部分配置损坏时 store 仍可用（只跳过损坏配置），不中断整个重扫；
+		// 仅当数据库同步失败（状态已回滚）时才中止。
+		if !newMcpStore.Ready() {
+			return nil, fmt.Errorf("mcp reload: %w", err)
+		}
+		log.Printf("mcp reload (partial): %v", err)
 	}
 
 	newSkillsStore := skills.NewStore(ssotDir, skills.SyncMethod(skillSyncMethod))
@@ -441,7 +549,7 @@ func (a *App) RescanAgents() ([]*agents.Agent, error) {
 }
 
 func (a *App) GetAgent(id string) (*agents.Agent, error) {
-	reg, _, _, _, _, _ := a.snapshot()
+	reg := a.getRegistry()
 	if reg == nil {
 		return nil, nil
 	}
@@ -449,26 +557,21 @@ func (a *App) GetAgent(id string) (*agents.Agent, error) {
 }
 
 func (a *App) ToggleAgent(id string, enabled bool) error {
-	a.storeOpMu.Lock()
-	defer a.storeOpMu.Unlock()
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if a.registry == nil {
-		return fmt.Errorf("registry not initialized")
-	}
-	if a.closed {
-		return fmt.Errorf("app is shutting down")
-	}
-	oldDisabled := append([]string{}, a.cfg.DisabledAgents...)
-	a.registry.Toggle(id, enabled)
-	a.cfg.DisabledAgents = a.registry.DisabledIDs()
-	if err := config.Save(a.cfg); err != nil {
-		a.cfg.DisabledAgents = oldDisabled
-		a.registry.ApplyDisabled(oldDisabled)
-		return err
-	}
-	a.emitLocked("agents:changed", a.registry.All())
-	return nil
+	return a.withStoreOp(func() error {
+		if a.registry == nil {
+			return fmt.Errorf("registry not initialized")
+		}
+		oldDisabled := append([]string{}, a.cfg.DisabledAgents...)
+		a.registry.Toggle(id, enabled)
+		a.cfg.DisabledAgents = a.registry.DisabledIDs()
+		if err := config.Save(a.cfg); err != nil {
+			a.cfg.DisabledAgents = oldDisabled
+			a.registry.ApplyDisabled(oldDisabled)
+			return err
+		}
+		a.emitLocked("agents:changed", a.registry.All())
+		return nil
+	})
 }
 
 func (a *App) requireMcpStoreReadyLocked() error {
@@ -484,6 +587,1111 @@ func (a *App) requireMcpStoreReadyLocked() error {
 	return nil
 }
 
+func (a *App) ListMcpServers() ([]mcp.Server, error) {
+	ms := a.getMcp()
+	if ms == nil {
+		return []mcp.Server{}, nil
+	}
+	return ms.List(), nil
+}
+
+func (a *App) ScanMcpServers() (*mcp.ScanResult, error) {
+	reg, ms := a.getRegistry(), a.getMcp()
+	if reg == nil {
+		return nil, fmt.Errorf("registry not initialized")
+	}
+	if ms == nil {
+		return nil, fmt.Errorf("mcp store not initialized")
+	}
+	return ms.Scan(reg), nil
+}
+
+func (a *App) GetMcpServer(id string) (mcp.Server, error) {
+	ms := a.getMcp()
+	if ms == nil {
+		return mcp.Server{}, fmt.Errorf("store not initialized")
+	}
+	srv, ok := ms.Get(id)
+	if !ok {
+		return mcp.Server{}, fmt.Errorf("server %s not found", id)
+	}
+	return srv, nil
+}
+
+func (a *App) GetAgentMcpServers(agentID string) ([]mcp.Server, error) {
+	ms := a.getMcp()
+	if ms == nil {
+		return []mcp.Server{}, nil
+	}
+	return ms.ByAgent(agentID), nil
+}
+
+func (a *App) AddMcpServer(server mcp.Server, agentIDs []string) error {
+	return a.withStoreOpMcp(func() error {
+		if _, err := a.mcpStore.Add(server, agentIDs, a.registry); err != nil {
+			return err
+		}
+		a.emitMcpChangedLocked()
+		return nil
+	})
+}
+
+func (a *App) UpdateMcpServer(id string, server mcp.Server, agentIDs []string) error {
+	return a.withStoreOpMcp(func() error {
+		if err := a.mcpStore.Update(id, server, agentIDs, a.registry); err != nil {
+			return err
+		}
+		a.emitMcpChangedLocked()
+		return nil
+	})
+}
+
+func (a *App) DeleteMcpServer(id string) error {
+	return a.withStoreOpMcp(func() error {
+		if err := a.mcpStore.Remove(id, a.registry); err != nil {
+			return err
+		}
+		a.emitMcpChangedLocked()
+		return nil
+	})
+}
+
+func (a *App) ToggleMcpServerAgent(id, agentID string, enabled bool) error {
+	return a.withStoreOpMcp(func() error {
+		if err := a.mcpStore.ToggleAgent(id, agentID, enabled, a.registry); err != nil {
+			return err
+		}
+		a.emitMcpChangedLocked()
+		return nil
+	})
+}
+
+func (a *App) SearchMarketServers(source, query, cursor string, pageSize int) (*market.SearchResultServers, error) {
+	mks := a.getMarket()
+	if mks == nil {
+		return nil, fmt.Errorf("market store not initialized")
+	}
+	ctx, cancel := market.ContextWithTimeout(120 * time.Second)
+	defer cancel()
+	return mks.Search(ctx, market.Source(source), market.SearchOptions{
+		Query:    query,
+		PageSize: pageSize,
+		Cursor:   cursor,
+	})
+}
+
+func (a *App) GetMarketServer(source, sourceID string) (market.MarketServer, error) {
+	mks := a.getMarket()
+	if mks == nil {
+		return market.MarketServer{}, fmt.Errorf("market store not initialized")
+	}
+	ctx, cancel := market.ContextWithTimeout(15 * time.Second)
+	defer cancel()
+	srv, err := mks.GetServer(ctx, market.Source(source), sourceID)
+	if err != nil {
+		return market.MarketServer{}, err
+	}
+	return *srv, nil
+}
+
+func (a *App) InstallMarketServer(server market.MarketServer, agentIDs []string) (mcp.Server, error) {
+	if err := a.assertInit(); err != nil {
+		return mcp.Server{}, err
+	}
+	if err := a.beginInFlight(); err != nil {
+		return mcp.Server{}, err
+	}
+	defer a.endInFlight()
+	if server.Name == "" {
+		return mcp.Server{}, fmt.Errorf("server name required")
+	}
+	if server.Command == "" && server.URL == "" {
+		return mcp.Server{}, fmt.Errorf("server must have command or url")
+	}
+	env := server.Env
+	if env == nil {
+		env = map[string]string{}
+	}
+	transport := server.Transport
+	if transport == "" {
+		transport = "stdio"
+	}
+	var created mcp.Server
+	err := a.withStoreOpMcp(func() error {
+		var err error
+		created, err = a.mcpStore.Add(mcp.Server{
+			Name:        server.Name,
+			Description: server.Description,
+			Command:     server.Command,
+			Args:        server.Args,
+			Env:         env,
+			Transport:   mcp.Transport(transport),
+			URL:         server.URL,
+			Source:      string(server.Source),
+			SourceID:    server.SourceID,
+		}, agentIDs, a.registry)
+		return err
+	})
+	if err != nil {
+		if errors.Is(err, mcp.ErrDuplicateServer) {
+			return mcp.Server{}, fmt.Errorf("mcp server already exists, use edit to change its agents")
+		}
+		return mcp.Server{}, err
+	}
+	a.emitMcpChangedLocked()
+	return created, nil
+}
+
+// SearchMarketSkills 搜索市场中的 Skills，合并所有来源并按下载量排序
+// SearchMarketSkills 搜索市场 skills
+// source 参数："" 表示搜索全部启用的来源，"github" 仅 GitHub 仓库，"skills-sh" 仅 skills.sh
+// page 从 1 开始，支持分页（无限滚动）
+func (a *App) SearchMarketSkills(query string, pageSize int, page int, source string) (*market.SearchResultSkills, error) {
+	mks := a.getMarket()
+	if mks == nil {
+		return nil, fmt.Errorf("market store not initialized")
+	}
+	// 在锁内读取配置，避免数据竞争
+	var enabledSources []market.Source
+	a.mu.RLock()
+	if a.cfg != nil && a.cfg.Settings.MarketSources != nil {
+		if ms, ok := a.cfg.Settings.MarketSources["github"]; ok && ms.Enabled {
+			enabledSources = append(enabledSources, market.SourceGitHub)
+		}
+		if ms, ok := a.cfg.Settings.MarketSources["skills-sh"]; ok && ms.Enabled {
+			enabledSources = append(enabledSources, market.SourceSkillsSh)
+		}
+	}
+	a.mu.RUnlock()
+	// 前端指定了来源时，只搜索该来源
+	if source != "" {
+		var filtered []market.Source
+		for _, s := range enabledSources {
+			if string(s) == source {
+				filtered = append(filtered, s)
+			}
+		}
+		enabledSources = filtered
+	}
+	log.Printf("SearchMarketSkills: query=%q pageSize=%d page=%d source=%q enabledSources=%v", query, pageSize, page, source, enabledSources)
+	// Skills 搜索可能需要扫描多个 GitHub 仓库（每个仓库含多个 SKILL.md），超时设长一些
+	ctx, cancel := market.ContextWithTimeout(120 * time.Second)
+	defer cancel()
+	result, err := mks.SearchAllSkills(ctx, market.SearchOptions{
+		Query:    query,
+		PageSize: pageSize,
+		Page:     page,
+	}, enabledSources)
+	if err != nil {
+		log.Printf("SearchMarketSkills: SearchAllSkills error: %v", err)
+		return nil, err
+	}
+	log.Printf("SearchMarketSkills: result total=%d items=%d hasMore=%v nextPage=%q", result.Total, len(result.Items), result.HasMore, result.NextPage)
+	return result, nil
+}
+
+// InstallMarketSkill 从远程仓库 tarball 安装 skill 到指定 agents
+func (a *App) InstallMarketSkill(skill market.MarketSkill, agentIDs []string) (skills.Skill, error) {
+	if err := a.assertInit(); err != nil {
+		return skills.Skill{}, err
+	}
+	if err := a.beginInFlight(); err != nil {
+		return skills.Skill{}, err
+	}
+	defer a.endInFlight()
+	a.storeOpMu.Lock()
+	defer a.storeOpMu.Unlock()
+
+	if skill.Directory == "" {
+		return skills.Skill{}, fmt.Errorf("skill directory required")
+	}
+	if skill.RepoOwner == "" || skill.RepoName == "" {
+		return skills.Skill{}, fmt.Errorf("skill repo owner/name required")
+	}
+	branch := skill.RepoBranch
+	if branch == "" {
+		branch = "main"
+	}
+
+	// 构造 tarball URL
+	tarballURL := fmt.Sprintf("https://codeload.github.com/%s/%s/tar.gz/refs/heads/%s",
+		skill.RepoOwner, skill.RepoName, branch)
+
+	reg, ss := a.getRegistry(), a.getSkills()
+	if ss == nil || reg == nil {
+		return skills.Skill{}, fmt.Errorf("skills store or registry not initialized")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	input := skills.TarballInstallInput{
+		TarballURL: tarballURL,
+		Directory:  skill.Directory,
+		FullPath:   skill.FullPath, // 传递完整相对路径（如 "skills/pdf"），安装时精准定位
+		RepoOwner:  skill.RepoOwner,
+		RepoName:   skill.RepoName,
+		RepoBranch: branch,
+	}
+	installed, err := ss.InstallFromTarball(ctx, input, agentIDs, reg)
+	if err != nil {
+		return skills.Skill{}, err
+	}
+
+	// 写入 ~/.agents/.skill-lock.json（兼容 CC Switch 等工具）
+	lockEntry := skills.AgentsLockEntry{
+		Directory:  skill.Directory,
+		Source:     skill.RepoOwner + "/" + skill.RepoName,
+		SourceType: "github",
+		SourceURL:  "https://github.com/" + skill.RepoOwner + "/" + skill.RepoName,
+		SkillPath:  filepath.Join(ss.SSOTDir(), skill.Directory),
+		Branch:     branch,
+		FullPath:   skill.FullPath,
+	}
+	if err := skills.WriteAgentsLock(lockEntry); err != nil {
+		// 锁文件写入失败不阻断安装，仅记录日志
+		log.Printf("warning: write agents lock for %s: %v", skill.Directory, err)
+	}
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.emitAgentsChangedLocked()
+	a.emitLocked("skills:changed", ss.List())
+	// 安装成功后异步缓存 Commit SHA 作为更新检测基线
+	go func() {
+		_ = skills.CacheSkillCommitSHA(installed.ID, input.RepoOwner, input.RepoName,
+			input.RepoBranch)
+	}()
+	return installed, nil
+}
+
+// GetSkillRepos 获取当前配置的 GitHub 仓库扫描列表
+func (a *App) GetSkillRepos() ([]config.SkillRepo, error) {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if a.cfg == nil {
+		return nil, nil
+	}
+	// 返回副本，避免外部修改
+	out := make([]config.SkillRepo, len(a.cfg.Settings.SkillRepos))
+	copy(out, a.cfg.Settings.SkillRepos)
+	return out, nil
+}
+
+// AddSkillRepo 添加一个 GitHub 仓库到扫描列表
+func (a *App) AddSkillRepo(repo config.SkillRepo) error {
+	if err := a.assertInit(); err != nil {
+		return err
+	}
+	// 与 UpdateSettings / ToggleAgent 等整份 config 保存操作串行化，
+	// 避免并发 Save 时互相覆盖（丢失对方的变更）。
+	a.storeOpMu.Lock()
+	defer a.storeOpMu.Unlock()
+	if repo.Owner == "" || repo.Name == "" {
+		return fmt.Errorf("repo owner and name required")
+	}
+	if repo.Branch == "" {
+		repo.Branch = "main"
+	}
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.cfg == nil {
+		return fmt.Errorf("config not loaded")
+	}
+	// 检查重复
+	for _, r := range a.cfg.Settings.SkillRepos {
+		if r.Owner == repo.Owner && r.Name == repo.Name {
+			return fmt.Errorf("repo %s/%s already exists", repo.Owner, repo.Name)
+		}
+	}
+	a.cfg.Settings.SkillRepos = append(a.cfg.Settings.SkillRepos, repo)
+	return a.saveConfigAndClearMarketCache()
+}
+
+// RemoveSkillRepo 从扫描列表移除一个 GitHub 仓库
+func (a *App) RemoveSkillRepo(repo config.SkillRepo) error {
+	if err := a.assertInit(); err != nil {
+		return err
+	}
+	a.storeOpMu.Lock()
+	defer a.storeOpMu.Unlock()
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.cfg == nil {
+		return fmt.Errorf("config not loaded")
+	}
+	// 查找并删除
+	found := false
+	updated := a.cfg.Settings.SkillRepos[:0]
+	for _, r := range a.cfg.Settings.SkillRepos {
+		if r.Owner == repo.Owner && r.Name == repo.Name {
+			found = true
+			continue
+		}
+		updated = append(updated, r)
+	}
+	if !found {
+		return fmt.Errorf("repo %s/%s not found", repo.Owner, repo.Name)
+	}
+	a.cfg.Settings.SkillRepos = updated
+	return a.saveConfigAndClearMarketCache()
+}
+
+// UpdateSkillRepo 修改一个已配置的 GitHub 仓库扫描条目
+// original 用于定位原条目(按 Owner+Name 匹配),updated 为新值(整体替换)
+func (a *App) UpdateSkillRepo(original, updated config.SkillRepo) error {
+	if err := a.assertInit(); err != nil {
+		return err
+	}
+	a.storeOpMu.Lock()
+	defer a.storeOpMu.Unlock()
+	if original.Owner == "" || original.Name == "" {
+		return fmt.Errorf("original repo owner and name required")
+	}
+	if updated.Owner == "" || updated.Name == "" {
+		return fmt.Errorf("updated repo owner and name required")
+	}
+	if updated.Branch == "" {
+		updated.Branch = "main"
+	}
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.cfg == nil {
+		return fmt.Errorf("config not loaded")
+	}
+
+	// 1. 定位原条目
+	origIdx := -1
+	for i, r := range a.cfg.Settings.SkillRepos {
+		if r.Owner == original.Owner && r.Name == original.Name {
+			origIdx = i
+			break
+		}
+	}
+	if origIdx == -1 {
+		return fmt.Errorf("repo %s/%s not found", original.Owner, original.Name)
+	}
+
+	// 2. 若 owner/name 发生变化,检查与其他条目冲突
+	if !(updated.Owner == original.Owner && updated.Name == original.Name) {
+		for i, r := range a.cfg.Settings.SkillRepos {
+			if i == origIdx {
+				continue
+			}
+			if r.Owner == updated.Owner && r.Name == updated.Name {
+				return fmt.Errorf("repo %s/%s already exists", updated.Owner, updated.Name)
+			}
+		}
+	}
+
+	// 3. 原地替换
+	a.cfg.Settings.SkillRepos[origIdx] = updated
+
+	return a.saveConfigAndClearMarketCache()
+}
+
+// CheckSkillUpdates 检查已安装 skills 的远程更新（手动触发）
+func (a *App) CheckSkillUpdates() ([]skills.UpdateStatus, error) {
+	if err := a.assertInit(); err != nil {
+		return nil, err
+	}
+	if err := a.beginInFlight(); err != nil {
+		return nil, err
+	}
+	defer a.endInFlight()
+
+	ss := a.getSkills()
+	if ss == nil {
+		return nil, fmt.Errorf("skills store not initialized")
+	}
+	return ss.CheckUpdates(a.registry), nil
+}
+
+// UpdateSkill updates a single skill to the latest remote version
+func (a *App) UpdateSkill(skillID string) (skills.Skill, error) {
+	if err := a.assertInit(); err != nil {
+		return skills.Skill{}, err
+	}
+	if err := a.beginInFlight(); err != nil {
+		return skills.Skill{}, err
+	}
+	defer a.endInFlight()
+	a.storeOpMu.Lock()
+	defer a.storeOpMu.Unlock()
+
+	ss := a.getSkills()
+	if ss == nil {
+		return skills.Skill{}, fmt.Errorf("skills store not initialized")
+	}
+	updated, err := ss.UpdateSkill(skillID, a.registry)
+	if err != nil {
+		return skills.Skill{}, err
+	}
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.emitAgentsChangedLocked()
+	a.emitLocked("skills:changed", ss.List())
+	return updated, nil
+}
+
+// UpdateSkills batch-updates multiple skills
+func (a *App) UpdateSkills(skillIDs []string) (skills.UpdateSkillsResult, error) {
+	if err := a.assertInit(); err != nil {
+		return skills.UpdateSkillsResult{}, err
+	}
+	if err := a.beginInFlight(); err != nil {
+		return skills.UpdateSkillsResult{}, err
+	}
+	defer a.endInFlight()
+	a.storeOpMu.Lock()
+	defer a.storeOpMu.Unlock()
+
+	ss := a.getSkills()
+	if ss == nil {
+		return skills.UpdateSkillsResult{}, fmt.Errorf("skills store not initialized")
+	}
+	result := ss.UpdateSkills(skillIDs, a.registry)
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.emitAgentsChangedLocked()
+	a.emitLocked("skills:changed", ss.List())
+	return result, nil
+}
+
+func (a *App) OpenConfigFolder() error {
+	dir := config.AgentPackDir()
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return err
+	}
+	switch runtime.GOOS {
+	case "windows":
+		return exec.Command("explorer.exe", dir).Start()
+	case "darwin":
+		return exec.Command("open", dir).Start()
+	default:
+		return exec.Command("xdg-open", dir).Start()
+	}
+}
+
+func (a *App) GetStartupErrors() []string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return append([]string{}, a.startupErrors...)
+}
+
+func (a *App) GetSettings() (config.Settings, error) {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if a.cfg == nil {
+		return config.DefaultSettings(), nil
+	}
+	return a.cfg.Settings, nil
+}
+
+func (a *App) UpdateSettings(s config.Settings) error {
+	if err := a.assertInit(); err != nil {
+		return err
+	}
+	if err := a.beginInFlight(); err != nil {
+		return err
+	}
+	defer a.endInFlight()
+
+	// 获取 storeOpMu 以序列化与 RescanAgents、ToggleAgent 等存储操作的并发
+	a.storeOpMu.Lock()
+	defer a.storeOpMu.Unlock()
+
+	res := a.applySettingsLocked(s)
+	newLang := i18n.ResolveLanguage(s.Language)
+	a.rebuildTrayIfNeeded(res.oldLang, newLang)
+	a.syncLiteModeIfNeeded(res.oldLiteEnabled, s.LiteAutoEnabled)
+	a.emit("settings:changed", res.newSettings)
+	return nil
+}
+
+// settingsApplyResult holds data collected during applySettingsLocked.
+type settingsApplyResult struct {
+	newSettings    config.Settings
+	oldLang        string
+	oldLiteEnabled bool
+	oldLiteDelay   int
+}
+
+// applySettingsLocked applies settings changes while holding a.mu.
+// It collects old values before modifying state, performs file I/O outside the lock,
+// and returns the data needed for post-lock side effects (tray rebuild, lite timer).
+func (a *App) applySettingsLocked(s config.Settings) settingsApplyResult {
+	// Normalize backup config
+	if s.BackupRetention <= 0 {
+		if s.BackupCount > 0 {
+			s.BackupRetention = s.BackupCount
+		} else {
+			s.BackupRetention = config.DefaultSettings().BackupRetention
+		}
+	}
+	if s.BackupCount <= 0 {
+		s.BackupCount = s.BackupRetention
+	}
+	s.LiteAutoDelay = config.ClampLiteDelay(s.LiteAutoDelay)
+
+	var oldSkillStorage, oldSkillSyncMethod string
+	var skillsStore *skills.Store
+	var registry *agents.Registry
+	var backups *backup.Manager
+	var oldLang string
+	var oldLiteEnabled bool
+	var oldLiteDelay int
+
+	a.mu.Lock()
+	if a.cfg == nil {
+		a.cfg = config.Default()
+	}
+	oldLiteEnabled = a.cfg.Settings.LiteAutoEnabled
+	oldLiteDelay = a.cfg.Settings.LiteAutoDelay
+	oldSkillStorage = a.cfg.Settings.SkillStorage
+	oldSkillSyncMethod = a.cfg.Settings.SkillSyncMethod
+	oldLang = i18n.ResolveLanguage(a.cfg.Settings.Language)
+	skillsStore = a.skillsStore
+	registry = a.registry
+	backups = a.backups
+	newCfg := *a.cfg
+	newCfg.Settings = s
+	newSettings := newCfg.Settings
+	a.cfg.Settings = newSettings
+	a.refreshBackupHooksLocked()
+	a.mu.Unlock()
+
+	// File I/O outside the lock
+	if skillsStore != nil {
+		if s.SkillSyncMethod != oldSkillSyncMethod {
+			skillsStore.SetSyncMethod(skills.SyncMethod(s.SkillSyncMethod))
+			if err := skillsStore.Resync(registry); err != nil {
+				skillsStore.SetSyncMethod(skills.SyncMethod(oldSkillSyncMethod))
+				a.mu.Lock()
+				if a.cfg != nil {
+					a.cfg.Settings.SkillSyncMethod = oldSkillSyncMethod
+				}
+				a.mu.Unlock()
+				return settingsApplyResult{newSettings: newSettings, oldLang: oldLang, oldLiteEnabled: oldLiteEnabled, oldLiteDelay: oldLiteDelay}
+			}
+		}
+		if s.SkillStorage != oldSkillStorage {
+			newDir := skills.ResolveSSOTDir(skills.StorageLocation(s.SkillStorage))
+			result, err := skillsStore.MigrateStorage(newDir, registry)
+			if err != nil {
+				if s.SkillSyncMethod != oldSkillSyncMethod {
+					skillsStore.SetSyncMethod(skills.SyncMethod(oldSkillSyncMethod))
+					a.mu.Lock()
+					if a.cfg != nil {
+						a.cfg.Settings.SkillSyncMethod = oldSkillSyncMethod
+					}
+					a.mu.Unlock()
+				}
+				return settingsApplyResult{newSettings: newSettings, oldLang: oldLang, oldLiteEnabled: oldLiteEnabled, oldLiteDelay: oldLiteDelay}
+			}
+			if result.Migrated > 0 {
+				log.Printf("migrated %d skills to %s", result.Migrated, newDir)
+			}
+		}
+	}
+
+	if err := config.Save(&newCfg); err != nil {
+		// Keep runtime and persisted settings aligned when the final config
+		// write fails after a filesystem migration.
+		if skillsStore != nil && s.SkillStorage != oldSkillStorage {
+			oldDir := skills.ResolveSSOTDir(skills.StorageLocation(oldSkillStorage))
+			if _, rollbackErr := skillsStore.MigrateStorage(oldDir, registry); rollbackErr != nil {
+				log.Printf("rollback skill storage after settings save failure: %v", rollbackErr)
+			}
+		}
+		if skillsStore != nil && s.SkillSyncMethod != oldSkillSyncMethod {
+			skillsStore.SetSyncMethod(skills.SyncMethod(oldSkillSyncMethod))
+			if rollbackErr := skillsStore.Resync(registry); rollbackErr != nil {
+				log.Printf("rollback skill sync method after settings save failure: %v", rollbackErr)
+			}
+		}
+		// Reset in-memory settings on save failure
+		a.mu.Lock()
+		if a.cfg != nil {
+			a.cfg.Settings.SkillStorage = oldSkillStorage
+			a.cfg.Settings.SkillSyncMethod = oldSkillSyncMethod
+		}
+		a.mu.Unlock()
+		return settingsApplyResult{newSettings: newSettings, oldLang: oldLang, oldLiteEnabled: oldLiteEnabled, oldLiteDelay: oldLiteDelay}
+	}
+
+	// Emit skills:changed if storage or sync method changed
+	if skillsStore != nil && (s.SkillStorage != oldSkillStorage || s.SkillSyncMethod != oldSkillSyncMethod) {
+		a.emit("skills:changed", skillsStore.List())
+	}
+
+	if backups != nil {
+		if err := backups.SetRetention(s.BackupRetention); err != nil {
+			log.Printf("set backup retention: %v", err)
+		}
+	}
+
+	return settingsApplyResult{newSettings: newSettings, oldLang: oldLang, oldLiteEnabled: oldLiteEnabled, oldLiteDelay: oldLiteDelay}
+}
+
+// OpenURL 在系统浏览器中打开指定 URL。
+func (a *App) OpenURL(url string) {
+	switch runtime.GOOS {
+	case "windows":
+		cmd := exec.Command("cmd", "/c", "start", "", url)
+		hideConsoleWindow(cmd)
+		cmd.Start()
+	case "darwin":
+		exec.Command("open", url).Start()
+	default:
+		exec.Command("xdg-open", url).Start()
+	}
+}
+
+// Quit 退出应用程序。设置 allowClose 标志后调用 application.Quit。
+func (a *App) Quit() error {
+	a.mu.Lock()
+	a.allowClose = true
+	closed := a.closed
+	a.mu.Unlock()
+	if closed {
+		return nil
+	}
+	a.wailsApp.Quit()
+	return nil
+}
+
+// HideWindow 隐藏窗口（最小化到系统托盘）。
+func (a *App) HideWindow() {
+	a.mu.RLock()
+	closed := a.closed
+	a.mu.RUnlock()
+	if closed {
+		return
+	}
+	a.wailsApp.Window.Current().Hide()
+}
+
+// ShowWindow 显示窗口（从系统托盘恢复）。同时退出轻量模式并停用空闲计时器，
+// 计时器由前端上报的用户活动（NotifyActivity）重新拉起。
+func (a *App) ShowWindow() {
+	a.liteMu.Lock()
+	wasLite := a.liteMode
+	a.liteMode = false
+	a.stopLiteTimerLocked()
+	a.liteMu.Unlock()
+
+	a.showWindowRaw()
+
+	if wasLite && onLiteModeChanged != nil {
+		onLiteModeChanged(false)
+	}
+}
+
+// showWindowRaw 仅执行窗口显示，不触碰轻量模式状态。
+func (a *App) showWindowRaw() {
+	a.mu.RLock()
+	closed := a.closed
+	a.mu.RUnlock()
+	if closed {
+		return
+	}
+	a.wailsApp.Window.Current().Show()
+}
+
+func (a *App) SetTheme(theme string) {
+	a.mu.RLock()
+	closed := a.closed
+	a.mu.RUnlock()
+	if closed {
+		return
+	}
+
+	// v3 alpha 无运行时 SetTheme 公共 API，通过 WndProcInterceptor 缓存的 HWND
+	// 直接调用 DwmSetWindowAttribute(DWMWA_USE_IMMERSIVE_DARK_MODE) 实现。
+	hwnd := getMainWindowHWND()
+	if hwnd == 0 {
+		return
+	}
+	switch theme {
+	case "dark":
+		SetDarkMode(hwnd, true)
+	case "light":
+		SetDarkMode(hwnd, false)
+	case "system":
+		SetDarkMode(hwnd, isDarkMode())
+	}
+}
+
+func (a *App) PickDirectory() (string, error) {
+	a.mu.RLock()
+	closed := a.closed
+	a.mu.RUnlock()
+	if closed {
+		return "", fmt.Errorf("app not ready")
+	}
+	return a.wailsApp.Dialog.OpenFile().
+		SetTitle("选择目录").
+		CanChooseFiles(false).
+		CanChooseDirectories(true).
+		PromptForSingleSelection()
+}
+
+func (a *App) PickFile(filters string) (string, error) {
+	a.mu.RLock()
+	closed := a.closed
+	a.mu.RUnlock()
+	if closed {
+		return "", fmt.Errorf("app not ready")
+	}
+	dialog := a.wailsApp.Dialog.OpenFile().
+		SetTitle("选择文件")
+	if filters != "" {
+		for _, f := range strings.Split(filters, ",") {
+			f = strings.TrimSpace(f)
+			if f != "" {
+				dialog = dialog.AddFilter(f, f)
+			}
+		}
+	}
+	return dialog.PromptForSingleSelection()
+}
+
+func (a *App) ListBackups() ([]backup.Summary, error) {
+	result, err := a.withBackups(func(m *backup.Manager) (any, error) {
+		return m.ListSummaries()
+	})
+	if err != nil {
+		return nil, err
+	}
+	return result.([]backup.Summary), nil
+}
+
+func (a *App) GetBackup(id string) (backup.Snapshot, error) {
+	result, err := a.withBackups(func(m *backup.Manager) (any, error) {
+		return m.GetSnapshot(id)
+	})
+	if err != nil {
+		return backup.Snapshot{}, err
+	}
+	return result.(backup.Snapshot), nil
+}
+
+func (a *App) DeleteBackup(id string) error {
+	_, err := a.withBackups(func(m *backup.Manager) (any, error) {
+		return nil, m.Delete(id)
+	})
+	return err
+}
+
+func (a *App) RestoreBackup(id string, opts backup.ImportOptions) (backup.ImportResult, error) {
+	if err := a.assertInit(); err != nil {
+		return backup.ImportResult{}, err
+	}
+	if err := a.beginInFlight(); err != nil {
+		return backup.ImportResult{}, err
+	}
+	defer a.endInFlight()
+	a.storeOpMu.Lock()
+	defer a.storeOpMu.Unlock()
+
+	var closed bool
+	var exporter *backup.Exporter
+	var backupsMgr *backup.Manager
+	var mcpErr error
+	a.mu.RLock()
+	closed = a.closed
+	if !closed && opts.ApplyMCP {
+		mcpErr = a.requireMcpStoreReadyLocked()
+	}
+	exporter = a.exporter
+	backupsMgr = a.backups
+	a.mu.RUnlock()
+
+	if closed {
+		return backup.ImportResult{}, fmt.Errorf("app is shutting down")
+	}
+	if mcpErr != nil {
+		return backup.ImportResult{}, mcpErr
+	}
+	if exporter == nil {
+		return backup.ImportResult{}, fmt.Errorf("exporter not initialized")
+	}
+	if backupsMgr == nil {
+		return backup.ImportResult{}, fmt.Errorf("backup manager not initialized")
+	}
+
+	res, err := exporter.RestoreFromBackup(backupsMgr, id, opts)
+	if err != nil {
+		return res, err
+	}
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.closed {
+		return res, nil
+	}
+	a.emitAgentsAndMcpLocked()
+	return res, nil
+}
+
+func (a *App) ExportBackupToFile(id, dest string) (string, error) {
+	result, err := a.withBackups(func(m *backup.Manager) (any, error) {
+		return m.ExportToFile(id, dest)
+	})
+	if err != nil {
+		return "", err
+	}
+	return result.(string), nil
+}
+
+func (a *App) ImportBackupFromFile(src string, opts backup.ImportOptions) (backup.ImportResult, error) {
+	if err := a.assertInit(); err != nil {
+		return backup.ImportResult{}, err
+	}
+	if err := a.beginInFlight(); err != nil {
+		return backup.ImportResult{}, err
+	}
+	defer a.endInFlight()
+	a.storeOpMu.Lock()
+	defer a.storeOpMu.Unlock()
+
+	var closed bool
+	var exporter *backup.Exporter
+	var mcpErr error
+	a.mu.RLock()
+	closed = a.closed
+	if !closed && opts.ApplyMCP {
+		mcpErr = a.requireMcpStoreReadyLocked()
+	}
+	exporter = a.exporter
+	a.mu.RUnlock()
+
+	if closed {
+		return backup.ImportResult{}, fmt.Errorf("app is shutting down")
+	}
+	if mcpErr != nil {
+		return backup.ImportResult{}, mcpErr
+	}
+	if exporter == nil {
+		return backup.ImportResult{}, fmt.Errorf("exporter not initialized")
+	}
+
+	res, err := exporter.ImportFromFile(src, opts)
+	if err != nil {
+		return res, err
+	}
+
+	var importedSettings *config.Settings
+	if opts.ApplySettings && len(res.ExportedSettings) > 0 {
+		data, marshalErr := json.Marshal(res.ExportedSettings)
+		if marshalErr != nil {
+			return res, fmt.Errorf("import: encode settings: %w", marshalErr)
+		}
+		var settings config.Settings
+		if unmarshalErr := json.Unmarshal(data, &settings); unmarshalErr != nil {
+			return res, fmt.Errorf("import: decode settings: %w", unmarshalErr)
+		}
+		if settings.BackupRetention <= 0 {
+			if settings.BackupCount > 0 {
+				settings.BackupRetention = settings.BackupCount
+			} else {
+				settings.BackupRetention = config.DefaultSettings().BackupRetention
+			}
+		}
+		if settings.BackupCount <= 0 {
+			settings.BackupCount = settings.BackupRetention
+		}
+		importedSettings = &settings
+	}
+
+	a.mu.Lock()
+	if a.closed {
+		a.mu.Unlock()
+		return res, nil
+	}
+	if a.cfg == nil {
+		a.cfg = config.Default()
+	}
+	if opts.ApplyAgentStatus && a.registry != nil {
+		a.cfg.DisabledAgents = a.registry.DisabledIDs()
+	}
+	cfgAfterAgentStatus := *a.cfg
+	a.mu.Unlock()
+
+	// Apply imported settings through the normal runtime-aware path. The
+	// current function already owns storeOpMu, so release it before calling
+	// UpdateSettings, which acquires the same lock.
+	if importedSettings != nil {
+		a.storeOpMu.Unlock()
+		settingsErr := a.UpdateSettings(*importedSettings)
+		a.storeOpMu.Lock()
+		if settingsErr != nil {
+			return res, fmt.Errorf("import: apply settings: %w", settingsErr)
+		}
+	} else if opts.ApplyAgentStatus {
+		if err := config.Save(&cfgAfterAgentStatus); err != nil {
+			return res, fmt.Errorf("import: save agent status: %w", err)
+		}
+	}
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.emitAgentsAndMcpLocked()
+	return res, nil
+}
+
+func (a *App) CreateBackupNow(description string) (backup.Summary, error) {
+	a.mu.RLock()
+	closed := a.closed
+	backups := a.backups
+	a.mu.RUnlock()
+	if closed {
+		return backup.Summary{}, fmt.Errorf("app is shutting down")
+	}
+	if backups == nil {
+		return backup.Summary{}, fmt.Errorf("backup manager not initialized")
+	}
+	return backups.Capture("manual", "", "", description)
+}
+
+func (a *App) ListSkills() ([]skills.Skill, error) {
+	ss := a.getSkills()
+	if ss == nil {
+		return []skills.Skill{}, nil
+	}
+	return ss.List(), nil
+}
+
+func (a *App) ListSkillCapableAgents() ([]*agents.Agent, error) {
+	reg := a.getRegistry()
+	if reg == nil {
+		return []*agents.Agent{}, nil
+	}
+	ids := reg.SkillCapableAgentIDs()
+	out := make([]*agents.Agent, 0, len(ids))
+	for _, id := range ids {
+		if ag := reg.Get(id); ag != nil {
+			out = append(out, ag)
+		}
+	}
+	return out, nil
+}
+
+// AutoAdoptSkills 扫描 agent skill 目录，将未管理 skill 自动纳管到 SSOT。
+func (a *App) AutoAdoptSkills() (skills.AdoptionResult, error) {
+	var result skills.AdoptionResult
+	err := a.withStoreOp(func() error {
+		if a.skillsStore == nil {
+			return fmt.Errorf("skills store not initialized")
+		}
+		result = a.skillsStore.AutoAdopt(a.registry)
+		if len(result.Adopted) > 0 || len(result.Conflicts) > 0 {
+			a.emitLocked("skills:changed", a.skillsStore.List())
+		}
+		return nil
+	})
+	return result, err
+}
+
+func (a *App) ImportSkillDirectory(path string, agentIDs []string) (skills.Skill, error) {
+	var sk skills.Skill
+	err := a.withStoreOp(func() error {
+		if a.skillsStore == nil {
+			return fmt.Errorf("skills store not initialized")
+		}
+		var e error
+		sk, e = a.skillsStore.Import(path, agentIDs, a.registry, "", "")
+		if e != nil {
+			return e
+		}
+		a.emitLocked("skills:changed", a.skillsStore.List())
+		return nil
+	})
+	return sk, err
+}
+
+// InstallSkillFromZip 从 zip 文件安装 skill。
+// 解压后自动识别含 SKILL.md 的根目录并纳管到 SSOT，同步到指定 agent 目录。
+func (a *App) InstallSkillFromZip(zipPath string, agentIDs []string) (skills.Skill, error) {
+	var sk skills.Skill
+	err := a.withStoreOp(func() error {
+		if a.skillsStore == nil {
+			return fmt.Errorf("skills store not initialized")
+		}
+		var e error
+		sk, e = a.skillsStore.InstallFromZip(zipPath, agentIDs, a.registry)
+		if e != nil {
+			return e
+		}
+		a.emitLocked("skills:changed", a.skillsStore.List())
+		return nil
+	})
+	return sk, err
+}
+
+func (a *App) ToggleSkillAgent(id, agentID string, enabled bool) error {
+	return a.withStoreOp(func() error {
+		if a.skillsStore == nil {
+			return fmt.Errorf("skills store not initialized")
+		}
+		if err := a.skillsStore.ToggleAgent(id, agentID, enabled, a.registry); err != nil {
+			return err
+		}
+		a.emitLocked("skills:changed", a.skillsStore.List())
+		return nil
+	})
+}
+
+func (a *App) UninstallSkill(id string) (skills.UninstallResult, error) {
+	var result skills.UninstallResult
+	err := a.withStoreOp(func() error {
+		if a.skillsStore == nil {
+			return fmt.Errorf("skills store not initialized")
+		}
+		var e error
+		result, e = a.skillsStore.Uninstall(id, a.registry)
+		if e != nil {
+			return e
+		}
+		a.emitLocked("skills:changed", a.skillsStore.List())
+		return nil
+	})
+	return result, err
+}
+
+func (a *App) ResyncSkills() error {
+	return a.withStoreOp(func() error {
+		if a.skillsStore == nil {
+			return fmt.Errorf("skills store not initialized")
+		}
+		return a.skillsStore.Resync(a.registry)
+	})
+}
+
+// ScanUnmanagedSkills returns skills found in agent directories that are not
+// managed by AgentPack (not present in the SSOT directory). Read-only operation.
+func (a *App) ScanUnmanagedSkills() ([]skills.UnmanagedSkill, error) {
+	if err := a.assertInit(); err != nil {
+		return nil, err
+	}
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if a.closed {
+		return nil, fmt.Errorf("app is shutting down")
+	}
+	if a.skillsStore == nil {
+		return nil, fmt.Errorf("skills store not initialized")
+	}
+	return a.skillsStore.ScanUnmanaged(a.registry), nil
+}
+
+// PauseDownload 暂停当前正在进行的下载
 func (a *App) PauseDownload() error {
 	a.mu.Lock()
 	if a.closed || a.downloadState != DownloadStateDownloading {
@@ -534,4 +1742,149 @@ func (a *App) GetDownloadState() (state string, fileName string, offset int64) {
 		state = "error"
 	}
 	return state, a.downloadPausedFile, a.downloadOffset
+}
+
+func (a *App) MigrateSkillStorage(target string) (skills.MigrationResult, error) {
+	var result skills.MigrationResult
+	err := a.withStoreOp(func() error {
+		if a.skillsStore == nil {
+			return fmt.Errorf("skills store not initialized")
+		}
+		newDir := skills.ResolveSSOTDir(skills.StorageLocation(target))
+		var e error
+		result, e = a.skillsStore.MigrateStorage(newDir, a.registry)
+		if e != nil {
+			return e
+		}
+		a.emitLocked("skills:changed", a.skillsStore.List())
+		return nil
+	})
+	return result, err
+}
+
+// SkillSourceBackfillResult 是从 skills.sh 回填技能来源的结果统计。
+type SkillSourceBackfillResult struct {
+	Matched    []string `json:"matched"`
+	Mismatched []string `json:"mismatched"`
+	Unmatched  []string `json:"unmatched"`
+	Failed     []string `json:"failed"`
+}
+
+// BackfillSkillSources 从 skills.sh 回填缺少仓库来源的技能，使其支持后续更新。
+// 仅处理 RepoOwner/RepoName 均为空的技能，已有来源的不覆盖。
+// 写入前验证仓库中确实存在同名技能且远程 SKILL.md 与本地一致，
+// 防止把不同来源/版本的技能错误关联到仓库。
+func (a *App) BackfillSkillSources() (SkillSourceBackfillResult, error) {
+	if err := a.assertInit(); err != nil {
+		return SkillSourceBackfillResult{}, err
+	}
+	a.mu.RLock()
+	closed := a.closed
+	var directories []string
+	if a.skillsStore != nil {
+		for _, sk := range a.skillsStore.List() {
+			if sk.RepoOwner == "" && sk.RepoName == "" {
+				directories = append(directories, sk.Directory)
+			}
+		}
+	}
+	a.mu.RUnlock()
+	if closed {
+		return SkillSourceBackfillResult{}, fmt.Errorf("app is shutting down")
+	}
+	if len(directories) == 0 {
+		return SkillSourceBackfillResult{}, nil
+	}
+	ssotDir := a.skillsStore.SSOTDir()
+
+	ctx, cancel := market.ContextWithTimeout(120 * time.Second)
+	defer cancel()
+	matches, err := market.BackfillSkillSources(ctx, directories)
+	if err != nil {
+		return SkillSourceBackfillResult{}, err
+	}
+	verify := func(dir string, cands []market.BackfillCandidate) (market.BackfillCandidate, string, bool, bool) {
+		hadNetworkErr := false
+		for _, c := range cands {
+			fp, ok, verr := skills.VerifySkillSource(ctx, dir, c.Owner, c.Repo, "main",
+				filepath.Join(ssotDir, dir))
+			if verr != nil {
+				hadNetworkErr = true
+				continue
+			}
+			if ok {
+				return c, fp, true, false
+			}
+		}
+		return market.BackfillCandidate{}, "", false, hadNetworkErr
+	}
+	return applyBackfillWithVerification(matches, directories, verify), nil
+}
+
+// backfillVerifier 验证候选列表：按序验证（下载量降序），返回首个内容一致的
+// 匹配（含 fullPath）。ok=false 且 networkErr=true 表示候选全部因网络失败未验证；
+// ok=false 且 networkErr=false 表示候选都验证过但内容不一致。
+type backfillVerifier func(dir string, candidates []market.BackfillCandidate) (match market.BackfillCandidate, fullPath string, ok bool, networkErr bool)
+
+// applyBackfillWithVerification 并发验证匹配项并把通过验证的写入 lock。
+// 拆分为独立函数便于单元测试（网络查询/验证由调用方注入）。
+func applyBackfillWithVerification(matches map[string][]market.BackfillCandidate, directories []string, verify backfillVerifier) SkillSourceBackfillResult {
+	type verified struct {
+		dir        string
+		match      market.BackfillCandidate
+		fullPath   string
+		ok         bool
+		networkErr bool
+	}
+	verifiedMap := make(map[string]verified, len(matches))
+	var mu sync.Mutex
+	sem := make(chan struct{}, 5)
+	var wg sync.WaitGroup
+	for dir, cands := range matches {
+		dir, cands := dir, cands
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			m, fullPath, ok, networkErr := verify(dir, cands)
+			mu.Lock()
+			verifiedMap[dir] = verified{dir: dir, match: m, fullPath: fullPath, ok: ok, networkErr: networkErr}
+			mu.Unlock()
+		}()
+	}
+	wg.Wait()
+
+	var res SkillSourceBackfillResult
+	for _, dir := range directories {
+		cands, ok := matches[dir]
+		if !ok || len(cands) == 0 {
+			res.Unmatched = append(res.Unmatched, dir)
+			continue
+		}
+		v := verifiedMap[dir]
+		if v.networkErr && !v.ok {
+			res.Failed = append(res.Failed, dir)
+			continue
+		}
+		if !v.ok {
+			res.Mismatched = append(res.Mismatched, dir)
+			continue
+		}
+		entry := skills.AgentsLockEntry{
+			Directory:  dir,
+			Source:     v.match.Owner + "/" + v.match.Repo,
+			SourceType: "github",
+			SourceURL:  "https://github.com/" + v.match.Owner + "/" + v.match.Repo,
+			Branch:     "main",
+			FullPath:   v.fullPath,
+		}
+		if err := skills.WriteAgentsLock(entry); err != nil {
+			log.Printf("backfill source for %s: %v", dir, err)
+			res.Failed = append(res.Failed, dir)
+			continue
+		}
+		res.Matched = append(res.Matched, dir)
+	}
+	return res
 }
