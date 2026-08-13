@@ -26,7 +26,7 @@
 - Agent 检测以安装位置为准：配置目录残留不再作为已安装证据；Windows 注册表检测过滤已卸载残留条目（物理存在校验），MSI 安装的条目按已安装处理
 - Windows 更新安装直接 CreateProcess 启动安装器（不经 cmd.exe），避免文件名中 & 等元字符被解释
 - 网络请求 User-Agent 统一由应用元数据注入当前版本号（不再硬编码旧版本与旧仓库地址）
-- CI 改进：wails3 CLI 固定 v3.0.0-beta.8（与 Wails 库同步升级）；release 新增 Windows 二进制签名与 macOS 签名/公证；产物附带 SHA256SUMS 校验和
+- CI 改进：wails3 CLI 固定 v3.0.0-beta.8（与 Wails 库同步升级）；release 新增 Windows 二进制签名与 macOS 签名/公证
 - Wails v3 升级到 v3.0.0-beta.8：WebView2 初始化超时与消息泵改进、事件有序分发与背压、Windows 10 1809 原生菜单暗色修复、Linux/GTK 窗口修复等
 - README：新增 macOS .app / DMG 打包任务与 DMG 外观定制变量说明，项目结构同步移除已删除的 lockfile 模块
 

@@ -26,7 +26,7 @@ versioned by [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Agent detection now relies on install locations: leftover config directories no longer count as installed evidence; Windows registry detection filters stale uninstall entries (physical existence checks) while MSI-installed entries are treated as installed
 - Windows update install launches the installer directly via CreateProcess (not through cmd.exe), avoiding interpretation of `&` and other metacharacters in filenames
 - Network request User-Agents are injected with the current version from app metadata (no longer hardcoding an old version and repo URL)
-- CI improvements: wails3 CLI pinned to v3.0.0-beta.8 (upgraded in lockstep with the Wails library); release adds Windows binary signing and macOS signing/notarization; artifacts ship with SHA256SUMS checksums
+- CI improvements: wails3 CLI pinned to v3.0.0-beta.8 (upgraded in lockstep with the Wails library); release adds Windows binary signing and macOS signing/notarization
 - Upgraded Wails v3 to v3.0.0-beta.8: WebView2 initialization deadline and message pump, ordered event dispatch with backpressure, Windows 10 1809 native menu dark-mode fix, Linux/GTK window fixes, and more
 - README: added macOS .app / DMG packaging tasks and DMG appearance customization variables; project structure updated to drop the removed lockfile module
 
