@@ -68,8 +68,12 @@ ManifestDPIAware true
 !insertmacro MUI_LANGUAGE "English" # Set the Language of the installer
 
 ## The following two statements can be used to sign the installer and the uninstaller. The path to the binaries are provided in %1
-#!uninstfinalize 'signtool --file "%1"'
-#!finalize 'signtool --file "%1"'
+## They are inactive by default; define WAILS_SIGN_INSTALLER (e.g. `makensis -DWAILS_SIGN_INSTALLER`)
+## with signtool on PATH to enable. !finalize cannot be conditional on its own, so it is wrapped in !ifdef.
+!ifdef WAILS_SIGN_INSTALLER
+!uninstfinalize 'signtool --file "%1"'
+!finalize 'signtool --file "%1"'
+!endif
 
 Name "${INFO_PRODUCTNAME}"
 OutFile "..\..\..\bin\${INFO_PROJECTNAME}-${ARCH}-installer.exe" # Name of the installer's file.

@@ -2,15 +2,17 @@
 
 package main
 
-// Windows 原生桥接 — 修补 Wails v3 alpha 的已知问题:
+// Windows 原生桥接 — 修补 Wails v3 已知问题:
 // 1. Mica 模式下窗口类背景画刷未替换为透明（导致灰色背景）
-// 2. 无运行时 SetTheme API（标题栏不跟随应用主题切换）
+// 2. 无公开运行时 SetTheme API（标题栏暗色由 SystemThemeChanged 事件驱动 SetDarkMode）
 
 import (
 	"sync"
 	"syscall"
 	"unsafe"
 
+	"github.com/wailsapp/wails/v3/pkg/application"
+	"github.com/wailsapp/wails/v3/pkg/events"
 	"golang.org/x/sys/windows"
 )
 
@@ -19,7 +21,9 @@ var (
 	gdi32Proc            = syscall.NewLazyDLL("gdi32.dll")
 	dwmapiProc           = syscall.NewLazyDLL("dwmapi.dll")
 	procSetClassLongPtr  = user32Proc.NewProc("SetClassLongPtrW")
+	procGetClassLongPtr  = user32Proc.NewProc("GetClassLongPtrW")
 	procCreateSolidBrush = gdi32Proc.NewProc("CreateSolidBrush")
+	procDeleteObject     = gdi32Proc.NewProc("DeleteObject")
 	procSetWindowPos     = user32Proc.NewProc("SetWindowPos")
 	procDwmSetWindowAttr = dwmapiProc.NewProc("DwmSetWindowAttribute")
 )
@@ -86,25 +90,23 @@ func WndProcHook(hwnd uintptr, msg uint32, wParam, lParam uintptr) (uintptr, boo
 			}
 			hwndMu.Unlock()
 		}
-	case 0x001A: // WM_SETTINGCHANGE — 检测系统主题切换
-		// lParam 指向变更的设置名称字符串
-		if lParam != 0 {
-			// WM_SETTINGCHANGE 的 lParam 是指向 NUL 结尾 UTF-16 字符串的指针。
-			// 通过取 lParam 变量地址再解引用还原该指针，避免 uintptr→Pointer
-			// 转换（go vet unsafeptr 检查）。
-			setting := windows.UTF16PtrToString(*(**uint16)(unsafe.Pointer(&lParam)))
-			if setting == "ImmersiveColorSet" {
-				hwndMu.RLock()
-				h := mainWindowHWND
-				hwndMu.RUnlock()
-				if h != 0 {
-					dark := isDarkMode()
-					SetDarkMode(h, dark)
-				}
-			}
-		}
+		// 系统主题切换（WM_SETTINGCHANGE/ImmersiveColorSet）由 wails 内置的
+		// events.Windows.SystemThemeChanged 事件处理，见 registerSystemThemeHook。
 	}
 	return 0, false
+}
+
+// registerSystemThemeHook 在系统深色/浅色切换时同步原生标题栏。
+// v3 beta 内置了 WM_SETTINGCHANGE → SystemThemeChanged 应用事件，
+// 取代旧版在 WndProcHook 中手动解析 "ImmersiveColorSet" 的实现。
+func registerSystemThemeHook(app *application.App) {
+	app.Event.OnApplicationEvent(events.Windows.SystemThemeChanged, func(e *application.ApplicationEvent) {
+		hwnd := getMainWindowHWND()
+		if hwnd == 0 {
+			return
+		}
+		SetDarkMode(hwnd, e.Context().IsDarkMode())
+	})
 }
 
 // fixBackground 替换窗口类背景画刷为透明，
@@ -114,7 +116,18 @@ func fixBackground(hwnd uintptr) {
 	if ret == 0 {
 		return
 	}
-	procSetClassLongPtr.Call(hwnd, gclpHbrBackground, ret)
+	oldBrush, _, _ := procSetClassLongPtr.Call(hwnd, gclpHbrBackground, ret)
+	// 回读窗口类当前采用的画刷，确认替换是否生效，
+	// 避免在替换失败（返回 0）时误删仍由类持有的句柄。
+	current, _, _ := procGetClassLongPtr.Call(hwnd, gclpHbrBackground)
+	if current != ret {
+		// 替换失败：新画刷未被采用，释放它避免 GDI 对象泄漏
+		procDeleteObject.Call(ret)
+		return
+	}
+	// 替换成功：释放被替换的旧画刷，避免 GDI 对象泄漏。
+	// 旧画刷为 NULL 时 DeleteObject 静默返回 0，调用安全。
+	procDeleteObject.Call(oldBrush)
 	// 触发窗口重绘以应用新画刷
 	procSetWindowPos.Call(hwnd, 0, 0, 0, 0, 0,
 		swpFrameChanged|swpNoMove|swpNoSize|swpNoZOrder|swpNoActivate|swpShowWindow)

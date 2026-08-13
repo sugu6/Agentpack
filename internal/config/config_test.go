@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -249,5 +250,26 @@ func TestConfigRoundTrip_Lite(t *testing.T) {
 	}
 	if loaded.Settings.LiteAutoDelay != 30 {
 		t.Errorf("expected liteAutoDelay 30, got %d", loaded.Settings.LiteAutoDelay)
+	}
+}
+
+// TestSanitizePathError 验证路径类错误中的完整路径被替换为基名（L2 回归）。
+func TestSanitizePathError(t *testing.T) {
+	full := filepath.Join("C:\\Users", "alice", ".agentpack", "config.json")
+	secret := filepath.Join("C:\\Users", "alice", ".agentpack", "config.json.corrupt-1")
+	renameErr := &os.LinkError{Op: "rename", Old: full, New: secret, Err: os.ErrPermission}
+	got := sanitizePathError(renameErr)
+	if got == "" {
+		t.Fatal("expected non-empty sanitized error")
+	}
+	if strings.Contains(got, "alice") || strings.Contains(got, "C:\\Users") {
+		t.Errorf("sanitized error must not contain full paths, got %q", got)
+	}
+	if !strings.Contains(got, "config.json") {
+		t.Errorf("sanitized error should retain base names, got %q", got)
+	}
+	// 非路径错误原样返回
+	if sanitizePathError(os.ErrPermission) != os.ErrPermission.Error() {
+		t.Error("non-path error should pass through unchanged")
 	}
 }

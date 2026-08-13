@@ -9,6 +9,7 @@ import (
 	"agentpack/internal/shared"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -37,18 +38,34 @@ type MutationDetail struct {
 	OldConfigs map[string]string
 }
 
+// ErrDuplicateServer 表示 Add/Update 时发现归一化 key（命令/参数或 URL）相同的服务器已存在。
+// 调用方可据此决定跳过而非中止整个流程（如备份导入）。
+// 注意：错误文本带稳定前缀 "duplicate server:"，前端据此区分"同 key 已安装（可跳过）"
+// 与"同名但 key 不同（真实冲突）"，修改文本时务必保留该前缀。
+var ErrDuplicateServer = errors.New("duplicate server: server with same command/url already exists")
+
+// ErrPartialRead 表示配置文件中部分条目无法解析（如危险命令），返回的条目集合可用但不完整。
+// 只读路径（Load/Scan）应保留已解析条目；写路径（write/remove）必须拒绝，
+// 否则整表重写会把未解析的条目静默删除。
+var ErrPartialRead = errors.New("config contains unparsable entries that would be lost on rewrite")
+
 type Store struct {
 	mu       sync.RWMutex
 	servers  map[string]Server
 	bindings map[string]map[string]bool
 	loaded   bool
 	hook     MutationHandler
+	// configCounts 记录最近一次 Load 中每个 agent 配置文件实际检测到的
+	// 服务器数（按归一化 key 去重，未纳入管理的条目也计入），供 Agent
+	// 页面展示"该 agent 配置里有多少 MCP 服务器"。
+	configCounts map[string]int
 }
 
 func NewStore() *Store {
 	return &Store{
-		servers:  make(map[string]Server),
-		bindings: make(map[string]map[string]bool),
+		servers:      make(map[string]Server),
+		bindings:     make(map[string]map[string]bool),
+		configCounts: make(map[string]int),
 	}
 }
 
@@ -91,8 +108,19 @@ func (s *Store) Load(reg *agents.Registry) error {
 	s.mu.Lock()
 	s.loaded = false
 	s.mu.Unlock()
+
+	// 上一会话同步进数据库的服务器 = 用户（或本应用）显式纳管的基线。
+	// 配置文件里存在但基线中不存在的服务器保持"未管理"状态：
+	// 不会自动进入列表（扫描后需用户显式加入），避免其他 agent 的
+	// MCP 配置在应用重启后被静默纳入管理。
+	baseline, err := s.loadManagedBaseline()
+	if err != nil {
+		return fmt.Errorf("load managed baseline: %w", err)
+	}
+
 	servers := make(map[string]Server)
 	bindings := make(map[string]map[string]bool)
+	configCounts := make(map[string]int)
 
 	// 按ConfigPath 分组 agent，共享路径的 agent 只读一次文件
 	pathGroups := make(map[string][]string) // configPath -> []agentID
@@ -113,26 +141,54 @@ func (s *Store) Load(reg *agents.Registry) error {
 		}
 		backend := NewBackend(string(firstAgent.Type))
 		loaded, err := backend.Read(configPath)
-		if err != nil {
+		if err != nil && !errors.Is(err, ErrPartialRead) {
 			errMsg := fmt.Sprintf("read config %s: %v", configPath, err)
 			log.Printf("load: %s", errMsg)
 			loadErrs = append(loadErrs, errMsg)
 			continue
 		}
+		if errors.Is(err, ErrPartialRead) {
+			// 部分条目无法解析：保留可解析条目（只读路径）。写路径会在
+			// writeToAgentLocked/removeFromAgentLocked 拒绝，避免重写丢数据。
+			log.Printf("load: config %s partially readable (unparsable entries skipped)", configPath)
+		}
+		// 统计该配置实际检测到的服务器数（按归一化 key 去重，未纳入管理的
+		// 条目也计入），供 Agent 页面显示"配置里有多少 MCP"。与 Scan 使用
+		// 同一去重口径，保证扫描对话框的条目数与计数一致。
+		detected := len(loaded)
+		if detected > 0 {
+			seen := make(map[string]struct{}, detected)
+			for _, srv := range loaded {
+				seen[scanDedupKey(srv)] = struct{}{}
+			}
+			detected = len(seen)
+		}
+		for _, agID := range agentIDs {
+			configCounts[agID] = detected
+		}
 		for _, srv := range loaded {
 			id := ensureGlobalID(srv.ID)
-			srv.ID = id
+			managedID, ok := matchManagedID(baseline, id, srv)
+			if !ok {
+				// 未纳入管理的服务器：保留在配置文件中（写路径从磁盘合并），
+				// 但不进入列表，等待用户通过扫描对话框显式加入。
+				continue
+			}
 			now := time.Now().UTC().Format(time.RFC3339Nano)
-			if existing, ok := servers[id]; ok {
+			if existing, ok := servers[managedID]; ok {
 				srv.InstalledAt = existing.InstalledAt
+			} else if base, ok := baseline.byID[managedID]; ok && base.InstalledAt != "" {
+				// 沿用上会话记录的安装时间，保持跨重启稳定
+				srv.InstalledAt = base.InstalledAt
 			} else {
 				srv.InstalledAt = now
 			}
 			srv.UpdatedAt = now
-			servers[id] = srv
+			srv.ID = managedID
+			servers[managedID] = srv
 			// 绑定所有共享该 ConfigPath 的agent
 			for _, agID := range agentIDs {
-				recordBinding(bindings, id, agID)
+				recordBinding(bindings, managedID, agID)
 			}
 		}
 	}
@@ -144,8 +200,10 @@ func (s *Store) Load(reg *agents.Registry) error {
 	s.mu.Lock()
 	oldServers := s.servers
 	oldBindings := s.bindings
+	oldCounts := s.configCounts
 	s.servers = servers
 	s.bindings = bindings
+	s.configCounts = configCounts
 	s.mergeDuplicatesLocked()
 	snap := s.captureSyncSnapshotLocked()
 	s.mu.Unlock()
@@ -154,6 +212,7 @@ func (s *Store) Load(reg *agents.Registry) error {
 		s.mu.Lock()
 		s.servers = oldServers
 		s.bindings = oldBindings
+		s.configCounts = oldCounts
 		s.loaded = false
 		s.mu.Unlock()
 		if loadErr != nil {
@@ -167,6 +226,94 @@ func (s *Store) Load(reg *agents.Registry) error {
 	return loadErr
 }
 
+// managedBaseline 表示上一会话同步进数据库的受管服务器集合。
+// Load 以此为准：配置文件里存在但基线未匹配的服务器保持"未管理"，
+// 只有用户通过扫描对话框显式加入（Add）后才会进入基线。
+type managedBaseline struct {
+	byID  map[string]Server // id → 服务器（含确定性 ID 与安装时间）
+	byKey map[string]string // 归一化去重 key → id
+}
+
+// loadManagedBaseline 从数据库读取受管服务器作为 Load 的基线。
+// 返回错误时由调用方按 Load 失败处理。
+func (s *Store) loadManagedBaseline() (managedBaseline, error) {
+	bl := managedBaseline{
+		byID:  make(map[string]Server),
+		byKey: make(map[string]string),
+	}
+	db := database.GetDB()
+	if db == nil {
+		return bl, fmt.Errorf("database not initialized")
+	}
+	rows, err := db.Query(`SELECT id, name, command, args, transport, url, installed_at FROM mcp_servers`)
+	if err != nil {
+		return bl, fmt.Errorf("query managed servers: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			id, name, command, transport, url string
+			argsJSON                           sql.NullString
+			installedAt                        int64
+		)
+		if err := rows.Scan(&id, &name, &command, &argsJSON, &transport, &url, &installedAt); err != nil {
+			return bl, fmt.Errorf("scan managed server row: %w", err)
+		}
+		var args []string
+		if argsJSON.Valid && argsJSON.String != "" {
+			if err := json.Unmarshal([]byte(argsJSON.String), &args); err != nil {
+				// args 损坏的行不作为基线（下一轮 sync 会清理该行）
+				continue
+			}
+		}
+		srv := Server{
+			ID:          id,
+			Name:        name,
+			Command:     command,
+			Args:        args,
+			Transport:   Transport(transport),
+			URL:         url,
+			InstalledAt: time.Unix(installedAt, 0).UTC().Format(time.RFC3339Nano),
+		}
+		bl.byID[id] = srv
+		if _, dup := bl.byKey[scanDedupKey(srv)]; !dup {
+			bl.byKey[scanDedupKey(srv)] = id
+		}
+	}
+	return bl, rows.Err()
+}
+
+// matchManagedID 判断配置文件中的服务器是否已被纳入管理，返回保持的 ID。
+// 匹配顺序：
+//  1. ID 相等（确定性 name@path ID，或上一会话保留的 UUID）；
+//  2. 归一化去重 key 相等（命令/参数或 URL 一致）；
+//  3. 同名唯一兜底——覆盖 AgentPack UI 修改命令导致 key 变化的重启场景；
+//     同名的基线条目不唯一时不猜测，保持未管理。
+func matchManagedID(bl managedBaseline, configID string, srv Server) (string, bool) {
+	if _, ok := bl.byID[configID]; ok {
+		return configID, true
+	}
+	if id, ok := bl.byKey[scanDedupKey(srv)]; ok {
+		return id, true
+	}
+	if srv.Name == "" {
+		return "", false
+	}
+	var picked string
+	for id, b := range bl.byID {
+		if strings.EqualFold(b.Name, srv.Name) {
+			if picked != "" {
+				return "", false
+			}
+			picked = id
+		}
+	}
+	if picked != "" {
+		return picked, true
+	}
+	return "", false
+}
+
 func recordBinding(bindings map[string]map[string]bool, serverID, agentID string) {
 	if bindings[serverID] == nil {
 		bindings[serverID] = make(map[string]bool)
@@ -175,17 +322,12 @@ func recordBinding(bindings map[string]map[string]bool, serverID, agentID string
 }
 
 func (s *Store) mergeDuplicatesLocked() {
-	type cmdKey struct {
-		Command string
-		Args    string
-	}
-
-	keyToIDs := make(map[cmdKey][]string)
+	// 与 scanDedupKey/Add/Update 的"已管理"判定共用同一归一化 key，
+	// 保证加载期合并与会话期去重语义一致（URL 服务器按 URL 合并，而非全部塌缩）。
+	keyToIDs := make(map[string][]string)
 	for id, srv := range s.servers {
-		cmd, args := normalizeCommand(srv.Command, srv.Args)
-		argsJSON, _ := json.Marshal(args)
-		k := cmdKey{Command: cmd, Args: string(argsJSON)}
-		keyToIDs[k] = append(keyToIDs[k], id)
+		key := scanDedupKey(srv)
+		keyToIDs[key] = append(keyToIDs[key], id)
 	}
 
 	for _, ids := range keyToIDs {
@@ -366,10 +508,28 @@ func (s *Store) syncDBFromSnapshot(snap syncSnapshot) error {
 	return err
 }
 
+// AgentMcpCounts 返回每个 Agent 的 MCP 服务器数量。
+// 优先使用最近一次 Load 从配置文件实际检测到的数量（含未纳入管理的条目，
+// 反映"该 agent 配置里有多少 MCP"）；未在配置检测结果中的 agent
+// （如 not_found 或旧数据）回退为绑定计数。
 func (s *Store) AgentMcpCounts() map[string]int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	counts := make(map[string]int)
+	if len(s.configCounts) > 0 {
+		for agID, c := range s.configCounts {
+			counts[agID] = c
+		}
+		// 兜底：不在配置检测结果中的 agent 沿用绑定计数
+		for _, agents := range s.bindings {
+			for agID := range agents {
+				if _, ok := counts[agID]; !ok {
+					counts[agID]++
+				}
+			}
+		}
+		return counts
+	}
 	for _, agents := range s.bindings {
 		for agID := range agents {
 			counts[agID]++
@@ -433,6 +593,7 @@ func (s *Store) Scan(reg *agents.Registry) *ScanResult {
 
 	// 已见 key → items 中的索引，便于把同一 MCP 的多个来源合并到同一 item
 	seenIdx := make(map[string]int)
+	failed := 0
 	for _, configPath := range configPaths {
 		agentIDs := pathGroups[configPath]
 		firstAgent := reg.Get(agentIDs[0])
@@ -441,32 +602,42 @@ func (s *Store) Scan(reg *agents.Registry) *ScanResult {
 		}
 		backend := NewBackend(string(firstAgent.Type))
 		loaded, err := backend.Read(configPath)
-		if err != nil {
+		if err != nil && !errors.Is(err, ErrPartialRead) {
+			failed++
 			log.Printf("scan: read config %s: %v", configPath, err)
+			continue
+		}
+		// 共享同一配置文件的多个 agent 都记录为来源
+		sources := make([]ScanSource, 0, len(agentIDs))
+		for _, agID := range agentIDs {
+			if ag := reg.Get(agID); ag != nil {
+				sources = append(sources, ScanSource{
+					AgentID:    agID,
+					AgentName:  ag.Name,
+					ConfigPath: configPath,
+				})
+			}
+		}
+		if len(sources) == 0 {
 			continue
 		}
 		for _, srv := range loaded {
 			srv.ID = ensureGlobalID(srv.ID)
 			key := scanDedupKey(srv)
 			managed := managedKeys[key]
-			source := ScanSource{
-				AgentID:    agentIDs[0],
-				AgentName:  firstAgent.Name,
-				ConfigPath: configPath,
-			}
 			if idx, ok := seenIdx[key]; ok {
 				// 已存在同一 MCP，仅追加来源信息，不重复添加
-				items[idx].Sources = append(items[idx].Sources, source)
+				items[idx].Sources = append(items[idx].Sources, sources...)
 				continue
 			}
 			seenIdx[key] = len(items)
 			items = append(items, ScanItem{
 				Server:     srv,
 				Managed:    managed,
-				AgentID:    source.AgentID,
-				AgentName:  source.AgentName,
-				ConfigPath: source.ConfigPath,
-				Sources:    []ScanSource{source},
+				AgentID:    sources[0].AgentID,
+				AgentName:  sources[0].AgentName,
+				ConfigPath: sources[0].ConfigPath,
+				Sources:    sources,
 			})
 		}
 	}
@@ -483,6 +654,7 @@ func (s *Store) Scan(reg *agents.Registry) *ScanResult {
 		Total:    len(items),
 		Managed:  managed,
 		NewFound: len(items) - managed,
+		Failed:   failed,
 	}
 }
 
@@ -495,6 +667,21 @@ func scanDedupKey(srv Server) string {
 	}
 	cmd, args := normalizeCommand(srv.Command, srv.Args)
 	return "cmd:" + cmd + "\x00" + strings.Join(append([]string{cmd}, args...), "\x00")
+}
+
+// findServerIDByKeyLocked 返回与 server 归一化 key 相同的已管理服务器 ID
+// （排除 exclude 自身，无则空串）。调用者需持有写锁。
+func (s *Store) findServerIDByKeyLocked(server Server, exclude string) string {
+	key := scanDedupKey(server)
+	for id, srv := range s.servers {
+		if id == exclude {
+			continue
+		}
+		if scanDedupKey(srv) == key {
+			return id
+		}
+	}
+	return ""
 }
 
 func (s *Store) ByAgent(agentID string) []Server {
@@ -579,6 +766,11 @@ func (s *Store) Add(server Server, agentIDs []string, reg *agents.Registry) (Ser
 		} else if _, exists := s.servers[server.ID]; exists {
 			return fmt.Errorf("server with id %s already exists", server.ID)
 		}
+		// 拒绝重复管理：归一化 key（命令/参数或 URL）已存在的服务器应通过
+		// ToggleAgent/Update 复用已有条目，避免 store 内出现同 key 双份。
+		if existingID := s.findServerIDByKeyLocked(server, ""); existingID != "" {
+			return fmt.Errorf("%w (id %s)", ErrDuplicateServer, existingID)
+		}
 		server.InstalledAt = now
 		server.UpdatedAt = now
 
@@ -641,6 +833,12 @@ func (s *Store) Update(id string, server Server, agentIDs []string, reg *agents.
 			return fmt.Errorf("server %s not found", id)
 		}
 		rollbackOld = old
+
+		// 更新后的 key 若与其它服务器冲突则拒绝（排除自身），
+		// 避免 store 内出现同 key 双份、下次 Load 时被静默合并。
+		if collided := s.findServerIDByKeyLocked(server, id); collided != "" {
+			return fmt.Errorf("%w with %s", ErrDuplicateServer, collided)
+		}
 
 		oldAgentIDs := make([]string, 0, len(s.bindings[id]))
 		for agID := range s.bindings[id] {
@@ -923,7 +1121,7 @@ func (s *Store) writeToAgentsLocked(server Server, agentIDs []string, reg *agent
 	if err := validateAgentWritePaths(agentIDs, reg); err != nil {
 		return nil, err
 	}
-	oldConfigs, backupErr := s.backupAgentsLocked(agentIDs, reg)
+	oldConfigs, backupErr := s.backupAgentsLocked(server, agentIDs, reg, true)
 	if backupErr != nil {
 		return oldConfigs, backupErr
 	}
@@ -1034,7 +1232,7 @@ func (s *Store) removeFromAgentsLocked(server Server, agentIDs []string, reg *ag
 	if err := validateAgentWritePaths(agentIDs, reg); err != nil {
 		return nil, err
 	}
-	oldConfigs, backupErr := s.backupAgentsLocked(agentIDs, reg)
+	oldConfigs, backupErr := s.backupAgentsLocked(server, agentIDs, reg, false)
 	if backupErr != nil {
 		return oldConfigs, backupErr
 	}
@@ -1063,7 +1261,13 @@ func (s *Store) removeFromAgentsLocked(server Server, agentIDs []string, reg *ag
 	return oldConfigs, nil
 }
 
-func (s *Store) backupAgentsLocked(agentIDs []string, reg *agents.Registry) (map[string]string, error) {
+// backupAgentsLocked 读取待写 agent 的配置原文并生成备份快照。
+// skipIfSameNoop 指示本次操作对"配置文件已含同 key 条目"的路径是否无写入：
+//   - 写路径传 true：采纳场景（同名同 key）不会改写文件，无需快照；
+//   - 删路径传 false：非本 store 管理的同名条目不会删除，无需快照。
+//
+// oldConfigs 始终保留原文（供回滚恢复），仅跳过文件快照的生成。
+func (s *Store) backupAgentsLocked(server Server, agentIDs []string, reg *agents.Registry, skipIfSameNoop bool) (map[string]string, error) {
 	oldConfigs := make(map[string]string)
 	seen := make(map[string]bool)
 	for _, agID := range agentIDs {
@@ -1083,11 +1287,29 @@ func (s *Store) backupAgentsLocked(agentIDs []string, reg *agents.Registry) (map
 			return oldConfigs, fmt.Errorf("read %s: %w", ag.ConfigPath, err)
 		}
 		oldConfigs[ag.ConfigPath] = string(data)
+		if server.Name != "" && configHasSameServer(server, ag) == skipIfSameNoop {
+			continue
+		}
 		if _, err := BackupConfig(string(ag.Type), ag.ConfigPath); err != nil {
 			return oldConfigs, fmt.Errorf("backup %s: %w", ag.ConfigPath, err)
 		}
 	}
 	return oldConfigs, nil
+}
+
+// configHasSameServer 检查 agent 配置文件中是否已存在与 server 同 key 的条目。
+// 读取失败视为 false（保守起见仍走备份路径）。
+func configHasSameServer(server Server, ag *agents.Agent) bool {
+	backend := NewBackend(string(ag.Type))
+	current, err := backend.Read(ag.ConfigPath)
+	if err != nil {
+		return false
+	}
+	existing, ok := current[server.Name]
+	if !ok {
+		return false
+	}
+	return scanDedupKey(server) == scanDedupKey(existing)
 }
 
 func (s *Store) writeToAgentLocked(server Server, agentID string, reg *agents.Registry) error {
@@ -1103,13 +1325,19 @@ func (s *Store) writeToAgentLocked(server Server, agentID string, reg *agents.Re
 	if err != nil {
 		return fmt.Errorf("read: %w", err)
 	}
-	if _, exists := current[server.Name]; exists {
+	if existing, ok := current[server.Name]; ok {
 		managedExisting := false
-		if existing, ok := s.servers[server.ID]; ok && existing.Name == server.Name {
+		if srv, ok := s.servers[server.ID]; ok && srv.Name == server.Name {
 			managedExisting = s.bindings[server.ID][agentID]
 		}
 		if !managedExisting {
-			return fmt.Errorf("server name %q already exists in agent %s", server.Name, agentID)
+			// 配置里已有同名条目且非本 store 管理。若归一化后是同一服务器
+			// （命令/参数或 URL 一致，例如扫描到的"加入管理"场景），视为采纳
+			// 已存在条目，跳过写入以保留用户原有配置格式；否则拒绝覆盖。
+			if scanDedupKey(server) != scanDedupKey(existing) {
+				return fmt.Errorf("server name %q already exists in agent %s", server.Name, agentID)
+			}
+			return nil
 		}
 	}
 	current[server.Name] = server
@@ -1132,7 +1360,11 @@ func (s *Store) removeFromAgentLocked(server Server, agentID string, reg *agents
 	if err != nil {
 		return fmt.Errorf("read: %w", err)
 	}
-	if _, has := current[server.Name]; !has {
+	if existing, has := current[server.Name]; !has {
+		return nil
+	} else if scanDedupKey(server) != scanDedupKey(existing) {
+		// 配置里的同名条目不是本 store 管理的服务器（用户手动改写/替换过），
+		// 不删除，避免误删用户自己的配置。
 		return nil
 	}
 	delete(current, server.Name)

@@ -1,7 +1,7 @@
 {
   "name": "frontend",
   "private": true,
-  "version": "0.2.2",
+  "version": "0.2.3",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -30,7 +30,7 @@
     "@tailwindcss/node": "^4.3.2",
     "@tailwindcss/vite": "^4.3.2",
     "@vitejs/plugin-vue": "^6.0.7",
-    "@wailsio/runtime": "latest",
+    "@wailsio/runtime": "3.0.0-beta.5",
     "esbuild": "^0.28.1",
     "tailwindcss": "^4.3.2",
     "typescript": "~6.0.3",

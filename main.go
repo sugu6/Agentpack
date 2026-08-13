@@ -2,11 +2,10 @@ package main
 
 import (
 	"embed"
-
-	"agentpack/internal/config"
-	"agentpack/internal/lockfile"
 	"log"
 	"os"
+
+	"agentpack/internal/config"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/wailsapp/wails/v3/pkg/events"
@@ -18,30 +17,28 @@ var assets embed.FS
 func main() {
 	cfg := config.Load()
 
-	releaseLock := func() {}
-	if !isDevMode() {
-		lock, lockErr := lockfile.TryAcquire(config.AgentPackDir())
-		if lockErr != nil {
-			log.Printf("AgentPack: %v", lockErr)
-			os.Exit(1)
-		}
-		released := false
-		releaseLock = func() {
-			if released {
-				return
-			}
-			lock.Release()
-			released = true
-		}
-		defer releaseLock()
-	}
-
 	app := NewApp(cfg)
 
-	// v3 alpha 无运行时 SetTheme API，使用 SystemDefault 让标题栏跟随系统主题。
-	// 应用内主题切换（light/dark）仅影响 CSS，不改变原生标题栏。
+	// beta 仍无公开运行时 SetTheme API，标题栏跟随系统主题（SystemDefault），
+	// 应用内主题切换（light/dark）由 winbridge.SetDarkMode + SystemThemeChanged 事件驱动。
 	winTheme := application.SystemDefault
 	macAppearance := application.DefaultAppearance
+
+	// 生产模式启用官方单实例（v3 beta）：第二实例会通知首实例后以 ExitCode 退出。
+	// dev 模式跳过，避免 wails3 dev 热重启被单实例锁拦截。
+	var singleInstance *application.SingleInstanceOptions
+	if !isDevMode() {
+		singleInstance = &application.SingleInstanceOptions{
+			UniqueID: "com.sugu6.agentpack",
+			ExitCode: 1,
+			OnSecondInstanceLaunch: func(data application.SecondInstanceData) {
+				// 启动完成后二次启动应用时，唤醒主窗口（从托盘恢复）
+				if app.ready() {
+					app.ShowWindow()
+				}
+			},
+		}
+	}
 
 	wailsApp := application.New(application.Options{
 		Name:        "AgentPack",
@@ -58,19 +55,23 @@ func main() {
 		Mac: application.MacOptions{
 			ApplicationShouldTerminateAfterLastWindowClosed: true,
 		},
+		SingleInstance: singleInstance,
 	})
 
 	app.setWailsApp(wailsApp)
 
+	// 系统主题切换 → 同步原生标题栏暗色（替代 winbridge 手动解析 WM_SETTINGCHANGE）
+	registerSystemThemeHook(wailsApp)
+
 	// 创建主窗口 — 与 v2 完全对齐的 Mica + 透明背景配置
 	mainWindow := wailsApp.Window.NewWithOptions(application.WebviewWindowOptions{
-		Title:     "AgentPack",
-		Width:     960,
-		Height:    640,
-		MinWidth:  800,
-		MinHeight: 500,
-		URL:       "/",
-		BackgroundType: application.BackgroundTypeTranslucent,
+		Title:                      "AgentPack",
+		Width:                      960,
+		Height:                     640,
+		MinWidth:                   800,
+		MinHeight:                  500,
+		URL:                        "/",
+		BackgroundType:             application.BackgroundTypeTranslucent,
 		DefaultContextMenuDisabled: !isDevMode(),
 		Windows: application.WindowsWindow{
 			Theme:        winTheme,
@@ -93,7 +94,6 @@ func main() {
 	err := wailsApp.Run()
 	if err != nil {
 		log.Printf("AgentPack: %v", err)
-		releaseLock()
 		os.Exit(1)
 	}
 }

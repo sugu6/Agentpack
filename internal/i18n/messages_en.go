@@ -4,21 +4,21 @@ package i18n
 // Note: new keys must also be added to messages_zh.go; TestMessagesKeyConsistency validates key set parity
 var MessagesEn = map[string]string{
 	// tray - system tray menu
-	"tray.show":      "Show main window",
-	"tray.lite":      "Lite mode",
-	"tray.settings":  "Settings",
-	"tray.quit":      "Quit",
-	"tray.tooltip":   "AgentPack - Agent management tool",
+	"tray.show":     "Show main window",
+	"tray.lite":     "Lite mode",
+	"tray.settings": "Settings",
+	"tray.quit":     "Quit",
+	"tray.tooltip":  "AgentPack - Agent management tool",
 
 	// update - check for updates
-	"update.message.hasUpdate":      "Found new version v{version}",
-	"update.message.latest":         "You're on the latest version v{version}",
-	"update.message.noRelease":      "No releases published yet",
-	"update.message.rateLimited":    "GitHub API rate limited, please try again later",
-	"update.message.networkFailed":  "Network request failed: {error}",
-	"update.download.serverError":   "Server returned {code}",
-	"update.download.failed":        "Download failed: {error}",
-	"update.download.canceled":      "Download canceled",
+	"update.message.hasUpdate":     "Found new version v{version}",
+	"update.message.latest":        "You're on the latest version v{version}",
+	"update.message.noRelease":     "No releases published yet",
+	"update.message.rateLimited":   "GitHub API rate limited, please try again later",
+	"update.message.networkFailed": "Network request failed: {error}",
+	"update.download.serverError":  "Server returned {code}",
+	"update.download.failed":       "Download failed: {error}",
+	"update.download.canceled":     "Download canceled",
 
 	// error - generic errors
 	"error.network":          "Network error: {error}",

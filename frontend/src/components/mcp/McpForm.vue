@@ -96,6 +96,10 @@ watch(open, (isOpen) => {
   }
 })
 
+// 注意：切换 transport 时不清空 url——提交时已对 stdio 剥离 url
+// （见 submit 中 url: transport === 'stdio' ? undefined : ...），
+// 保留输入可避免用户在 stdio/远程之间来回切换丢 URL。
+
 function reset() {
   form.value = {
     name: '',
@@ -114,10 +118,48 @@ function reset() {
 
 
 function stripJsonComments(text: string): string {
-  return text
-    .replace(/\/\/.*$/gm, '')
-    .replace(/\/\*[\s\S]*?\*\//g, '')
-    .replace(/^\s*[\r\n]/gm, '')
+  // 状态机剥离注释：仅在字符串字面量之外移除 // 与 /* */，
+  // 避免破坏字符串内的 URL（如 "https://..."）或转义序列。
+  let out = ''
+  let inString = false
+  let i = 0
+  while (i < text.length) {
+    const ch = text[i]
+    const next = text[i + 1]
+    if (inString) {
+      out += ch
+      if (ch === '\\') {
+        // 转义字符：连同其后一个字符一起保留
+        out += next ?? ''
+        i += 2
+        continue
+      }
+      if (ch === '"') inString = false
+      i++
+      continue
+    }
+    if (ch === '"') {
+      inString = true
+      out += ch
+      i++
+      continue
+    }
+    if (ch === '/' && next === '/') {
+      // 行注释：跳过到行尾
+      while (i < text.length && text[i] !== '\n') i++
+      continue
+    }
+    if (ch === '/' && next === '*') {
+      // 块注释：跳过到 */
+      i += 2
+      while (i < text.length && !(text[i] === '*' && text[i + 1] === '/')) i++
+      i += 2
+      continue
+    }
+    out += ch
+    i++
+  }
+  return out
 }
 
 function jsonToForm(text: string): { name: string; server: Record<string, any> } | null {
@@ -334,7 +376,7 @@ async function submit() {
       args,
       env: Object.keys(env).length ? env : undefined,
       transport,
-      url: srv.url || undefined,
+      url: transport === 'stdio' ? undefined : (srv.url || undefined),
       source: 'manual',
       boundAgents: [],
       installedAt: props.server?.installedAt || now,

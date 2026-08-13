@@ -349,20 +349,20 @@ func (f *GitHubSkillFetcher) fetchSkillMeta(ctx context.Context, repo RepoRef, b
 	contentHash := hex.EncodeToString(h[:])
 
 	return MarketSkill{
-		ID:           fmt.Sprintf("github:%s/%s/%s", repo.Owner, repo.Name, directory),
-		Name:         name,
-		Description:  meta.Description,
-		Directory:    directory,
-		FullPath:     fullPath, // 保存完整相对路径，安装时用于精准定位 tarball 中的 skill 目录
-		Source:       SourceGitHub,
-		SourceID:     fmt.Sprintf("%s/%s", repo.Owner, repo.Name),
-		Installs:     0, // GitHub 仓库扫描无下载量
-		RepoOwner:    repo.Owner,
-		RepoName:     repo.Name,
-		RepoBranch:   branch,
-		ReadmeURL:    fmt.Sprintf("https://github.com/%s/%s", repo.Owner, repo.Name),
-		UpdatedAt:    "",
-		ContentHash:  contentHash,
+		ID:          fmt.Sprintf("github:%s/%s/%s", repo.Owner, repo.Name, directory),
+		Name:        name,
+		Description: meta.Description,
+		Directory:   directory,
+		FullPath:    fullPath, // 保存完整相对路径，安装时用于精准定位 tarball 中的 skill 目录
+		Source:      SourceGitHub,
+		SourceID:    fmt.Sprintf("%s/%s", repo.Owner, repo.Name),
+		Installs:    0, // GitHub 仓库扫描无下载量
+		RepoOwner:   repo.Owner,
+		RepoName:    repo.Name,
+		RepoBranch:  branch,
+		ReadmeURL:   fmt.Sprintf("https://github.com/%s/%s", repo.Owner, repo.Name),
+		UpdatedAt:   "",
+		ContentHash: contentHash,
 	}
 }
 

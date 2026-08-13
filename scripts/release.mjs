@@ -8,13 +8,14 @@
 // 1. 验证版本号格式 (X.Y.Z)
 // 2. 更新 build/config.yml 的 version
 // 3. 更新 frontend/package.json 的 version
-// 4. 处理 CHANGELOG.md 和 CHANGELOG_EN.md:
+// 4. 更新平台版本文件 (Info.plist/Info.dev.plist, info.json, wails.exe.manifest, msix template.xml/app_manifest.xml, nfpm.yaml)
+// 5. 处理 CHANGELOG.md 和 CHANGELOG_EN.md:
 //    a. 如果 [Unreleased] 有内容: 转换为新版本节 + 添加新 [Unreleased]
 //    b. 如果 [Unreleased] 为空且目标版本节已存在: 跳过转换（用户已手动维护）
 //    c. 如果 [Unreleased] 为空且目标版本节不存在: 报错
 //    d. 修正底部 compare 链接的 repo URL（从 git remote 获取）
 //    e. 添加新版本的 compare 链接
-// 5. 输出变更摘要
+// 6. 输出变更摘要
 
 import { readFileSync, writeFileSync } from 'fs'
 import { execSync } from 'child_process'
@@ -83,7 +84,64 @@ function updatePackageJson() {
   console.log(`frontend/package.json: ${oldVersion} -> ${version}`)
 }
 
-// --- 3. 处理 CHANGELOG ---
+// --- 3. 更新平台版本文件 (plist / info.json / manifest / msix / nfpm) ---
+function updatePlatformVersionFiles() {
+  const fourPart = `${version}.0`
+
+  function patch(file, pattern, replacement, label) {
+    let content = readFileSync(file, 'utf8')
+    if (!pattern.test(content)) {
+      console.log(`${file}: ${label} not found, skipping`)
+      return
+    }
+    const newContent = content.replace(pattern, replacement)
+    if (newContent === content) {
+      console.log(`${file}: ${label} already ${version}, skipping`)
+      return
+    }
+    writeFileSync(file, newContent)
+    console.log(`${file}: ${label} -> ${version}`)
+  }
+
+  // macOS Info.plist / Info.dev.plist (3-part version)
+  for (const file of ['build/darwin/Info.plist', 'build/darwin/Info.dev.plist']) {
+    patch(file, /(<key>CFBundleShortVersionString<\/key>\s*<string>)[^<]*(<\/string>)/, `$1${version}$2`, 'CFBundleShortVersionString')
+    patch(file, /(<key>CFBundleVersion<\/key>\s*<string>)[^<]*(<\/string>)/, `$1${version}$2`, 'CFBundleVersion')
+  }
+
+  // Windows info.json (3-part version, tab-indented JSON)
+  {
+    const file = 'build/windows/info.json'
+    const info = JSON.parse(readFileSync(file, 'utf8'))
+    let changed = false
+    if (info.fixed && info.fixed.file_version !== version) {
+      info.fixed.file_version = version
+      changed = true
+    }
+    if (info.info && info.info['0000'] && info.info['0000'].ProductVersion !== version) {
+      info.info['0000'].ProductVersion = version
+      changed = true
+    }
+    if (changed) {
+      writeFileSync(file, JSON.stringify(info, null, '\t') + '\n')
+      console.log(`${file}: file_version/ProductVersion -> ${version}`)
+    } else {
+      console.log(`${file}: already ${version}, skipping`)
+    }
+  }
+
+  // Windows wails.exe.manifest (3-part, app assemblyIdentity only)
+  patch('build/windows/wails.exe.manifest', /(name="com\.sugu6\.agentpack" version=")[^"]*(")/, `$1${version}$2`, 'assemblyIdentity version')
+
+  // Windows MSIX template.xml / app_manifest.xml (4-part version)
+  patch('build/windows/msix/template.xml', /(Version=")\d+\.\d+\.\d+\.0(")/, `$1${fourPart}$2`, 'MSIX Version')
+  patch('build/windows/msix/app_manifest.xml', /(Version=")\d+\.\d+\.\d+\.0(")/, `$1${fourPart}$2`, 'MSIX Version')
+
+  // Linux nfpm.yaml (3-part, top-level version)
+  patch('build/linux/nfpm/nfpm.yaml', /^(version:\s*")[^"]*(")/m, `$1${version}$2`, 'version')
+}
+
+// --- 4. 处理 CHANGELOG ---
 function updateChangelog(file) {
   let content = readFileSync(file, 'utf8')
   let modified = false
@@ -174,6 +232,7 @@ function updateChangelog(file) {
 console.log(`\n=== Release v${version} ===\n`)
 updateBuildConfig()
 updatePackageJson()
+updatePlatformVersionFiles()
 updateChangelog('CHANGELOG.md')
 updateChangelog('CHANGELOG_EN.md')
 console.log(`\nDone. Review changes, then commit and tag.`)

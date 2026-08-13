@@ -7,6 +7,44 @@
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-08-13
+
+### 特性
+
+- **技能来源自动回填**：启动后后台自动为缺少仓库来源的技能从 skills.sh 查询候选仓库，验证 SKILL.md 内容后补全来源；仅接受目录名一致且内容验证通过的匹配，避免误关联。设置页新增手动回填按钮，成功时通知，失败静默跳过（skip-not-fail）
+- **市场页内容级已安装匹配**：以 SKILL.md 内容哈希（与市场侧同一算法）精确识别已安装技能，替代全目录哈希，修复市场页「已安装」状态失真
+- **MCP 纳管基线**：重启后仅恢复此前已纳入管理的 MCP 服务器，其他 agent 配置中的 MCP 不再被静默纳入列表；MCP 扫描对话框按归一化 key 合并多来源条目，新发现的服务器默认不勾选，由用户显式选择加入
+- **单实例（生产模式）**：改用 Wails v3 官方单实例机制，二次启动会唤醒主窗口（替代自定义 lockfile 实现）
+- **Windows 主题同步**：系统深色/浅色切换通过 v3 内置 SystemThemeChanged 事件同步原生标题栏（替代手动解析 WM_SETTINGCHANGE）
+
+### 变更
+
+- MCP 服务器 ID 改为确定性短哈希（name@path 哈希），不再把完整配置路径（含用户目录名）暴露给前端与数据库
+- MCP 配置文件单条 entry 解析失败时仅跳过该条并保留其余条目；写操作拒绝整表重写，避免静默删除无法解析的条目
+- Trae / Trae CN 更名为 TraeCode / TraeCode CN（Agent 页面显示名、README 支持表格与 MCP 格式提示同步更新；内部 ID 与检测逻辑保持不变）
+- TraeCode / TraeCode CN 新品牌配置目录（AppData\TraeCode、TraeCode CN 等）与 macOS/Linux 安装路径纳入检测
+- Agent 检测以安装位置为准：配置目录残留不再作为已安装证据；Windows 注册表检测过滤已卸载残留条目（物理存在校验），MSI 安装的条目按已安装处理
+- Windows 更新安装直接 CreateProcess 启动安装器（不经 cmd.exe），避免文件名中 & 等元字符被解释
+- 网络请求 User-Agent 统一由应用元数据注入当前版本号（不再硬编码旧版本与旧仓库地址）
+- CI 改进：wails3 CLI 固定 v3.0.0-beta.8（与 Wails 库同步升级）；release 新增 Windows 二进制签名与 macOS 签名/公证；产物附带 SHA256SUMS 校验和
+- Wails v3 升级到 v3.0.0-beta.8：WebView2 初始化超时与消息泵改进、事件有序分发与背压、Windows 10 1809 原生菜单暗色修复、Linux/GTK 窗口修复等
+- README：新增 macOS .app / DMG 打包任务与 DMG 外观定制变量说明，项目结构同步移除已删除的 lockfile 模块
+
+### 修复
+
+- 应用关闭竞态：备份关闭先拒绝新任务再等待，避免 WaitGroup misuse panic；关闭流程中不再启动更新下载
+- 更新下载加固：1GB 体积上限、30 分钟总时长与响应头超时，防止恶意/异常源写满磁盘或 goroutine 永久阻塞；修复暂停/取消/续传之间的并发竞态；取消下载不再误报「下载失败」
+- zip/tar 技能安装路径穿越防护：远程相对路径须通过校验（拒绝反斜杠文件名、.. 段与绝对路径）才能写入本地
+- 加密密钥文件损坏时隔离损坏文件并展示启动错误，不再静默换新密钥（避免旧数据永久无法解密）；密钥文件改为原子写入
+- 备份导入遇到同 key 已存在的 MCP 服务器时跳过该条而非中止整个导入
+- MCP 同名服务器：扫描加入时配置中已存在同 key 条目则「采纳」而非报错；删除时同名但 key 不同的条目不误删
+- ~/.agents/.skill-lock.json 与技能更新缓存的读-改-写并发覆盖（加锁串行化与合并写回）
+- 设置保存失败时回滚同步方式与存储位置迁移，内存与磁盘配置保持一致
+- npm 全局包检测失败结果缓存，避免每次扫描重复触发 30 秒超时
+- MCP 表单注释剥离改为状态机实现：字符串内的 // 与 URL 不再被误删；stdio 提交时剥离 URL
+- OpenURL 增加 http/https 白名单校验，拒绝危险 scheme；启动错误信息中的路径脱敏为基名
+- Agent 页面 MCP 计数改为反映各 Agent 配置文件实际检测到的服务器数量（含未纳入管理的条目，与扫描对话框去重口径一致），修复 IDE（TraeCode）已配置但未纳管的 MCP 计数偏少/检测不到的问题
+
 ## [0.2.2] - 2026-07-30
 
 ### 特性
@@ -209,6 +247,7 @@ AgentPack 的初始版本，一款面向 AI 编码工具的统一 MCP / Skills /
 [0.1.2]: https://github.com/sugu6/Agentpack/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/sugu6/Agentpack/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/sugu6/Agentpack/releases/tag/v0.1.0
-[Unreleased]: https://github.com/sugu6/Agentpack/compare/v0.2.2...HEAD
+[Unreleased]: https://github.com/sugu6/Agentpack/compare/v0.2.3...HEAD
+[0.2.3]: https://github.com/sugu6/Agentpack/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/sugu6/Agentpack/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/sugu6/Agentpack/compare/v0.2.0...v0.2.1

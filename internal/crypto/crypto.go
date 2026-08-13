@@ -10,6 +10,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
+
+	"agentpack/internal/iowriter"
 )
 
 // machineKey 从机器特定标识符派生 AES-256 密钥
@@ -18,6 +21,13 @@ var (
 	machineKey    []byte
 	machineKeyErr error
 )
+
+// MachineKeyError 返回密钥派生/加载阶段的错误（若有）。
+// 密钥文件损坏时此后所有 Encrypt/Decrypt/EncryptEnv 都会失败，
+// 调用方（如启动错误收集）应把该错误展示给用户，并给出恢复指引。
+func MachineKeyError() error {
+	return machineKeyErr
+}
 
 func init() {
 	machineKey, machineKeyErr = deriveMachineKey()
@@ -40,8 +50,20 @@ func deriveMachineKey() ([]byte, error) {
 	keyFile := filepath.Join(keyDir, ".machine_key")
 
 	// 1. 优先读取已持久化的密钥
-	if data, err := os.ReadFile(keyFile); err == nil && len(data) == 32 {
-		return data, nil
+	if data, err := os.ReadFile(keyFile); err == nil {
+		if len(data) == 32 {
+			return data, nil
+		}
+		// 密钥文件存在但损坏：隔离损坏文件并返回错误，避免静默换新密钥导致旧数据永久无法解密。
+		// 隔离名带纳秒时间戳：Windows 上 os.Rename 不覆盖已存在文件，若上次事故已留下
+		// .corrupt 文件，无时间戳的固定名会导致本次隔离永远失败。
+		corrupt := fmt.Sprintf("%s.corrupt.%d", keyFile, time.Now().UnixNano())
+		if rerr := os.Rename(keyFile, corrupt); rerr != nil {
+			return nil, fmt.Errorf("derive machine key: key file corrupt (%d bytes) and isolate failed: %w", len(data), rerr)
+		}
+		return nil, fmt.Errorf("derive machine key: key file corrupt (%d bytes), isolated to %s; previously encrypted data cannot be decrypted", len(data), corrupt)
+	} else if !os.IsNotExist(err) {
+		return nil, fmt.Errorf("derive machine key: read key file: %w", err)
 	}
 
 	// 2. 用 crypto/rand 生成真正的随机 32 字节密钥
@@ -51,11 +73,11 @@ func deriveMachineKey() ([]byte, error) {
 		panic(fmt.Sprintf("crypto/rand unavailable: %v (encryption key cannot be safely generated)", err))
 	}
 
-	// 3. 持久化密钥供后续使用
+	// 3. 原子持久化密钥供后续使用，避免写入中途崩溃留下残缺密钥文件
 	if err := os.MkdirAll(keyDir, 0700); err != nil {
 		return nil, fmt.Errorf("persist machine key: mkdir: %w", err)
 	}
-	if err := os.WriteFile(keyFile, key, 0600); err != nil {
+	if err := iowriter.WriteAtomic(keyFile, key, 0600); err != nil {
 		return nil, fmt.Errorf("persist machine key: writefile: %w", err)
 	}
 	return key, nil

@@ -2,13 +2,20 @@ package skills
 
 import (
 	"agentpack/internal/iowriter"
+	"agentpack/internal/logger"
 	"encoding/json"
 	"fmt"
 	"log"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 )
+
+// agentsLockMu 串行化 ~/.agents/.skill-lock.json 的读-改-写全过程：
+// WriteAgentsLock / RemoveAgentsLockEntry / WriteDefaultLockEntries 共享此锁，
+// 避免并发调用时后写的整份文件覆盖先写的条目，导致 skill 记录丢失。
+var agentsLockMu sync.Mutex
 
 // AgentsLockFile 对应 ~/.agents/.skill-lock.json 的结构
 type AgentsLockFile struct {
@@ -55,7 +62,6 @@ func ParseAgentsLock() map[string]LockRepoInfo {
 	}
 
 	result := make(map[string]LockRepoInfo, len(lock.Skills))
-	log.Printf("ParseAgentsLock: found %d entries in lock file", len(lock.Skills))
 	for name, skill := range lock.Skills {
 		if skill.SourceType == "github" && skill.Source != "" {
 			owner, repo, ok := splitOwnerRepo(skill.Source)
@@ -76,11 +82,11 @@ func ParseAgentsLock() map[string]LockRepoInfo {
 				Branch:   branch,
 				FullPath: skill.FullPath,
 			}
-			log.Printf("ParseAgentsLock: entry %q -> owner=%q repo=%q branch=%q", name, owner, repo, branch)
+			logger.Debug("ParseAgentsLock: entry", "name", name, "owner", owner, "repo", repo, "branch", branch)
 		} else {
 			// 存根记录或非 github 源：返回空字段，表示来源未知
 			result[name] = LockRepoInfo{FullPath: skill.FullPath}
-			log.Printf("ParseAgentsLock: stub entry %q (sourceType=%q, source=%q)", name, skill.SourceType, skill.Source)
+			logger.Debug("ParseAgentsLock: stub entry", "name", name, "sourceType", skill.SourceType)
 		}
 	}
 
@@ -202,6 +208,9 @@ type AgentsLockEntry struct {
 // 存根记录的 Source 和 SourceType 为空，表明来源未知（如 TRAE 内置 / 手动安装）。
 // 后续从市场安装后，InstallMarketSkill 会通过 WriteAgentsLock 更新为正确的 repo 信息。
 func WriteDefaultLockEntries(ssotDir string) error {
+	agentsLockMu.Lock()
+	defer agentsLockMu.Unlock()
+
 	// 1. 读取现有 lock 文件
 	lock, err := readAgentsLock()
 	if err != nil {
@@ -256,6 +265,9 @@ func WriteDefaultLockEntries(ssotDir string) error {
 // WriteAgentsLock 向 ~/.agents/.skill-lock.json 追加/更新一条 skill 记录
 // 保留其他工具已写入的条目，仅更新或新增本应用安装的条目
 func WriteAgentsLock(entry AgentsLockEntry) error {
+	agentsLockMu.Lock()
+	defer agentsLockMu.Unlock()
+
 	if entry.Directory == "" {
 		return fmt.Errorf("directory is required")
 	}
@@ -289,6 +301,9 @@ func WriteAgentsLock(entry AgentsLockEntry) error {
 // RepoOwner/RepoName 错误关联到已卸载来源的仓库。
 // 文件不存在或条目不存在时返回 nil（幂等）。
 func RemoveAgentsLockEntry(directory string) error {
+	agentsLockMu.Lock()
+	defer agentsLockMu.Unlock()
+
 	if directory == "" {
 		return fmt.Errorf("directory is required")
 	}

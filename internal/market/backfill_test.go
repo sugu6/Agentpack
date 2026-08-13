@@ -98,3 +98,26 @@ func TestBackfillSkillSources_EmptyDirectories(t *testing.T) {
 		t.Fatalf("expected no matches, got %v", matches)
 	}
 }
+
+func TestAcceptBackfillMatch(t *testing.T) {
+	cases := []struct {
+		name     string
+		dir      string
+		fullPath string
+		want     bool
+	}{
+		{"name-first skills/{dir}", "pdf", "skills/pdf", true},
+		{"name-first {dir}", "pdf", "pdf", true},
+		{"content-fallback renamed dir", "pdf", "skills/pdf-extra", false},
+		{"content-fallback nested renamed", "pdf", "docs/pdf-tools", false},
+		{"empty fullPath (repo root)", "pdf", "", false},
+		{"different dir entirely", "pdf", "skills/docx", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := AcceptBackfillMatch(c.dir, c.fullPath); got != c.want {
+				t.Errorf("AcceptBackfillMatch(%q, %q) = %v, want %v", c.dir, c.fullPath, got, c.want)
+			}
+		})
+	}
+}

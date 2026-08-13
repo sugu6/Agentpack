@@ -16,12 +16,12 @@
             {
               "appearance" : "tinted",
               "value" : {
-                "solid" : "srgb:0.83742,0.83744,0.83743,1.00000"
+                "solid" : "srgb:0.23137,0.50980,0.96471,1.00000"
               }
             }
           ],
-          "image-name" : "wails_icon_vector.svg",
-          "name" : "wails_icon_vector",
+          "image-name" : "agentpack_icon.svg",
+          "name" : "agentpack_icon",
           "position" : {
             "scale" : 1.5,
             "translation-in-points" : [

@@ -6,7 +6,7 @@ import { useAgentsStore } from '@/stores/agents'
 import { useSettingsStore } from '@/stores/settings'
 import { useMcpStore } from '@/stores/mcp'
 import { useSkillsStore } from '@/stores/skills'
-import { api, events, type UpdateCheckResult } from '@/lib/api'
+import { api, events, type UpdateCheckResult, type SkillSourceBackfillResult } from '@/lib/api'
 import { TooltipProvider, Toaster } from '@/components/ui'
 import { useToast } from '@/composables/useToast'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
@@ -28,6 +28,20 @@ let unsubscribeMcpChanged: (() => void) | undefined
 let unsubscribeSkillsChanged: (() => void) | undefined
 let unsubscribeCloseRequested: (() => void) | undefined
 let unsubscribeSettingsChanged: (() => void) | undefined
+let unsubscribeBackfill: (() => void) | undefined
+
+// 自动来源回填的结果提示：事件与兜底查询都可能触发，只在有成功项时提示一次
+let backfillNotified = false
+function handleBackfillResult(res: unknown) {
+  if (backfillNotified || !mounted.value) return
+  const r = res as SkillSourceBackfillResult | null
+  const matched = r?.matched?.length ?? 0
+  if (matched === 0) return
+  backfillNotified = true
+  const skipped = (r?.mismatched?.length ?? 0) + (r?.unmatched?.length ?? 0)
+  const failed = r?.failed?.length ?? 0
+  toast.info(t('settings.toast.backfillSuccess', { count: matched, skipped, failed }), { duration: 5000 })
+}
 
 // 用户活动上报：节流后通知后端重置轻量模式空闲计时
 const ACTIVITY_THROTTLE_MS = 30_000
@@ -95,6 +109,8 @@ onMounted(async () => {
   unsubscribeMcpChanged = events.on('mcp:changed', handleMcpChanged)
   unsubscribeSkillsChanged = events.on('skills:changed', handleSkillsChanged)
   unsubscribeCloseRequested = events.on('app:close-requested', handleCloseRequested)
+  // 自动来源回填结果（启动后后台执行；事件可能早于监听注册完成，用兜底查询补齐）
+  unsubscribeBackfill = events.on('skills:backfill', handleBackfillResult)
   // 全局 settings:changed 监听：SettingsView 未挂载时（如在市场/技能页操作）也能同步设置 store
   unsubscribeSettingsChanged = events.on('settings:changed', () => {
     if (!mounted.value) return
@@ -117,6 +133,9 @@ onMounted(async () => {
     if (!mounted.value) return
     startupErrors.value = errs || []
   }).catch((e) => console.warn('读取启动错误失败:', e))
+
+  // 兜底查询自动来源回填结果（事件监听可能晚于回填完成；无结果时静默）
+  api.skills.lastBackfillResult().then(handleBackfillResult).catch(() => {})
 
   // 首次启动时静默检查更新：使用 localStorage 记录检测状态，防止重复检测
   const UPDATE_CHECK_KEY = 'agentpack_update_checked_session'
@@ -147,6 +166,7 @@ onBeforeUnmount(() => {
   unsubscribeSkillsChanged?.()
   unsubscribeCloseRequested?.()
   unsubscribeSettingsChanged?.()
+  unsubscribeBackfill?.()
   settings.dispose()
 })
 </script>

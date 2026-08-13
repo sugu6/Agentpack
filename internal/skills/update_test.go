@@ -884,3 +884,52 @@ func TestCheckUpdates_ErrorsPerSkill(t *testing.T) {
 		t.Error("same repo should have same error for both skills")
 	}
 }
+
+func TestSafeRelPath(t *testing.T) {
+	valid := map[string]string{
+		"SKILL.md":        "SKILL.md",
+		"skills/pdf/a.md": "skills/pdf/a.md",
+		"a/b/c/":          "a/b/c",
+		"./a/b":           "a/b",
+	}
+	for in, want := range valid {
+		got, err := safeRelPath(in)
+		if err != nil {
+			t.Errorf("safeRelPath(%q): unexpected error %v", in, err)
+			continue
+		}
+		if got != want {
+			t.Errorf("safeRelPath(%q) = %q, want %q", in, got, want)
+		}
+	}
+
+	invalid := []string{
+		"",             // 空路径
+		"..",           // 目录穿越
+		"../evil",      // 目录穿越
+		"a/../../evil", // 目录穿越
+		"a\\..\\evil",  // Windows 分隔符穿越
+		"..\\..\\Windows\\System32\\evil", // Windows 逃逸
+		"C:/evil",      // 盘符
+		"/abs/path",    // 绝对路径
+		"a:",           // 盘符后缀
+	}
+	for _, in := range invalid {
+		if got, err := safeRelPath(in); err == nil {
+			t.Errorf("safeRelPath(%q) = %q, want error", in, got)
+		}
+	}
+}
+
+// TestWriteTmpFile_RejectsTraversal 验证 writeTmpFile 拒绝穿越路径，
+// 确保 updateSkillViaTree 下载写入不会逃出临时目录。
+func TestWriteTmpFile_RejectsTraversal(t *testing.T) {
+	tmpDir := t.TempDir()
+	evil := "..\\..\\..\\..\\..\\Windows\\System32\\evil.txt"
+	if err := writeTmpFile(tmpDir, evil, []byte("x")); err == nil {
+		t.Fatalf("writeTmpFile should reject path traversal %q", evil)
+	}
+	if _, err := os.Stat(filepath.Join(tmpDir, "..", "..", "..", "..", "..", "Windows", "System32", "evil.txt")); err == nil {
+		t.Fatal("traversal file must not exist outside tmpDir")
+	}
+}

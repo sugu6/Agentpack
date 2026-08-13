@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"agentpack/internal/appmeta"
 	"agentpack/internal/config"
 	"agentpack/internal/i18n"
 )
@@ -22,6 +23,25 @@ import (
 // GitHub 仓库地址（owner/repo），用于检查更新
 // 如需更换仓库，修改此常量即可
 const githubRepo = "sugu6/AgentPack"
+
+// maxUpdateDownloadSize 限制更新安装包最大体积（1GB），防止恶意/异常源无限流数据写满磁盘。
+const maxUpdateDownloadSize int64 = 1 << 30
+
+// maxDownloadDuration 限制单次下载总时长（30 分钟），防止服务器接受连接后
+// 不发送数据（stalled）导致的 goroutine 永久阻塞。
+const maxDownloadDuration = 30 * time.Minute
+
+// maxReleaseBodySize 限制 GitHub release API 响应体大小（1MB），防止异常响应撑爆内存。
+const maxReleaseBodySize = 1 << 20
+
+// downloadHTTPClient 用于更新包下载：Transport 设置 ResponseHeaderTimeout，
+// 防止服务器接受连接后不响应头部导致的永久阻塞；总时长由 startDownload 的
+// context.WithTimeout 兜底。
+var downloadHTTPClient = &http.Client{
+	Transport: &http.Transport{
+		ResponseHeaderTimeout: 30 * time.Second,
+	},
+}
 
 // UpdateCheckResult 是检查更新的返回结构，前端通过 Wails 绑定调用
 type UpdateCheckResult struct {
@@ -38,6 +58,11 @@ type UpdateCheckResult struct {
 
 //go:embed build/config.yml
 var buildConfigYML []byte
+
+// init 注入应用版本到 appmeta，供各网络层构造 User-Agent（避免硬编码版本号）。
+func init() {
+	appmeta.Version = currentAppVersion()
+}
 
 func currentAppVersion() string {
 	// 从 build/config.yml 的 info.version 字段提取版本号
@@ -81,7 +106,9 @@ type releaseAsset struct {
 
 func (a *App) CheckUpdate() (*UpdateCheckResult, error) {
 	current := currentAppVersion()
+	a.mu.RLock()
 	lang := i18n.ResolveLanguage(a.cfg.Settings.Language)
+	a.mu.RUnlock()
 
 	// GitHub API 直连,不走代理:
 	// gh-proxy.com 等公共代理共享 IP 调用 api.github.com 极易触发 403 限流,
@@ -142,14 +169,21 @@ func (a *App) CheckUpdate() (*UpdateCheckResult, error) {
 		}
 
 		var release githubRelease
-		if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
-			resp.Body.Close()
-			cancel()
+		body, rerr := io.ReadAll(io.LimitReader(resp.Body, maxReleaseBodySize+1))
+		resp.Body.Close()
+		cancel()
+		if rerr != nil {
+			lastErr = rerr
+			continue
+		}
+		if len(body) > maxReleaseBodySize {
+			lastErr = fmt.Errorf("release response body exceeds %d bytes", maxReleaseBodySize)
+			continue
+		}
+		if err := json.Unmarshal(body, &release); err != nil {
 			lastErr = err
 			continue
 		}
-		resp.Body.Close()
-		cancel()
 
 		latest := strings.TrimPrefix(release.TagName, "v")
 		hasUpdate := compareVersions(current, latest) < 0
@@ -301,20 +335,50 @@ func (a *App) StartDownloadUpdate(url string) error {
 		os.Remove(a.downloadPausedFile)
 		a.downloadPausedFile = ""
 	}
+	// 上次下载完成/失败后再次下载：把状态复位回 Idle，否则 startDownload 的
+	// 并发守卫（仅 Idle/Paused 放行）会拒绝本次新下载，且旧的 completed 路径
+	// 在 downloadURL 清空后无法通过 ResumeDownload 复用。
+	if a.downloadState == DownloadStateCompleted || a.downloadState == DownloadStateError {
+		a.downloadState = DownloadStateIdle
+		a.downloadedFile = ""
+	}
 	a.downloadOffset = 0
 	a.mu.Unlock()
 	atomic.StoreInt32(&a.paused, 0)
-	return a.startDownload(url, 0)
+	return a.startDownload(url, 0, false)
 }
 
-// startDownload 执行下载，offset > 0 时通过 Range 请求实现断点续传
-func (a *App) startDownload(url string, offset int64) error {
-	if !strings.HasPrefix(url, config.DefaultGitHubProxy) {
-		url = config.DefaultGitHubProxy + strings.TrimPrefix(url, "https://")
+// startDownload 执行下载，offset > 0 时通过 Range 请求实现断点续传。
+// resume 为 true 时，url/offset 在持锁状态下从 a.downloadURL/a.downloadOffset 读取，
+// 与状态转换处于同一临界区，避免 ResumeDownload 读取与执行之间被 CancelDownload
+// 清空状态的检查-使用竞态。
+func (a *App) startDownload(url string, offset int64, resume bool) error {
+	if !resume && !strings.HasPrefix(url, config.DefaultGitHubProxy) {
+		url = config.DefaultGitHubProxy + strings.TrimPrefix(strings.TrimPrefix(url, "https://"), "http://")
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	// 总时长限制：防止服务器接受连接后不发送数据导致 goroutine 永久阻塞
+	ctx, cancel := context.WithTimeout(context.Background(), maxDownloadDuration)
 	a.mu.Lock()
+	// 并发保护：仅允许从 Idle 或 Paused 状态启动下载。
+	// 防止 ResumeDownload 与 StartDownloadUpdate 并发调用 startDownload 导致
+	// 两次 os.Create(O_TRUNC) 截断同一文件并交错写入。
+	if a.downloadState != DownloadStateIdle && a.downloadState != DownloadStatePaused {
+		a.mu.Unlock()
+		cancel()
+		return fmt.Errorf("download already in progress")
+	}
+	if resume {
+		// 在持锁状态下读取保存的续传参数并完成状态转换
+		url = a.downloadURL
+		offset = a.downloadOffset
+		if url == "" || offset <= 0 {
+			a.mu.Unlock()
+			cancel()
+			return fmt.Errorf("no saved download position")
+		}
+		a.downloadPausedFile = ""
+	}
 	a.downloadURL = url
 	a.downloadState = DownloadStateDownloading
 	if a.downloadCancel != nil {
@@ -324,11 +388,24 @@ func (a *App) startDownload(url string, offset int64) error {
 	a.downloadCancel = cancel
 	a.mu.Unlock()
 
+	if err := a.beginInFlight(); err != nil {
+		// 应用已进入关闭流程：复位状态，避免残留 Downloading 状态
+		cancel()
+		a.mu.Lock()
+		a.downloadState = DownloadStateIdle
+		a.downloadOffset = 0
+		a.downloadURL = ""
+		a.downloadCancel = nil
+		a.mu.Unlock()
+		return err
+	}
+
 	go func() {
-		a.beginInFlight()
 		defer a.endInFlight()
 		defer cancel()
+		a.mu.RLock()
 		lang := i18n.ResolveLanguage(a.cfg.Settings.Language)
+		a.mu.RUnlock()
 
 		emitError := func(msgKey string, args map[string]interface{}) {
 			a.mu.Lock()
@@ -347,7 +424,7 @@ func (a *App) startDownload(url string, offset int64) error {
 			req.Header.Set("Range", fmt.Sprintf("bytes=%d-", offset))
 		}
 
-		resp, err := http.DefaultClient.Do(req)
+		resp, err := downloadHTTPClient.Do(req)
 		if err != nil {
 			emitError("update.download.failed", map[string]interface{}{"error": err.Error()})
 			return
@@ -359,7 +436,23 @@ func (a *App) startDownload(url string, offset int64) error {
 			return
 		}
 
+		// 下载体积上限：Content-Length 预检（Range 续传时按完整大小判断）
+		if resp.ContentLength > 0 {
+			totalExpected := resp.ContentLength
+			if resp.StatusCode == http.StatusPartialContent {
+				totalExpected += offset
+			}
+			if totalExpected > maxUpdateDownloadSize {
+				emitError("update.download.failed", map[string]interface{}{"error": fmt.Sprintf("file too large: %d bytes (max %d)", totalExpected, maxUpdateDownloadSize)})
+				return
+			}
+		}
+
 		fileName := filepath.Base(url)
+		if fileName == "." || fileName == ".." {
+			emitError("update.download.failed", map[string]interface{}{"error": "invalid download filename"})
+			return
+		}
 		dlPath := filepath.Join(downloadDir(), fileName)
 		dlTmpPath := dlPath + ".downloading"
 
@@ -382,7 +475,11 @@ func (a *App) startDownload(url string, offset int64) error {
 			}
 			downloaded = 0
 		}
-		defer f.Close()
+		defer func() {
+			if f != nil {
+				f.Close()
+			}
+		}()
 
 		// totalSize 统一为文件总大小：206 响应的 ContentLength 只是剩余部分
 		totalSize := resp.ContentLength
@@ -400,6 +497,7 @@ func (a *App) startDownload(url string, offset int64) error {
 			if atomic.LoadInt32(&a.paused) != 0 {
 				atomic.StoreInt32(&a.paused, 0)
 				f.Close()
+				f = nil // 置 nil，避免 defer 对同一句柄二次 Close
 				a.mu.Lock()
 				a.downloadPausedFile = dlTmpPath
 				a.downloadOffset = downloaded
@@ -425,6 +523,12 @@ func (a *App) startDownload(url string, offset int64) error {
 			}
 			n, readErr := resp.Body.Read(buf)
 			if n > 0 {
+				// 流式大小限制：防止无 Content-Length 的响应无限写入磁盘
+				if downloaded+int64(n) > maxUpdateDownloadSize {
+					removeTmp()
+					emitError("update.download.failed", map[string]interface{}{"error": fmt.Sprintf("file exceeds %d bytes", maxUpdateDownloadSize)})
+					return
+				}
 				if _, writeErr := f.Write(buf[:n]); writeErr != nil {
 					removeTmp()
 					emitError("update.download.failed", map[string]interface{}{"error": writeErr.Error()})
@@ -463,6 +567,7 @@ func (a *App) startDownload(url string, offset int64) error {
 			}
 		}
 		f.Close()
+		f = nil
 
 		// 下载完成后重命名: .downloading → 正式文件名
 		if err := os.Rename(dlTmpPath, dlPath); err != nil {
@@ -503,9 +608,11 @@ func (a *App) InstallUpdate() error {
 	}
 
 	// 完全脱离父进程启动安装程序
+	// 注意：Windows 下直接使用 CreateProcess（exec.Command(dlPath)）启动，
+	// 不经 cmd.exe，避免文件名中的 & 等 cmd.exe 元字符导致命令注入。
 	switch runtime.GOOS {
 	case "windows":
-		cmd := exec.Command("cmd", "/c", "start", "", dlPath)
+		cmd := exec.Command(dlPath)
 		hideConsoleWindow(cmd)
 		if err := cmd.Start(); err != nil {
 			return err

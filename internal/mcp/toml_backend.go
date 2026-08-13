@@ -46,13 +46,19 @@ func (b *TomlBackend) Read(path string) (map[string]Server, error) {
 	}
 	if err := toml.Unmarshal(data, &codexCfg); err == nil && len(codexCfg.McpServers) > 0 {
 		out := make(map[string]Server, len(codexCfg.McpServers))
+		partial := false
+		var skipped []string
 		for _, ts := range codexCfg.McpServers {
 			if ts.Command == "" && ts.URL == "" {
 				continue // skip invalid entries
 			}
 			if ts.Command != "" {
 				if err := ValidateCommand(ts.Command); err != nil {
-					return nil, fmt.Errorf("server %q: %w", ts.Name, err)
+					// 标记 partial：写路径必须拒绝，避免整表重写时静默删除该条目
+					log.Printf("mcp: skip server %q in %s: %v", ts.Name, path, err)
+					partial = true
+					skipped = append(skipped, ts.Name)
+					continue
 				}
 			}
 			transport := TransportStdio
@@ -82,9 +88,13 @@ func (b *TomlBackend) Read(path string) (map[string]Server, error) {
 				Source:     "config",
 			}
 			if s.ID == "" {
-				s.ID = ts.Name + "@" + path
+				s.ID = serverDeterministicID(ts.Name, path)
 			}
 			out[ts.Name] = s
+		}
+		if partial {
+			// 错误信息带上被跳过的 server 名，方便用户定位配置中的坏条目
+			return out, fmt.Errorf("%w; skipped entries in %s: %s", ErrPartialRead, path, strings.Join(skipped, ", "))
 		}
 		return out, nil
 	}
@@ -107,7 +117,7 @@ func (b *TomlBackend) Read(path string) (map[string]Server, error) {
 		}
 		s.Source = "config"
 		if s.ID == "" {
-			s.ID = name + "@" + path
+			s.ID = serverDeterministicID(name, path)
 		}
 		out[name] = s
 	}

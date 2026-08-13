@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, computed } from 'vue'
+import { ref, onMounted, onActivated, onDeactivated, watch, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useSkillsStore } from '@/stores/skills'
 import { useAgentsStore } from '@/stores/agents'
@@ -45,8 +45,12 @@ const updatesCount = computed(() =>
   skills.updateStatuses.filter(s => s.hasUpdate).length,
 )
 
-// 默认全选所有支持 Skills 的 Agent
-const allCapableAgentIds = computed(() => skillCapableGroups.value.flatMap(g => g.ids))
+// 可绑定目标：合并组可能包含 disabled 变体成员，仅取后端返回的 capable
+// （skillCapableAgents 只含 enabled/detected）成员，避免提交后被拒绝。
+const allCapableAgentIds = computed(() => {
+  const capable = new Set(skills.skillCapableAgents.map(a => a.id))
+  return skillCapableGroups.value.flatMap(g => g.ids.filter(id => capable.has(id)))
+})
 
 // agent ID → name 映射
 const agentNameMap = computed(() => {
@@ -162,9 +166,14 @@ function toggleAgentSelect(id: string) {
 
 function toggleGroupSelect(group: { ids: string[] }, enabled: boolean) {
   const next = new Set(selectedAgentIds.value)
+  const capable = new Set(skills.skillCapableAgents.map(a => a.id))
   for (const id of group.ids) {
-    if (enabled) next.add(id)
-    else next.delete(id)
+    if (enabled) {
+      // 只添加可绑定成员（capable 集合已限定 enabled/detected）
+      if (capable.has(id)) next.add(id)
+    } else {
+      next.delete(id)
+    }
   }
   selectedAgentIds.value = next
 }
@@ -175,7 +184,9 @@ function isGroupBound(boundAgents: string[] | null, group: { ids: string[] }) {
 
 async function toggleGroup(skillId: string, group: { ids: string[] }, enabled: boolean) {
   try {
-    const uniqueIds = [...new Set(group.ids)]
+    // 只绑定可绑定目标：disabled 变体成员不在 capable 列表，提交会被后端整体或局部拒绝
+    const capable = new Set(skills.skillCapableAgents.map(a => a.id))
+    const uniqueIds = [...new Set(group.ids)].filter(id => capable.has(id))
     const results = await Promise.allSettled(
       uniqueIds.map((agentId) => skills.toggleAgent(skillId, agentId, enabled))
     )
@@ -200,16 +211,25 @@ function onSkillsChanged() {
   skills.load().catch((e: unknown) => console.warn('reload skills failed:', e))
 }
 
-onMounted(async () => {
-  unsubscribeSkillsChanged = events.on('skills:changed', onSkillsChanged)
-  await skills.load()
-  if (needsReloadAfterLoad) {
+// 监听 skills.loading 从 true 变 false：若 load 期间有 skills:changed 到达则重新加载，
+// 避免事件被永久丢弃（I-13）。覆盖初始加载与后续所有 load（如 scanSkills 触发的）。
+watch(() => skills.loading, (loading, prev) => {
+  if (prev && !loading && needsReloadAfterLoad) {
     needsReloadAfterLoad = false
-    await skills.load().catch((e: unknown) => console.warn('deferred reload skills failed:', e))
+    skills.load().catch((e: unknown) => console.warn('deferred reload skills failed:', e))
   }
 })
 
-onUnmounted(() => {
+onMounted(async () => {
+  await skills.load()
+})
+
+// KeepAlive 下用 onActivated/onDeactivated 管理事件订阅，避免缓存视图与 App.vue 双重处理
+onActivated(() => {
+  unsubscribeSkillsChanged = events.on('skills:changed', onSkillsChanged)
+})
+
+onDeactivated(() => {
   unsubscribeSkillsChanged?.()
 })
 

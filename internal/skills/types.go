@@ -6,6 +6,9 @@ type Skill struct {
 	Description string   `json:"description,omitempty"`
 	Directory   string   `json:"directory"`
 	ContentHash string   `json:"contentHash,omitempty"`
+	// SkillMdHash 是 SKILL.md 单文件的内容哈希（算法与市场侧一致），
+	// 供市场页做内容级已安装匹配；ContentHash 是全目录哈希，两侧无法比较。
+	SkillMdHash string   `json:"skillMdHash,omitempty"`
 	BoundAgents []string `json:"boundAgents"`
 	InstalledAt string   `json:"installedAt"`
 	UpdatedAt   string   `json:"updatedAt"`
@@ -59,11 +62,11 @@ type MigrationResult struct {
 // UnmanagedSkill represents a skill found in an agent's skills directory
 // that is not managed by AgentPack (not in SSOT).
 type UnmanagedSkill struct {
-	AgentID    string   `json:"agentId"`
-	Directory  string   `json:"directory"`
-	Path       string   `json:"path"`
-	Name       string   `json:"name,omitempty"`
-	FoundIn    []string `json:"foundIn,omitempty"`
+	AgentID   string   `json:"agentId"`
+	Directory string   `json:"directory"`
+	Path      string   `json:"path"`
+	Name      string   `json:"name,omitempty"`
+	FoundIn   []string `json:"foundIn,omitempty"`
 }
 
 // AdoptionResult 是 AutoAdopt 的返回结果

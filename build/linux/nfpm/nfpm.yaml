@@ -6,13 +6,13 @@
 name: "AgentPack"
 arch: ${GOARCH}
 platform: "linux"
-version: "0.2.0"
+version: "0.2.3"
 section: "default"
 priority: "extra"
-maintainer: ${GIT_COMMITTER_NAME} <${GIT_COMMITTER_EMAIL}>
+maintainer: "sugu6 <sugu6@users.noreply.github.com>"
 description: "AgentPack"
 vendor: "sugu6"
-homepage: "https://wails.io"
+homepage: "https://github.com/sugu6/Agentpack"
 license: "MIT"
 release: "1"
 
@@ -21,7 +21,7 @@ contents:
     dst: /usr/local/bin/AgentPack
   - src: ./build/appicon.png
     dst: /usr/share/icons/hicolor/128x128/apps/AgentPack.png
-  - src: ./build/linux/AgentPack.desktop
+  - src: ./build/linux/desktop
     dst: /usr/share/applications/AgentPack.desktop
 
 # Default dependencies for the GTK4 + WebKitGTK 6.0 stack (Ubuntu 24.04+ / Debian 13+)

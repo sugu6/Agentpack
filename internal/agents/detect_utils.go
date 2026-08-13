@@ -38,7 +38,13 @@ func CheckCommandExists(cmd string) bool {
 	for _, dir := range filepath.SplitList(path) {
 		for _, ext := range exts {
 			cmdPath := filepath.Join(dir, cmd+ext)
-			if fileExists(cmdPath) {
+			info, err := os.Stat(cmdPath)
+			if err != nil {
+				continue
+			}
+			// Windows 不校验可执行权限（PATHEXT 已限定扩展名）；
+			// Unix 额外校验任意可执行位，避免把不可执行的普通文件误判为命令。
+			if runtime.GOOS == "windows" || info.Mode().Perm()&0111 != 0 {
 				return true
 			}
 		}
@@ -79,6 +85,20 @@ func CheckNpmPackageInstalled(pkg string) bool {
 	return checkNpmPackageSingle(pkg)
 }
 
+// markNpmCacheFailed 在 npm list -g 超时/输出不可解析时记录失败结果：
+// 写入空缓存并更新时间戳，避免 60 秒内每次 CheckNpmPackageInstalled 都重新
+// 触发一次带 30s 超时的 npm 子进程（多适配器扫描时会串行重试多次）。
+// 该窗口内 npm 包检测返回"未安装"，CLI 检测会回退到 PATH 命令检查；
+// 下次 Scan 时 ResetNpmCache 会强制重新探测。
+func markNpmCacheFailed() {
+	npmCacheMu.Lock()
+	defer npmCacheMu.Unlock()
+	if npmCache == nil {
+		npmCache = make(map[string]bool)
+	}
+	npmCacheLoadedAt = time.Now()
+}
+
 // loadNpmCache 一次性加载所有 npm 全局包到缓存
 func loadNpmCache() {
 	cache := make(map[string]bool)
@@ -103,10 +123,9 @@ func loadNpmCache() {
 	if err != nil {
 		// 区分两种情况：
 		// 1. npm list 在有 extraneous 包时返回 exit code 1，但仍有有效输出 → 继续解析
-		// 2. 超时或执行失败且无输出 → 不更新缓存时间戳，让下次调用立即重试
+		// 2. 超时或执行失败且无输出 → 记失败缓存，避免后续调用反复触发 30s 超时
 		if len(output) == 0 {
-			// 执行失败且无输出，可能是超时或 npm 崩溃。
-			// 不更新 npmCacheLoadedAt，让下次 CheckNpmPackageInstalled 立即重试。
+			markNpmCacheFailed()
 			return
 		}
 	}
@@ -116,7 +135,8 @@ func loadNpmCache() {
 		Dependencies map[string]struct{} `json:"dependencies"`
 	}
 	if err := json.Unmarshal(output, &result); err != nil {
-		// JSON 解析失败，不更新缓存时间戳，让下次调用立即重试
+		// JSON 解析失败：记失败，避免每次调用都重试 npm list
+		markNpmCacheFailed()
 		return
 	}
 	for name := range result.Dependencies {
@@ -250,52 +270,6 @@ func ResetRegistryCache() {
 	regCacheLoadedAt = time.Time{}
 }
 
-// GetAppDataPath 获取应用数据目录
-func GetAppDataPath(appName string, platformPaths map[string][]string) []string {
-	h := homeDir()
-	if h == "" {
-		return nil
-	}
-
-	paths := make([]string, 0)
-	switch runtime.GOOS {
-	case "windows":
-		appData := os.Getenv("APPDATA")
-		localAppData := os.Getenv("LOCALAPPDATA")
-		for _, subPath := range platformPaths["windows"] {
-			if appData != "" {
-				paths = append(paths, filepath.Join(appData, subPath))
-			}
-			if localAppData != "" {
-				paths = append(paths, filepath.Join(localAppData, subPath))
-			}
-			paths = append(paths, filepath.Join(h, "AppData", "Roaming", subPath))
-			paths = append(paths, filepath.Join(h, "AppData", "Local", subPath))
-		}
-	case "darwin":
-		for _, subPath := range platformPaths["darwin"] {
-			paths = append(paths, filepath.Join(h, "Library", "Application Support", subPath))
-		}
-	default:
-		for _, subPath := range platformPaths["linux"] {
-			paths = append(paths, filepath.Join(h, ".config", subPath))
-			paths = append(paths, filepath.Join(h, "."+strings.ToLower(appName)))
-		}
-	}
-	return paths
-}
-
-// DetectAppDir 检测应用数据目录是否存在
-func DetectAppDir(appName string, platformPaths map[string][]string) (string, bool) {
-	paths := GetAppDataPath(appName, platformPaths)
-	for _, path := range paths {
-		if dirExists(path) {
-			return path, true
-		}
-	}
-	return "", false
-}
-
 // FirstExistingFile 返回第一个存在的文件路径
 func FirstExistingFile(candidates []string) string {
 	for _, c := range candidates {
@@ -306,31 +280,118 @@ func FirstExistingFile(candidates []string) string {
 	return ""
 }
 
-// FirstExistingDir 返回第一个存在的目录路径
-func FirstExistingDir(candidates []string) string {
-	for _, c := range candidates {
-		if dirExists(c) {
-			return c
+// pathExists 判断路径是否存在（文件或目录均可）
+func pathExists(p string) bool {
+	if p == "" {
+		return false
+	}
+	_, err := os.Stat(p)
+	return err == nil
+}
+
+// expandEnvPath 展开路径中的环境变量与用户主目录标记：
+// 支持 %VAR%（Windows 风格）、$VAR/${VAR} 以及前导 ~。
+func expandEnvPath(p string) string {
+	if p == "" {
+		return ""
+	}
+	if p == "~" || strings.HasPrefix(p, "~/") || strings.HasPrefix(p, `~\`) {
+		if h := homeDir(); h != "" {
+			p = filepath.Join(h, strings.TrimLeft(p, `~/\`))
 		}
+	}
+	return os.ExpandEnv(percentToDollar(p))
+}
+
+// percentToDollar 把 %VAR% 转为 $VAR，以便 os.ExpandEnv 展开
+func percentToDollar(s string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		if s[i] == '%' {
+			if j := strings.IndexByte(s[i+1:], '%'); j > 0 {
+				b.WriteByte('$')
+				b.WriteString(s[i+1 : i+1+j])
+				i += j + 1
+				continue
+			}
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
+}
+
+// isRegistryEntryLive 判断 Uninstall 注册表条目是否对应磁盘上真实存在的安装。
+// 卸载器常残留 Uninstall 条目：InstallLocation/UninstallString 指向已被删除的路径。
+// 只有安装目录或卸载程序仍存在时才视为真实安装，否则判定为残留条目。
+// 独立实现（不依赖 registry 包），便于在任意平台写单元测试。
+func isRegistryEntryLive(installLocation, uninstallString string) bool {
+	if installLocation != "" && dirExists(installLocation) {
+		return true
+	}
+	// MSI 安装条目：UninstallString 形如 "MsiExec.exe /X{GUID}"（相对或绝对路径）。
+	// msiexec.exe 是常驻系统组件，其存在不能证明目标应用仍在，但 MSI 卸载器
+	// 会同步清理自身注册表条目（残留概率极低）；若据此过滤会把 winget/MSI
+	// 安装的应用误判为未安装，故按已安装处理。
+	if strings.Contains(strings.ToLower(uninstallString), "msiexec") {
+		return true
+	}
+	p := extractUninstallPath(uninstallString)
+	// 既无 InstallLocation 又无可用卸载路径的条目（仅剩 DisplayName）按残留过滤
+	if p == "" {
+		return false
+	}
+	return fileExists(p)
+}
+
+// extractUninstallPath 从 UninstallString 中提取卸载程序路径。
+// 支持引号包裹（"C:\...\uninstall.exe" /S）与裸路径两种形式；
+// 形如 MsiExec.exe /X{GUID} 的无绝对路径条目返回空串。
+func extractUninstallPath(uninstallString string) string {
+	s := strings.TrimSpace(uninstallString)
+	if s == "" {
+		return ""
+	}
+	if s[0] == '"' {
+		if i := strings.IndexByte(s[1:], '"'); i >= 0 {
+			p := s[1 : 1+i]
+			if filepath.IsAbs(p) {
+				return p
+			}
+		}
+		return ""
+	}
+	// 无引号：优先尝试截取到 .exe 结尾（兼容含空格但未加引号的路径，
+	// 例如 C:\Program Files\App\uninstall.exe /S）；再取第一个绝对路径 token
+	if i := strings.Index(strings.ToLower(s), ".exe"); i > 0 {
+		p := s[:i+len(".exe")]
+		if filepath.IsAbs(p) {
+			return p
+		}
+	}
+	fields := strings.Fields(s)
+	if len(fields) > 0 && filepath.IsAbs(fields[0]) {
+		return fields[0]
 	}
 	return ""
 }
 
 // DetectIDE 通用的 IDE 检测函数
-// 先通过注册表检测，失败后回退到目录检测
-// appName 用于目录检测时作为应用名称，来自 registryNames[0]
+// 先通过注册表检测（Windows），失败后检查平台安装位置候选文件
+// （可执行文件 / .app / desktop 文件）。
+// 注意：不再用用户配置目录（%APPDATA%、~/.cursor 等）充当"已安装"证据——
+// 卸载器不会删除这些目录，残留目录会把已卸载的 IDE 误判为已安装。
 // excludeNames 可选，用于排除注册表中包含特定子串的条目（如 trae.go 排除 "cn"）
-func DetectIDE(registryNames []string, appPaths map[string][]string, excludeNames ...string) bool {
+func DetectIDE(registryNames []string, installPaths map[string][]string, excludeNames ...string) bool {
 	if len(registryNames) == 0 {
 		return false
 	}
-	hasIDE := CheckAppInstalledViaRegistryExclude(registryNames, excludeNames)
-	if hasIDE {
+	if CheckAppInstalledViaRegistryExclude(registryNames, excludeNames) {
 		return true
 	}
-	appName := registryNames[0]
-	if _, ok := DetectAppDir(appName, appPaths); ok {
-		return true
+	for _, p := range installPaths[runtime.GOOS] {
+		if pathExists(expandEnvPath(p)) {
+			return true
+		}
 	}
 	return false
 }
@@ -354,7 +415,9 @@ func BuildDetectInfo(hasIDE, hasCLI, hasDesktop, hasConfig bool, variant AgentVa
 	hasAnyAgent := hasIDE || hasCLI || hasDesktop
 
 	if !hasAnyAgent && !hasConfig {
-		return &DetectInfo{Status: StatusNotFound, ConfigPath: configPath}
+		// 全部未命中时仍保留传入的 variant，避免条目以空 variant 注册
+		// （如 Desktop 适配器未检测到时的 VariantDesktop）。
+		return &DetectInfo{Status: StatusNotFound, Variant: variant, ConfigPath: configPath}
 	}
 
 	if !hasAnyAgent {

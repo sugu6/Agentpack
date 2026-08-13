@@ -32,15 +32,15 @@ const installError = ref('')
 
 // 匹配已安装的 skill
 // 匹配策略：
-// 0. 内容指纹匹配（SKILL.md SHA256）— hash 一致即为同一 skill，最精确
+// 0. SKILL.md 内容指纹匹配（skillMdHash 与市场侧 contentHash 算法一致）— 最精确
 // 1. 双方都有 repoOwner → 精确匹配 repoOwner + repoName
 // 2. 双方都无 repoOwner（stub/无来源）→ name 匹配即视为已安装
 // 3. 一方有仓库来源另一方没有 → 不匹配（不同仓库的同名 skill）
 const installedSkill = computed(() =>
   skillsStore.skills.find(s => {
     if (s.directory !== props.skill.directory) return false
-    // 0. 内容指纹匹配：hash 一致即为同一 skill（最精确）
-    if (s.contentHash && props.skill.contentHash && s.contentHash === props.skill.contentHash) {
+    // 0. SKILL.md 内容指纹匹配：哈希一致即为同一 skill（最精确，不依赖仓库归属）
+    if (s.skillMdHash && props.skill.contentHash && s.skillMdHash === props.skill.contentHash) {
       return true
     }
     // 1. 双方都有仓库来源 → 精确匹配 repoOwner + repoName

@@ -37,11 +37,11 @@ import {
   UninstallSkill,
   AddMcpServer,
   AddSkillRepo,
-  BackfillSkillSources,
   CancelDownload,
   CheckSkillUpdates,
   CheckUpdate,
   DeleteMcpServer,
+  GetLastBackfillResult,
   RemoveSkillRepo,
   StartDownloadUpdate,
   PauseDownload,
@@ -187,6 +187,7 @@ export interface ScanResult {
   total: number
   managed: number
   newFound: number
+  failed: number
 }
 
 export type MarketSource = 'official' | 'github' | 'local' | (string & {})
@@ -264,6 +265,8 @@ export interface Skill {
   description?: string
   directory: string
   contentHash?: string
+  /** SKILL.md 单文件内容哈希（算法与市场侧一致），用于市场页内容级已安装匹配 */
+  skillMdHash?: string
   boundAgents: string[] | null
   installedAt: string
   updatedAt: string
@@ -368,7 +371,17 @@ export const api = {
   skills: {
     list: async () => optimizeToPlainObject(await ListSkills()) as Skill[],
     listCapableAgents: async () => optimizeToPlainObject(await ListSkillCapableAgents()) as Agent[],
-    backfillSources: () => safeCall(() => BackfillSkillSources()) as Promise<SkillSourceBackfillResult>,
+    // 最近一次自动来源回填的结果（启动时后端后台执行；从未执行过时返回 null）
+    lastBackfillResult: async (): Promise<SkillSourceBackfillResult | null> => {
+      const [res, done] = await GetLastBackfillResult()
+      if (!done) return null
+      return {
+        matched: res?.matched ?? [],
+        mismatched: res?.mismatched ?? [],
+        unmatched: res?.unmatched ?? [],
+        failed: res?.failed ?? [],
+      }
+    },
     importDirectory: (path: string, agentIDs: string[]) => safeCall(() => ImportSkillDirectory(path, agentIDs)),
     installFromZip: (zipPath: string, agentIDs: string[]) => safeCall(() => InstallSkillFromZip(zipPath, agentIDs)),
     toggleAgent: (id: string, agentID: string, enabled: boolean) => safeCall(() => ToggleSkillAgent(id, agentID, enabled)),
@@ -419,7 +432,11 @@ export const api = {
     pickDirectory: () => safeCall(() => PickDirectory()),
     setTheme: (theme: string) => safeCall(() => SetTheme(theme)),
     getStartupErrors: () => safeCall(() => GetStartupErrors() as Promise<string[]>),
-    openUrl: (url: string) => { OpenURL(url) },
+    openUrl: (url: string) => {
+      // 仅允许 http/https，防止恶意 scheme（如 file://、javascript:）被交给系统打开器执行。
+      if (!/^https?:\/\//i.test(url)) return
+      safeCall(() => OpenURL(url))
+    },
     quit: () => safeCall(() => Quit()),
     hideWindow: () => safeCall(() => HideWindow()),
     showWindow: () => safeCall(() => ShowWindow()),

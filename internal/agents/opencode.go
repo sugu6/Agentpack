@@ -51,8 +51,9 @@ func (a *OpenCodeDesktopAdapter) Detect() *DetectInfo {
 	}
 
 	configPath := filepath.Join(h, ".config", "opencode", "opencode.json")
+	hasConfig := fileExists(configPath)
 
 	hasDesktop := CheckAppInstalledViaRegistry([]string{"OpenCode"})
 
-	return BuildDetectInfo(false, false, hasDesktop, false, VariantDesktop, configPath)
+	return BuildDetectInfo(false, false, hasDesktop, hasConfig, VariantDesktop, configPath)
 }

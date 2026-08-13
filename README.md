@@ -29,8 +29,8 @@ AgentPack 是一个基于 [Wails v3](https://v3.wails.io)（Go + Vue 3 + TypeScr
 | Codex (OpenAI) | CLI / Desktop | TOML |
 | Cursor | IDE | JSON |
 | OpenCode | CLI / Desktop | JSON |
-| Trae | IDE | JSON |
-| Trae CN | IDE | JSON |
+| TraeCode | IDE | JSON |
+| TraeCode CN | IDE | JSON |
 
 > Desktop 变体仅在 Windows 上检测（通过注册表 / UWP 包检测）；CLI 变体通过 npm 全局包或 PATH 命令检测；IDE 变体通过注册表 / 应用目录检测。
 
@@ -109,7 +109,16 @@ wails3 task linux:build
 
 # 生成 Windows NSIS 安装包
 wails3 task windows:package
+
+# macOS 打包（需在 macOS 上执行）
+wails3 task darwin:package        # 生成 .app 应用包
+wails3 task darwin:package:dmg    # 生成带背景/图标样式的 .dmg 安装包
 ```
+
+DMG 外观可通过任务变量定制（`DMG_BACKGROUND` 背景图、`DMG_VOLUME_ICON` 卷图标、
+`DMG_FILE_ICON` 文件图标、`DMG_WINDOW_WIDTH/HEIGHT` Finder 窗口尺寸、
+`DMG_FILES` 附加文件），例如：
+`wails3 task darwin:package:dmg -- --DMG_BACKGROUND ./my-background.png`
 
 构建产物位于 `build/bin/` 目录下。
 
@@ -138,7 +147,6 @@ AgentPack/
 │   ├── dbutil/            # 数据库工具函数
 │   ├── i18n/              # 国际化（zh-CN / en）
 │   ├── iowriter/          # 原子写入
-│   ├── lockfile/          # 跨平台文件锁
 │   ├── logger/            # 日志工具
 │   ├── market/            # 技能市场（Official / skills.sh / GitHub）
 │   ├── mcp/               # MCP 服务器存储
@@ -156,7 +164,7 @@ AgentPack/
 ├── build/                 # 各平台构建资源（v3 Taskfile 结构）
 │   ├── config.yml         # Wails v3 构建配置
 │   ├── windows/           # Windows 安装包资源
-│   ├── darwin/            # macOS 构建资源
+│   ├── darwin/            # macOS 构建资源（.app 打包 + DMG 素材）
 │   └── linux/             # Linux 构建资源
 └── scripts/               # 构建与发布脚本
 ```

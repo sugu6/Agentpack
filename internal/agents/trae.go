@@ -9,7 +9,7 @@ type TraeAdapter struct{}
 func NewTraeAdapter() *TraeAdapter { return &TraeAdapter{} }
 
 func (a *TraeAdapter) ID() string                 { return "trae" }
-func (a *TraeAdapter) Name() string               { return "Trae" }
+func (a *TraeAdapter) Name() string               { return "TraeCode" }
 func (a *TraeAdapter) Type() AgentType            { return TypeTrae }
 func (a *TraeAdapter) ConfigFormat() ConfigFormat { return FormatJSON }
 
@@ -28,10 +28,12 @@ func (a *TraeAdapter) Detect() *DetectInfo {
 
 	hasIDE := DetectIDE(
 		[]string{"Trae", "Trae IDE"},
+		// Windows 上 Trae 安装目录由用户自选、无标准位置，以注册表
+		// （已做 InstallLocation 物理存在校验）为准，故不提供候选路径
 		map[string][]string{
-			"windows": {"Trae", "Trae/User"},
-			"darwin":  {"Trae", "com.trae.app"},
-			"linux":   {"Trae"},
+			"windows": {},
+			"darwin":  {"/Applications/Trae.app", "~/Applications/Trae.app", "/Applications/TraeCode.app", "~/Applications/TraeCode.app"},
+			"linux":   {"~/.local/share/applications/trae.desktop", "/usr/share/applications/trae.desktop", "~/.local/share/applications/traecode.desktop", "/usr/share/applications/traecode.desktop"},
 		},
 		"cn",
 	)
@@ -44,6 +46,10 @@ func (a *TraeAdapter) findConfigPath(h string) string {
 		filepath.Join(h, "AppData", "Roaming", "Trae", "User", "mcp.json"),
 		filepath.Join(h, "Library", "Application Support", "Trae", "User", "mcp.json"),
 		filepath.Join(h, ".config", "Trae", "User", "mcp.json"),
+		// 更名后新安装的客户端可能使用新品牌目录
+		filepath.Join(h, "AppData", "Roaming", "TraeCode", "User", "mcp.json"),
+		filepath.Join(h, "Library", "Application Support", "TraeCode", "User", "mcp.json"),
+		filepath.Join(h, ".config", "TraeCode", "User", "mcp.json"),
 		filepath.Join(h, ".trae", "mcp.json"),
 	}
 	if found := FirstExistingFile(candidates); found != "" {

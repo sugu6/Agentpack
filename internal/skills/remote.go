@@ -1,6 +1,7 @@
 package skills
 
 import (
+	"agentpack/internal/appmeta"
 	"bytes"
 	"context"
 	"crypto/sha1"
@@ -365,6 +366,12 @@ func localHashEqual(path, remoteHex string, hashFn func([]byte) string) bool {
 func verifyChangedFiles(ctx context.Context, sk Skill, fullPath, branch, ssotPath string, tree remoteTree, changed []string) ([]string, error) {
 	var realChanged []string
 	for _, rel := range changed {
+		// 与 updateSkillViaTree 一致：远程路径必须通过校验才能拼入本地路径
+		safeRel, err := safeRelPath(rel)
+		if err != nil {
+			return nil, fmt.Errorf("verify %s: %w", rel, err)
+		}
+		rel = safeRel
 		remotePath := rel
 		if prefix := strings.Trim(fullPath, "/"); prefix != "" {
 			remotePath = prefix + "/" + rel
@@ -587,7 +594,8 @@ func httpGetBodyOne(ctx context.Context, u string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", "AgentPack/0.1 (+https://github.com/anomalyco/agentpack)")
+	// 版本号由 appmeta 在启动时注入，避免与发布版本脱钩
+	req.Header.Set("User-Agent", appmeta.UserAgent("https://github.com/sugu6/AgentPack"))
 	resp, err := tarballHTTPClient.Do(req)
 	if err != nil {
 		return nil, err

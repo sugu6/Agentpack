@@ -35,16 +35,21 @@ type Store struct {
 // 递增此版本号可使旧缓存文件失效，强制重新拉取最新数据。
 //
 // v11: 修复 github_skills.go 中 fetchSkillMeta CDN 失败时跳过整个 skill 的 bug。
-//   旧缓存（v10）中 anthropics/skills 仓库只有 1 个 canvas-design skill，
-//   其他 17 个因 jsDelivr CDN 限流被跳过。升级后强制重新拉取，所有 skill 都会出现。
+//
+//	旧缓存（v10）中 anthropics/skills 仓库只有 1 个 canvas-design skill，
+//	其他 17 个因 jsDelivr CDN 限流被跳过。升级后强制重新拉取，所有 skill 都会出现。
+//
 // v15: MCP servers 搜索改回 API cursor 分页(放弃全量缓存)。
-//   registry API 每页 20 秒(网络瓶颈),全量加载几千个 server 需要几十分钟,
-//   后台预取永远完不成,导致 Transport 筛选只能用 100 条数据,LoadMore 到 100 条就停。
-//   新方案:Search 直接透传给 fetcher(API cursor 分页),Transport 筛选改到前端做
-//   (前端从已加载的 items 累积过滤),LoadMore 用 API cursor 一定能继续加载。
+//
+//	registry API 每页 20 秒(网络瓶颈),全量加载几千个 server 需要几十分钟,
+//	后台预取永远完不成,导致 Transport 筛选只能用 100 条数据,LoadMore 到 100 条就停。
+//	新方案:Search 直接透传给 fetcher(API cursor 分页),Transport 筛选改到前端做
+//	(前端从已加载的 items 累积过滤),LoadMore 用 API cursor 一定能继续加载。
+//
 // v16: GitHub fetcher 在 fetchSkillMeta 中直接计算 ContentHash，避免后续重复 CDN 请求。
-//   populateContentHashes 改为并发 5 路 + 同时补全 skills.sh 来源缺失的 Name/Description。
-//   旧缓存缺少 ContentHash 和 Description，需强制刷新。
+//
+//	populateContentHashes 改为并发 5 路 + 同时补全 skills.sh 来源缺失的 Name/Description。
+//	旧缓存缺少 ContentHash 和 Description，需强制刷新。
 const cacheVersion = 16
 
 type ServerFetcher interface {

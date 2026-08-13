@@ -28,10 +28,20 @@ func (a *CursorAdapter) Detect() *DetectInfo {
 
 	hasIDE := DetectIDE(
 		[]string{"Cursor", "Cursor Editor"},
+		// 安装位置候选；配置目录（%APPDATA%\Cursor 等）不作为已安装证据，
+		// 卸载后残留的配置目录会把已卸载的 Cursor 误判为已安装
 		map[string][]string{
-			"windows": {"Cursor", "Cursor/User"},
-			"darwin":  {"Cursor", "com.cursor.app"},
-			"linux":   {"Cursor"},
+			"windows": {
+				`%LOCALAPPDATA%\Programs\cursor\Cursor.exe`,
+				`%LOCALAPPDATA%\Programs\Cursor\Cursor.exe`,
+				`%ProgramFiles%\Cursor\Cursor.exe`,
+			},
+			"darwin": {"/Applications/Cursor.app", "~/Applications/Cursor.app"},
+			"linux": {
+				"~/.local/share/applications/cursor.desktop",
+				"/usr/share/applications/cursor.desktop",
+				"/var/lib/snapd/desktop/applications/cursor_cursor.desktop",
+			},
 		},
 	)
 

@@ -56,15 +56,15 @@ type registryRepo struct {
 }
 
 type registryPackage struct {
-	RegistryType         string               `json:"registryType"`
-	RegistryBaseURL      string               `json:"registryBaseUrl,omitempty"`
-	Identifier           string               `json:"identifier"`
-	Version              string               `json:"version"`
-	RuntimeHint          string               `json:"runtimeHint,omitempty"`
-	Transport            registryTransport    `json:"transport"`
-	RuntimeArguments     []registryArgument   `json:"runtimeArguments,omitempty"`
-	PackageArguments     []registryArgument   `json:"packageArguments,omitempty"`
-	EnvironmentVariables []registryEnvVar     `json:"environmentVariables,omitempty"`
+	RegistryType         string             `json:"registryType"`
+	RegistryBaseURL      string             `json:"registryBaseUrl,omitempty"`
+	Identifier           string             `json:"identifier"`
+	Version              string             `json:"version"`
+	RuntimeHint          string             `json:"runtimeHint,omitempty"`
+	Transport            registryTransport  `json:"transport"`
+	RuntimeArguments     []registryArgument `json:"runtimeArguments,omitempty"`
+	PackageArguments     []registryArgument `json:"packageArguments,omitempty"`
+	EnvironmentVariables []registryEnvVar   `json:"environmentVariables,omitempty"`
 }
 
 type registryTransport struct {
@@ -95,8 +95,8 @@ type registryRemote struct {
 }
 
 type registryMetaWrapper struct {
-	Official          registryMeta                `json:"io.modelcontextprotocol.registry/official"`
-	PublisherProvided *registryPublisherProvided  `json:"io.modelcontextprotocol.registry/publisher-provided,omitempty"`
+	Official          registryMeta               `json:"io.modelcontextprotocol.registry/official"`
+	PublisherProvided *registryPublisherProvided `json:"io.modelcontextprotocol.registry/publisher-provided,omitempty"`
 }
 
 type registryPublisherProvided struct {

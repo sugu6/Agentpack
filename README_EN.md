@@ -30,8 +30,8 @@ Supported agents:
 | Codex (OpenAI) | CLI / Desktop | TOML |
 | Cursor | IDE | JSON |
 | OpenCode | CLI / Desktop | JSON |
-| Trae | IDE | JSON |
-| Trae CN | IDE | JSON |
+| TraeCode | IDE | JSON |
+| TraeCode CN | IDE | JSON |
 
 > Desktop variants are detected on Windows only (via registry / UWP package detection); CLI variants via npm global packages or PATH commands; IDE variants via registry / application directory detection.
 

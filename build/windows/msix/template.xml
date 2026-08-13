@@ -8,29 +8,27 @@
         AllowPromptForPassword="false">
     </Settings>
     <Installer
-        Path="v3proof.exe"
+        Path="AgentPack.exe"
         Arguments=""
-        InstallLocation="C:\Program Files\My Company\My Product">
+        InstallLocation="C:\Program Files\sugu6\AgentPack">
     </Installer>
     <PackageInformation
-        PackageName="My Product"
-        PackageDisplayName="My Product"
-        PublisherName="CN=My Company"
-        PublisherDisplayName="My Company"
-        Version="0.1.0.0"
-        PackageDescription="A v3proof application">
+        PackageName="AgentPack"
+        PackageDisplayName="AgentPack"
+        PublisherName="CN=sugu6"
+        PublisherDisplayName="sugu6"
+        Version="0.2.3.0"
+        PackageDescription="AgentPack - Unified management of MCP / Skills / Agent configurations">
         <Capabilities>
             <Capability Name="runFullTrust" />
-            
         </Capabilities>
         <Applications>
             <Application
-                Id="com.example.v3proof"
-                Description="A v3proof application"
-                DisplayName="My Product"
-                ExecutableName="v3proof.exe"
+                Id="com.sugu6.agentpack"
+                Description="AgentPack - Unified management of MCP / Skills / Agent configurations"
+                DisplayName="AgentPack"
+                ExecutableName="AgentPack.exe"
                 EntryPoint="Windows.FullTrustApplication">
-                
             </Application>
         </Applications>
         <Resources>
@@ -41,13 +39,13 @@
         </Dependencies>
         <Properties>
             <Framework>false</Framework>
-            <DisplayName>My Product</DisplayName>
-            <PublisherDisplayName>My Company</PublisherDisplayName>
-            <Description>A v3proof application</Description>
+            <DisplayName>AgentPack</DisplayName>
+            <PublisherDisplayName>sugu6</PublisherDisplayName>
+            <Description>AgentPack - Unified management of MCP / Skills / Agent configurations</Description>
             <Logo>Assets\AppIcon.png</Logo>
         </Properties>
     </PackageInformation>
-    <SaveLocation PackagePath="v3proof.msix" />
+    <SaveLocation PackagePath="AgentPack.msix" />
     <PackageIntegrity>
         <CertificatePath></CertificatePath>
     </PackageIntegrity>

@@ -105,6 +105,13 @@ func validateTarballInput(input TarballInstallInput) error {
 	if !isSafeGitHubIdent(input.RepoOwner) || !isSafeGitHubIdent(input.RepoName) {
 		return fmt.Errorf("invalid repo owner/name")
 	}
+	// FullPath 由前端传入（安装时用于在 tarball 内精准定位 SKILL.md 目录），
+	// 必须通过相对路径校验，防止 ".." 逃出解压临时目录后纳管磁盘上任意目录。
+	if input.FullPath != "" {
+		if _, err := safeRelPath(input.FullPath); err != nil {
+			return fmt.Errorf("invalid skill full path %q: %w", input.FullPath, err)
+		}
+	}
 	return nil
 }
 
@@ -274,6 +281,10 @@ func findSkillRootInTarball(dir, directory, fullPath string) (string, error) {
 		// 情况 0（优先）：fullPath 非空时直接拼接完整路径
 		// 如 fullPath="skills/pdf" → topDir/skills/pdf/SKILL.md
 		if fullPath != "" {
+			// 纵深防御：即使调用方未走 validateTarballInput，也拒绝穿越路径
+			if _, err := safeRelPath(fullPath); err != nil {
+				return "", fmt.Errorf("invalid full path %q: %w", fullPath, err)
+			}
 			targetSub := filepath.Join(topDir, filepath.FromSlash(fullPath))
 			if HasSkillManifest(targetSub) {
 				return targetSub, nil

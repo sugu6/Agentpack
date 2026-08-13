@@ -419,6 +419,7 @@ func TestStore_UpdateRollsBackOldConfigRemovalFailure(t *testing.T) {
 	reg := agents.NewRegistry()
 	reg.Register(agents.Agent{ID: "claude-code", Name: "Claude Code", Type: agents.TypeClaudeCode, Status: agents.StatusEnabled, ConfigPath: claudePath, ConfigFormat: agents.FormatJSON})
 	reg.Register(agents.Agent{ID: "cursor", Name: "Cursor", Type: agents.TypeCursor, Status: agents.StatusEnabled, ConfigPath: cursorPath, ConfigFormat: agents.FormatJSON})
+	seedManagedFromDisk(t, reg)
 
 	store := NewStore()
 	if err := store.Load(reg); err != nil {
@@ -543,6 +544,7 @@ func TestStore_MergeByCommandArgs(t *testing.T) {
 	reg := agents.NewRegistry()
 	reg.Register(agents.Agent{ID: "claude-code", Name: "Claude Code", Type: agents.TypeClaudeCode, Status: agents.StatusEnabled, ConfigPath: claudePath, ConfigFormat: agents.FormatJSON})
 	reg.Register(agents.Agent{ID: "cursor", Name: "Cursor", Type: agents.TypeCursor, Status: agents.StatusEnabled, ConfigPath: cursorPath, ConfigFormat: agents.FormatJSON})
+	seedManagedFromDisk(t, reg)
 
 	store := NewStore()
 	if err := store.Load(reg); err != nil {
@@ -573,6 +575,7 @@ func TestStore_MergeByCommandArgsIgnoreOtherFields(t *testing.T) {
 	reg := agents.NewRegistry()
 	reg.Register(agents.Agent{ID: "claude-code", Name: "Claude Code", Type: agents.TypeClaudeCode, Status: agents.StatusEnabled, ConfigPath: claudePath, ConfigFormat: agents.FormatJSON})
 	reg.Register(agents.Agent{ID: "cursor", Name: "Cursor", Type: agents.TypeCursor, Status: agents.StatusEnabled, ConfigPath: cursorPath, ConfigFormat: agents.FormatJSON})
+	seedManagedFromDisk(t, reg)
 
 	store := NewStore()
 	if err := store.Load(reg); err != nil {
@@ -602,6 +605,7 @@ func TestStore_MergeByCommandArgsDifferentName(t *testing.T) {
 	reg := agents.NewRegistry()
 	reg.Register(agents.Agent{ID: "claude-code", Name: "Claude Code", Type: agents.TypeClaudeCode, Status: agents.StatusEnabled, ConfigPath: claudePath, ConfigFormat: agents.FormatJSON})
 	reg.Register(agents.Agent{ID: "cursor", Name: "Cursor", Type: agents.TypeCursor, Status: agents.StatusEnabled, ConfigPath: cursorPath, ConfigFormat: agents.FormatJSON})
+	seedManagedFromDisk(t, reg)
 
 	store := NewStore()
 	if err := store.Load(reg); err != nil {
@@ -634,6 +638,7 @@ args = ["mcp-server-git"]`)
 	reg := agents.NewRegistry()
 	reg.Register(agents.Agent{ID: "claude-code", Name: "Claude Code", Type: agents.TypeClaudeCode, Status: agents.StatusEnabled, ConfigPath: claudePath, ConfigFormat: agents.FormatJSON})
 	reg.Register(agents.Agent{ID: "codex", Name: "Codex", Type: agents.TypeCodex, Status: agents.StatusEnabled, ConfigPath: codexPath, ConfigFormat: agents.FormatTOML})
+	seedManagedFromDisk(t, reg)
 
 	store := NewStore()
 	if err := store.Load(reg); err != nil {
@@ -662,6 +667,7 @@ func TestStore_SharedConfigPathBindsBothAgents(t *testing.T) {
 	reg := agents.NewRegistry()
 	reg.Register(agents.Agent{ID: "opencode", Name: "OpenCode", Type: agents.TypeOpenCode, Status: agents.StatusEnabled, ConfigPath: opencodePath, ConfigFormat: agents.FormatJSON})
 	reg.Register(agents.Agent{ID: "opencode-desktop", Name: "OpenCode", Type: agents.TypeOpenCode, Status: agents.StatusEnabled, ConfigPath: opencodePath, ConfigFormat: agents.FormatJSON})
+	seedManagedFromDisk(t, reg)
 
 	store := NewStore()
 	if err := store.Load(reg); err != nil {
@@ -812,6 +818,7 @@ func TestStore_LoadKeepsValidConfigsWhenAnotherConfigIsMalformed(t *testing.T) {
 	reg := agents.NewRegistry()
 	reg.Register(agents.Agent{ID: "claude-code", Name: "Claude Code", Type: agents.TypeClaudeCode, Status: agents.StatusEnabled, ConfigPath: validPath, ConfigFormat: agents.FormatJSON})
 	reg.Register(agents.Agent{ID: "cursor", Name: "Cursor", Type: agents.TypeCursor, Status: agents.StatusEnabled, ConfigPath: invalidPath, ConfigFormat: agents.FormatJSON})
+	seedManagedFromDisk(t, reg)
 
 	store := NewStore()
 	if err := store.Load(reg); err == nil {
@@ -838,6 +845,7 @@ func TestStore_MergeWithCmdCWrapper(t *testing.T) {
 	reg := agents.NewRegistry()
 	reg.Register(agents.Agent{ID: "claude-code", Name: "Claude Code", Type: agents.TypeClaudeCode, Status: agents.StatusEnabled, ConfigPath: claudePath, ConfigFormat: agents.FormatJSON})
 	reg.Register(agents.Agent{ID: "cursor", Name: "Cursor", Type: agents.TypeCursor, Status: agents.StatusEnabled, ConfigPath: cursorPath, ConfigFormat: agents.FormatJSON})
+	seedManagedFromDisk(t, reg)
 
 	store := NewStore()
 	if err := store.Load(reg); err != nil {
@@ -867,6 +875,7 @@ func TestStore_NotMergeDifferentCommand(t *testing.T) {
 	reg := agents.NewRegistry()
 	reg.Register(agents.Agent{ID: "claude-code", Name: "Claude Code", Type: agents.TypeClaudeCode, Status: agents.StatusEnabled, ConfigPath: claudePath, ConfigFormat: agents.FormatJSON})
 	reg.Register(agents.Agent{ID: "cursor", Name: "Cursor", Type: agents.TypeCursor, Status: agents.StatusEnabled, ConfigPath: cursorPath, ConfigFormat: agents.FormatJSON})
+	seedManagedFromDisk(t, reg)
 
 	store := NewStore()
 	if err := store.Load(reg); err != nil {
@@ -893,6 +902,7 @@ func TestStore_NotMergeDifferentArgs(t *testing.T) {
 	reg := agents.NewRegistry()
 	reg.Register(agents.Agent{ID: "claude-code", Name: "Claude Code", Type: agents.TypeClaudeCode, Status: agents.StatusEnabled, ConfigPath: claudePath, ConfigFormat: agents.FormatJSON})
 	reg.Register(agents.Agent{ID: "cursor", Name: "Cursor", Type: agents.TypeCursor, Status: agents.StatusEnabled, ConfigPath: cursorPath, ConfigFormat: agents.FormatJSON})
+	seedManagedFromDisk(t, reg)
 
 	store := NewStore()
 	if err := store.Load(reg); err != nil {
@@ -1138,6 +1148,7 @@ func TestStore_OpenCodeFlatFormatMergeWithClaude(t *testing.T) {
 	reg := agents.NewRegistry()
 	reg.Register(agents.Agent{ID: "opencode", Name: "OpenCode", Type: agents.TypeOpenCode, Status: agents.StatusEnabled, ConfigPath: opencodePath, ConfigFormat: agents.FormatJSON})
 	reg.Register(agents.Agent{ID: "claude-code", Name: "Claude Code", Type: agents.TypeClaudeCode, Status: agents.StatusEnabled, ConfigPath: claudePath, ConfigFormat: agents.FormatJSON})
+	seedManagedFromDisk(t, reg)
 
 	store := NewStore()
 	if err := store.Load(reg); err != nil {
@@ -1680,6 +1691,7 @@ args = ["/c", "npx", "-y", "@upstash/context7-mcp"]
 	reg := agents.NewRegistry()
 	reg.Register(agents.Agent{ID: "codex", Name: "Codex", Type: agents.TypeCodex, Status: agents.StatusEnabled, ConfigPath: codexPath, ConfigFormat: agents.FormatTOML})
 	reg.Register(agents.Agent{ID: "claude-code", Name: "Claude Code", Type: agents.TypeClaudeCode, Status: agents.StatusEnabled, ConfigPath: claudePath, ConfigFormat: agents.FormatJSON})
+	seedManagedFromDisk(t, reg)
 
 	store := NewStore()
 	if err := store.Load(reg); err != nil {

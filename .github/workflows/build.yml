@@ -11,13 +11,12 @@ on:
         required: false
         default: 'false'
 
-permissions:
-  contents: write
-
 jobs:
   changelog:
     name: Extract Release Notes
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
         with:
@@ -58,6 +57,8 @@ jobs:
 
   build:
     name: Build (${{ matrix.name }})
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -100,7 +101,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libgtk-4-dev libwebkitgtk-6.0-dev pkg-config libfuse2
+          sudo apt-get install -y libgtk-4-dev libwebkitgtk-6.0-dev pkg-config libfuse2
 
       - name: Read version from build/config.yml
         id: version
@@ -111,9 +112,10 @@ jobs:
           echo "Detected version: $VERSION"
 
       - name: Install Wails v3 CLI
-        run: go install github.com/wailsapp/wails/v3/cmd/wails3@latest
+        run: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.8
 
       - name: Check i18n key consistency
+        if: matrix.name == 'linux-amd64'
         run: pnpm check:i18n
         working-directory: frontend
 
@@ -127,13 +129,22 @@ jobs:
         if: runner.os == 'Windows'
         run: wails3 task windows:package
 
-      - name: Build (macOS)
-        if: runner.os == 'macOS'
-        run: wails3 task darwin:build
+      - name: Sign Windows binaries (releases only)
+        if: runner.os == 'Windows' && startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          WINDOWS_CERT_PFX: ${{ secrets.WINDOWS_CERT_PFX }}
+          WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+        run: |
+          if [ -z "$WINDOWS_CERT_PFX" ]; then
+            echo "WINDOWS_CERT_PFX secret not set; skipping Authenticode signing (unsigned build remains)."
+            exit 0
+          fi
+          wails3 task windows:sign
 
-      - name: Package .app bundle (macOS)
+      - name: Build and Package universal .app bundle (macOS)
         if: runner.os == 'macOS'
-        run: wails3 task darwin:package
+        run: wails3 task darwin:package:universal
 
       - name: Build (Linux)
         if: runner.os == 'Linux'
@@ -167,6 +178,20 @@ jobs:
         if: runner.os == 'macOS'
         run: ditto -c -k --keepParent "bin/AgentPack.app" "${{ runner.temp }}/AgentPack-${{ steps.version.outputs.version }}-${{ matrix.name }}.zip"
 
+      - name: Sign and Notarize (macOS, releases only)
+        if: runner.os == 'macOS' && startsWith(github.ref, 'refs/tags/v')
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_DEVELOPER_ID }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          if [ -z "$APPLE_SIGNING_IDENTITY" ]; then
+            echo "APPLE_DEVELOPER_ID secret not set; skipping signing/notarization (ad-hoc signature remains)."
+            exit 0
+          fi
+          wails3 task darwin:sign:notarize
+
       - name: Package tar.gz (Linux)
         if: runner.os == 'Linux'
         run: tar -czf "${{ runner.temp }}/AgentPack-${{ steps.version.outputs.version }}-${{ matrix.name }}.tar.gz" -C bin AgentPack
@@ -176,7 +201,10 @@ jobs:
         env:
           APPIMAGE_ARCH: ${{ matrix.name == 'linux-arm64' && 'aarch64' || 'x86_64' }}
         run: |
+          # AppImageKit publishes no stable numbered release with binary assets; the `continuous`
+          # channel is the de-facto standard. Echo the SHA256 to the build log for auditability.
           wget -q "https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-${APPIMAGE_ARCH}.AppImage"
+          echo "appimagetool-${APPIMAGE_ARCH}.AppImage SHA256: $(sha256sum "appimagetool-${APPIMAGE_ARCH}.AppImage" | awk '{print $1}')"
           chmod +x "appimagetool-${APPIMAGE_ARCH}.AppImage"
           APPDIR="AgentPack.AppDir"
           mkdir -p "$APPDIR/usr/bin"
@@ -204,6 +232,8 @@ jobs:
     needs: [build, changelog]
     if: always() && needs.build.result == 'success' && (startsWith(github.ref, 'refs/tags/v') || github.event.inputs.release == 'true')
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -220,6 +250,14 @@ jobs:
             echo "has_changelog=false" >> $GITHUB_OUTPUT
           fi
 
+      - name: Generate SHA256 checksums
+        shell: bash
+        run: |
+          cd artifacts
+          sha256sum AgentPack-* > SHA256SUMS
+          echo "=== SHA256SUMS ==="
+          cat SHA256SUMS
+
       - name: Create GitHub release (with changelog)
         if: steps.check_changelog.outputs.has_changelog == 'true'
         uses: softprops/action-gh-release@v2
@@ -227,6 +265,7 @@ jobs:
           body_path: artifacts/CHANGELOG.txt
           files: |
             artifacts/AgentPack-*
+            artifacts/SHA256SUMS
 
       - name: Create GitHub release (auto-generated notes)
         if: steps.check_changelog.outputs.has_changelog != 'true'
@@ -235,3 +274,4 @@ jobs:
           generate_release_notes: true
           files: |
             artifacts/AgentPack-*
+            artifacts/SHA256SUMS

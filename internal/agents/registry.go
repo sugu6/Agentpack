@@ -10,15 +10,13 @@ import (
 )
 
 type Registry struct {
-	mu      sync.RWMutex
-	agents  map[string]*Agent
-	enabled map[string]bool
+	mu     sync.RWMutex
+	agents map[string]*Agent
 }
 
 func NewRegistry() *Registry {
 	return &Registry{
-		agents:  make(map[string]*Agent),
-		enabled: make(map[string]bool),
+		agents: make(map[string]*Agent),
 	}
 }
 
@@ -90,13 +88,12 @@ func (r *Registry) Scan() {
 			if agent.Status != StatusDisabled {
 				agent.Status = StatusNotFound
 			}
-		case StatusDetected:
-			// 保留用户手动 disabled 的状态，不要被 Scan 覆盖
-			if !existed || agent.Status != StatusDisabled {
-				agent.Status = StatusEnabled
-			}
-			r.enabled[id] = agent.Status == StatusEnabled
-			detectedIDs[id] = true
+case StatusDetected:
+		// 保留用户手动 disabled 的状态，不要被 Scan 覆盖
+		if !existed || agent.Status != StatusDisabled {
+			agent.Status = StatusEnabled
+		}
+		detectedIDs[id] = true
 		default:
 			agent.Status = info.Status
 		}
@@ -127,7 +124,6 @@ func (r *Registry) Scan() {
 			// 导致曾经 enabled 的 Agent 在第一次未检测到时就被删除。
 			if prevStatus == StatusNotFound {
 				delete(r.agents, id)
-				delete(r.enabled, id)
 			}
 		}
 	}
@@ -137,7 +133,6 @@ func (r *Registry) LoadDisabled(ids []string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for _, id := range ids {
-		delete(r.enabled, id)
 		if a, ok := r.agents[id]; ok {
 			a.Status = StatusDisabled
 		}
@@ -153,7 +148,6 @@ func (r *Registry) ApplyDisabled(ids []string) {
 		disabled[id] = true
 	}
 
-	r.enabled = make(map[string]bool)
 	for id, a := range r.agents {
 		if a.Status == StatusNotFound {
 			continue
@@ -163,7 +157,6 @@ func (r *Registry) ApplyDisabled(ids []string) {
 			continue
 		}
 		a.Status = StatusEnabled
-		r.enabled[id] = true
 	}
 }
 
@@ -242,7 +235,7 @@ func (r *Registry) Get(id string) *Agent {
 func (r *Registry) Toggle(id string, enabled bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	// 先检查 agent 是否存在，避免对不存在的 ID 在 enabled map 中留下孤儿条目
+	// 先检查 agent 是否存在，避免对不存在的 ID 做无意义操作
 	a, ok := r.agents[id]
 	if !ok {
 		return
@@ -251,10 +244,8 @@ func (r *Registry) Toggle(id string, enabled bool) {
 		return
 	}
 	if enabled {
-		r.enabled[id] = true
 		a.Status = StatusEnabled
 	} else {
-		delete(r.enabled, id)
 		a.Status = StatusDisabled
 	}
 }

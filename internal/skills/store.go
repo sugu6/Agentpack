@@ -2,6 +2,7 @@ package skills
 
 import (
 	"agentpack/internal/agents"
+	"agentpack/internal/logger"
 	"agentpack/internal/shared"
 	"fmt"
 	"log"
@@ -168,15 +169,17 @@ func (s *Store) scanFilesystem(reg *agents.Registry) (map[string]Skill, map[stri
 		if !complete {
 			log.Printf("warning: skill content hash may be incomplete for %s", skillPath)
 		}
+		skillMdHash, _ := HashSkillMarkdown(skillPath)
 		// 从 ~/.agents/.skill-lock.json 读取仓库来源信息
 		lockSkill := ParseAgentsLock()[dirName]
-		log.Printf("scanFilesystem: dir=%q, lockSkill={Owner:%q, Repo:%q, Branch:%q}", dirName, lockSkill.Owner, lockSkill.Repo, lockSkill.Branch)
+		logger.Debug("scanFilesystem: skill dir", "dir", dirName, "owner", lockSkill.Owner, "repo", lockSkill.Repo, "branch", lockSkill.Branch)
 		sk := Skill{
 			ID:          skillID,
 			Name:        name,
 			Description: meta.Description,
 			Directory:   dirName,
 			ContentHash: contentHash,
+			SkillMdHash: skillMdHash,
 			BoundAgents: []string{},
 			InstalledAt: now,
 			UpdatedAt:   now,
@@ -227,7 +230,6 @@ func (s *Store) List() []Skill {
 	defer s.mu.RUnlock()
 	out := make([]Skill, 0, len(s.skills))
 	lockData := ParseAgentsLock()
-	log.Printf("List: lockData has %d entries", len(lockData))
 	for id, sk := range s.skills {
 		sk.BoundAgents = copySlice(boundAgentsFromMap(s.bindings, id))
 		// 从 lock file 注入仓库来源（兜底：处理 Import 时未传入 repoOwner/repoName 的情况）
@@ -239,12 +241,8 @@ func (s *Store) List() []Skill {
 				if sk.FullPath == "" {
 					sk.FullPath = lk.FullPath
 				}
-				log.Printf("List: injected repo info for skill %q (dir=%q): owner=%q repo=%q", id, sk.Directory, lk.Owner, lk.Repo)
-			} else {
-				log.Printf("List: skill %q (dir=%q) has empty RepoOwner and NOT found in lockData", id, sk.Directory)
 			}
 		}
-		log.Printf("List: skill %q dir=%q repoOwner=%q repoName=%q", id, sk.Directory, sk.RepoOwner, sk.RepoName)
 		out = append(out, sk)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
@@ -339,9 +337,9 @@ func (s *Store) ImportWithDirName(path, dirName string, agentIDs []string, reg *
 
 	// 获取 syncMethod（不在此时检查重复，仅在最终写入阶段检查一次以避免 TOCTOU）
 	var method SyncMethod
-	s.mu.Lock()
+	s.mu.RLock()
 	method = s.syncMethod
-	s.mu.Unlock()
+	s.mu.RUnlock()
 
 	// Copy to SSOT (filesystem I/O — outside the lock)
 	copiedDest := false
@@ -366,6 +364,7 @@ func (s *Store) ImportWithDirName(path, dirName string, agentIDs []string, reg *
 	if !complete {
 		log.Printf("warning: skill content hash may be incomplete for %s", dest)
 	}
+	skillMdHash, _ := HashSkillMarkdown(dest)
 
 	// Sync to agent directories (filesystem I/O — outside the lock). Existing
 	// targets are moved aside first so a failed import can restore them.
@@ -460,6 +459,7 @@ func (s *Store) ImportWithDirName(path, dirName string, agentIDs []string, reg *
 		Description: meta.Description,
 		Directory:   dirName,
 		ContentHash: contentHash,
+		SkillMdHash: skillMdHash,
 		BoundAgents: copySlice(agentIDs),
 		InstalledAt: now,
 		UpdatedAt:   now,
@@ -977,6 +977,7 @@ func (s *Store) autoAdoptWith(capableIDs []string, dirResolver func(agentID stri
 		if !complete {
 			log.Printf("warning: skill content hash may be incomplete for %s", skillPath)
 		}
+		skillMdHash, _ := HashSkillMarkdown(skillPath)
 		now := shared.NowRFC3339()
 		sk, exists := s.skills[skillID]
 		if !exists {
@@ -986,6 +987,7 @@ func (s *Store) autoAdoptWith(capableIDs []string, dirResolver func(agentID stri
 				Description: meta.Description,
 				Directory:   ap.dirName,
 				ContentHash: contentHash,
+				SkillMdHash: skillMdHash,
 				InstalledAt: now,
 			}
 			// 从 ~/.agents/.skill-lock.json 注入仓库来源（若存在）
@@ -997,6 +999,7 @@ func (s *Store) autoAdoptWith(capableIDs []string, dirResolver func(agentID stri
 		}
 		sk.UpdatedAt = now
 		sk.ContentHash = contentHash
+		sk.SkillMdHash = skillMdHash
 		sk.BoundAgents = copySlice(ap.agentIDs)
 		s.skills[skillID] = sk
 		for _, agID := range ap.agentIDs {

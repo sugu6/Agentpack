@@ -57,13 +57,25 @@ func readUninstallSubkeys(hive registry.Key, subkeyPath string, cache map[string
 			continue
 		}
 		displayName, _, err := subKey.GetStringValue("DisplayName")
-		subKey.Close()
 		if err != nil {
+			subKey.Close()
 			continue
 		}
-		if displayName != "" {
-			cache[strings.ToLower(displayName)] = true
+		installLocation, _, _ := subKey.GetStringValue("InstallLocation")
+		uninstallString, _, _ := subKey.GetStringValue("UninstallString")
+		// SystemComponent=1 表示系统组件/驱动/补丁，不是独立应用
+		sysComponent, _, _ := subKey.GetIntegerValue("SystemComponent")
+		subKey.Close()
+
+		if displayName == "" || sysComponent == 1 {
+			continue
 		}
+		// 过滤残留条目：已卸载应用的 InstallLocation/UninstallString
+		// 往往指向已被删除的路径，物理存在校验可避免把已卸载的 IDE 误判为已安装。
+		if !isRegistryEntryLive(expandEnvPath(installLocation), uninstallString) {
+			continue
+		}
+		cache[strings.ToLower(displayName)] = true
 	}
 }
 

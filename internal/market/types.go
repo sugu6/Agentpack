@@ -28,7 +28,7 @@ type MarketServer struct {
 	SourceID    string            `json:"sourceId"`
 	Installs    int               `json:"installs,omitempty"`
 	Stars       int               `json:"stars,omitempty"`
-	UpdatedAt   string `json:"updatedAt"`
+	UpdatedAt   string            `json:"updatedAt"`
 }
 
 type SearchOptions struct {
@@ -55,17 +55,17 @@ type InstallServerOptions struct {
 
 // MarketSkill 是市场中可发现的 Skill（区别于 MarketServer）
 type MarketSkill struct {
-	ID          string `json:"id"`          // 唯一 ID（前端 key + 锁文件记录）
-	Name        string `json:"name"`        // 显示名（SKILL.md frontmatter.name）
+	ID          string `json:"id"`   // 唯一 ID（前端 key + 锁文件记录）
+	Name        string `json:"name"` // 显示名（SKILL.md frontmatter.name）
 	Description string `json:"description"`
-	Directory   string `json:"directory"`   // 安装目录名（= slug / 仓库名 / SKILL.md 父目录的最后一段）
+	Directory   string `json:"directory"`          // 安装目录名（= slug / 仓库名 / SKILL.md 父目录的最后一段）
 	FullPath    string `json:"fullPath,omitempty"` // SKILL.md 所在目录的完整相对路径（如 "skills/pdf"，根目录为空）— 用于安装时精准定位
-	Source      Source `json:"source"`      // "github" | "skills-sh"
-	SourceID    string `json:"sourceId"`    // skills.sh 的 id 或 GitHub 仓库的 owner/repo
-	Installs    int64  `json:"installs"`    // 下载量（skills.sh 有值，GitHub 仓库扫描为 0）
+	Source      Source `json:"source"`             // "github" | "skills-sh"
+	SourceID    string `json:"sourceId"`           // skills.sh 的 id 或 GitHub 仓库的 owner/repo
+	Installs    int64  `json:"installs"`           // 下载量（skills.sh 有值，GitHub 仓库扫描为 0）
 	RepoOwner   string `json:"repoOwner"`
 	RepoName    string `json:"repoName"`
-	RepoBranch  string `json:"repoBranch"` // 默认 "main"
+	RepoBranch  string `json:"repoBranch"`          // 默认 "main"
 	ReadmeURL   string `json:"readmeUrl,omitempty"` // GitHub 仓库 README 直链
 	UpdatedAt   string `json:"updatedAt"`
 	ContentHash string `json:"contentHash,omitempty"` // SKILL.md 内容指纹（SHA256），用于缓存失效和去重
@@ -87,9 +87,9 @@ type SearchResultSkills struct {
 type SourceStatus struct {
 	Source Source `json:"source"`
 	// Status: "ok" | "error" | "skipped" | "empty"
-	Status  string `json:"status"`
-	Count   int    `json:"count"`
-	Error   string `json:"error,omitempty"`
+	Status string `json:"status"`
+	Count  int    `json:"count"`
+	Error  string `json:"error,omitempty"`
 }
 
 // SkillFetcher 是 Skill 来源 fetcher 的接口（与 ServerFetcher 平行）

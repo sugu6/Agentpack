@@ -14,6 +14,17 @@ export const useAgentsStore = defineStore('agents', () => {
   const active = computed(() => items.value.filter((a) => a.status === 'enabled' || a.status === 'detected'))
   const totalMcp = computed(() => items.value.reduce((s, a) => s + a.mcpCount, 0))
 
+  // id → 是否 active（enabled/detected）的映射。
+  // 合并组（mergedGroups）会包含 disabled 变体成员（如 CLI enabled + Desktop disabled），
+  // 提交给后端的 id 列表必须按成员级过滤，否则 validateAgentIDs 会整体拒绝操作。
+  const activeIds = computed(() => {
+    const m = new Map<string, boolean>()
+    for (const a of items.value) {
+      m.set(a.id, a.status === 'enabled' || a.status === 'detected')
+    }
+    return m
+  })
+
   const sorted = computed(() => {
     const list = [...items.value]
     list.sort((a, b) => {
@@ -175,6 +186,7 @@ export const useAgentsStore = defineStore('agents', () => {
     enabled,
     active,
     totalMcp,
+    activeIds,
     sorted,
     mergedGroups,
     variantGroups,

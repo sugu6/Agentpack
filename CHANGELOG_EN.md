@@ -7,6 +7,44 @@ versioned by [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-08-13
+
+### Features
+
+- **Automatic skill source backfill**: on startup, skills missing a repository source are queried against skills.sh in the background; candidates are verified by SKILL.md content before the source is backfilled. Only matches whose directory name agrees and whose content verifies are accepted, avoiding false associations. A manual backfill button was added to Settings; successes notify via toast while failures skip silently (skip-not-fail)
+- **Content-level installed matching on the market page**: installed skills are now recognized by a SKILL.md content hash using the same algorithm as the market side, replacing whole-directory hashing and fixing wrong "installed" states on the market page
+- **MCP managed baseline**: after a restart, only MCP servers previously brought under management are restored; servers found in other agents' configs are no longer silently adopted into the list. The MCP scan dialog merges multi-source entries by normalized key, leaves newly discovered servers unchecked by default, and lets the user explicitly choose what to manage
+- **Single instance (production)**: switched to the official Wails v3 single-instance mechanism; a second launch wakes the main window (replaces the custom lockfile implementation)
+- **Windows theme sync**: system dark/light switches now sync the native title bar via the built-in v3 SystemThemeChanged event (replaces manual WM_SETTINGCHANGE parsing)
+
+### Changed
+
+- MCP server IDs now use a deterministic short hash (name@path hash) instead of exposing the full config path (including the user directory name) to the frontend and database
+- A single unparsable entry in an MCP config file is skipped while the rest are kept; write operations refuse whole-file rewrites to avoid silently deleting unparsable entries
+- Trae / Trae CN renamed to TraeCode / TraeCode CN (agent page display names, README support table, and MCP format hints updated; internal IDs and detection logic unchanged)
+- TraeCode / TraeCode CN new-brand config directories (AppData\TraeCode, TraeCode CN, etc.) and macOS/Linux install paths are now detected
+- Agent detection now relies on install locations: leftover config directories no longer count as installed evidence; Windows registry detection filters stale uninstall entries (physical existence checks) while MSI-installed entries are treated as installed
+- Windows update install launches the installer directly via CreateProcess (not through cmd.exe), avoiding interpretation of `&` and other metacharacters in filenames
+- Network request User-Agents are injected with the current version from app metadata (no longer hardcoding an old version and repo URL)
+- CI improvements: wails3 CLI pinned to v3.0.0-beta.8 (upgraded in lockstep with the Wails library); release adds Windows binary signing and macOS signing/notarization; artifacts ship with SHA256SUMS checksums
+- Upgraded Wails v3 to v3.0.0-beta.8: WebView2 initialization deadline and message pump, ordered event dispatch with backpressure, Windows 10 1809 native menu dark-mode fix, Linux/GTK window fixes, and more
+- README: added macOS .app / DMG packaging tasks and DMG appearance customization variables; project structure updated to drop the removed lockfile module
+
+### Fixed
+
+- App shutdown races: backup shutdown now rejects new tasks before waiting, avoiding a WaitGroup misuse panic; update downloads are no longer started during shutdown
+- Update download hardening: 1GB size cap, 30-minute total duration and response-header timeouts prevent malicious or misbehaving sources from filling the disk or blocking goroutines forever; fixed races between pause/cancel/resume; canceling a download no longer misreports "download failed"
+- Zip/tar skill install path-traversal protection: remote relative paths must pass validation (backslash filenames, `..` segments, and absolute paths are rejected) before being written locally
+- Corrupted encryption key files are now quarantined with a startup error surfaced, instead of silently rotating the key (which would make old data permanently undecryptable); key files are written atomically
+- Backup import skips an MCP server whose normalized key already exists instead of aborting the whole import
+- Same-name MCP servers: when adding from a scan, an existing entry with the same key in the config is "adopted" instead of raising an error; removal no longer deletes same-name entries with a different key
+- Concurrent read-modify-write overwrites of ~/.agents/.skill-lock.json and the skills update cache (serialized with a mutex and merged write-back)
+- Settings save failures now roll back sync-method and storage-location migrations, keeping in-memory and on-disk config consistent
+- Failed npm global-package detection is cached, avoiding a repeated 30-second timeout on every scan
+- MCP form comment stripping rewritten as a state machine: `//` inside strings and URLs are no longer removed; URL is stripped on stdio submit
+- OpenURL now validates an http/https allowlist and rejects dangerous schemes; startup error messages sanitize paths to basenames
+- Agent page MCP counts now reflect the number of servers actually detected in each agent's config file (including unmanaged entries, using the same dedup semantics as the scan dialog), fixing IDE (TraeCode) MCP counts being too low or undetected when configured but not yet managed
+
 ## [0.2.2] - 2026-07-30
 
 ### Features
@@ -210,6 +248,7 @@ Initial release of AgentPack — a unified MCP / Skills / Agent management deskt
 [0.1.2]: https://github.com/sugu6/Agentpack/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/sugu6/Agentpack/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/sugu6/Agentpack/releases/tag/v0.1.0
-[Unreleased]: https://github.com/sugu6/Agentpack/compare/v0.2.2...HEAD
+[Unreleased]: https://github.com/sugu6/Agentpack/compare/v0.2.3...HEAD
+[0.2.3]: https://github.com/sugu6/Agentpack/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/sugu6/Agentpack/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/sugu6/Agentpack/compare/v0.2.0...v0.2.1

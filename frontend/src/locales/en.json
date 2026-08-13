@@ -118,9 +118,6 @@
         "copy": "Copy"
       },
       "repos": "GitHub repositories",
-      "backfillSource": "Backfill sources from skills.sh",
-      "backfillDesc": "Match installed skills missing a GitHub source on skills.sh and write the repository info for updates.",
-      "backfilling": "Backfilling…",
       "reposTitle": "Skills repository scan",
       "reposDesc": "Configure the GitHub repositories scanned by the market Skills tab.",
       "reposEmpty": "No scan repositories yet. After adding a repository, the market Skills tab will scan directories containing SKILL.md.",
@@ -205,9 +202,6 @@
       "toggleAgentFailed": "Failed to toggle Agent status: {error}",
       "backupCreated": "Backup created",
       "backfillSuccess": "Backfilled {count} skill source(s), {skipped} skipped, {failed} failed",
-      "backfillSkipped": "{count} skill(s) not written (no matching content or no candidate)",
-      "backfillNoMatch": "No skill sources to backfill",
-      "backfillFailed": "Source backfill failed: {error}",
       "backupFailed": "Backup failed: {error}",
       "createBackupFailedNoId": "Failed to create backup: no backup ID returned",
       "exportSuccess": "Exported to {dest}",
@@ -274,7 +268,7 @@
     "deleteConfirmMessage": "Are you sure you want to delete MCP server \"{name}\"? It will be removed from all bound agent configurations.",
     "scanning": "Scanning...",
     "scanFoundNew": "Found {count} new MCP servers",
-    "scanResultDesc": "The following MCP servers were discovered in agent config files. Select the agents to manage them. Only the source agent is enabled by default.",
+    "scanResultDesc": "The following unmanaged MCP servers were discovered in agent config files. Select the ones you want to manage. Scanning never manages servers automatically.",
     "scanRedoDesc": "Rescan all agent config files to discover configured MCP servers.",
     "allManaged": "All MCP servers are managed",
     "noNewServers": "No new MCP server configurations found",
@@ -287,7 +281,7 @@
     "switchToForm": "Switch back to form",
     "jsonConfig": "JSON Config",
     "parseHint": "Parse the current server.",
-    "jsonSupportHint": "Supports Claude Code / Cursor / Trae / OpenCode format, // comments allowed, ",
+    "jsonSupportHint": "Supports Claude Code / Cursor / TraeCode / OpenCode format, // comments allowed, ",
     "descriptionPlaceholder": "What this server does...",
     "tab": {
       "form": "Form"
@@ -319,7 +313,8 @@
       "addedBatch": "Added {count} MCP servers",
       "batchAddFailed": "{count} MCP servers failed to add",
       "addFailed": "Add failed"
-    }
+    },
+    "scanFailedConfigs": "{count} config file(s) could not be read; their MCP servers are not shown"
   },
   "skills": {
     "title": "Skills",
@@ -447,7 +442,8 @@
       "installed": "Installed MCP server {name}",
       "uninstalled": "Uninstalled MCP server {name}",
       "uninstallFailed": "MCP uninstall failed: {error}",
-      "installFailed": "Install failed: {error}"
+      "installFailed": "Install failed: {error}",
+      "alreadyInstalled": "「{name}」already exists, installation skipped"
     }
   },
   "update": {

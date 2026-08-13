@@ -37,11 +37,11 @@ type skillsShAPIResponse struct {
 
 // skillsShAPISkill 是 skills.sh API 单个 skill 条目
 type skillsShAPISkill struct {
-	ID       string `json:"id"`       // "anthropics/skills/pdf"
+	ID       string `json:"id"`      // "anthropics/skills/pdf"
 	SkillID  string `json:"skillId"` // "pdf"
-	Name     string `json:"name"`     // "pdf"
+	Name     string `json:"name"`    // "pdf"
 	Installs int64  `json:"installs"`
-	Source   string `json:"source"`   // "anthropics/skills"
+	Source   string `json:"source"` // "anthropics/skills"
 }
 
 // Search 调用 skills.sh /api/search 搜索 skills

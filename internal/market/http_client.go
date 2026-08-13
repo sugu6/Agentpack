@@ -1,6 +1,7 @@
 package market
 
 import (
+	"agentpack/internal/appmeta"
 	"context"
 	"crypto/tls"
 	"fmt"
@@ -43,7 +44,8 @@ func NewHTTPClientWithTimeout(timeout time.Duration) *HTTPClient {
 
 func (c *HTTPClient) Do(req *http.Request) (*http.Response, error) {
 	if req.Header.Get("User-Agent") == "" {
-		req.Header.Set("User-Agent", "AgentPack/0.1 (+https://github.com/anomalyco/agentpack)")
+		// 版本号由 appmeta 在启动时注入，避免与发布版本脱钩
+		req.Header.Set("User-Agent", appmeta.UserAgent("https://github.com/sugu6/AgentPack"))
 	}
 	if req.Header.Get("Accept") == "" {
 		req.Header.Set("Accept", "application/json")

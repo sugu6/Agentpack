@@ -7,6 +7,7 @@ import (
 	"agentpack/internal/mcp"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -272,6 +273,11 @@ func (e *Exporter) applyMCP(items []SnapshotMCP, opts ImportOptions, res *Import
 				Source:      item.Source,
 				SourceID:    item.SourceID,
 			}, agentIDs, e.registry); err != nil {
+				// 同名不同条目的服务器已存在（同命令/URL）时跳过，不中止整个导入
+				if errors.Is(err, mcp.ErrDuplicateServer) {
+					res.MCPSkipped++
+					continue
+				}
 				return applied, err
 			}
 		}

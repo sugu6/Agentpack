@@ -133,9 +133,9 @@ async function confirmInstall() {
   if (ids.length === 0) return
   showDialog.value = false
   busy.value = true
+  let serverToInstall: MarketServer = props.server
   try {
     // Registry 搜索结果可能不含 command/args，需拉取详情获取安装模板
-    let serverToInstall = props.server
     if (props.server.source === 'registry' && !props.server.command) {
       try {
         serverToInstall = await api.market.getServer(props.server.source, props.server.sourceId)
@@ -151,7 +151,15 @@ async function confirmInstall() {
     toast.success(t('market.toast.installed', { name: serverToInstall.title || serverToInstall.name }))
   } catch (e) {
     const apiError = ApiError.from(e)
-    toast.error(t('market.toast.installFailed', { error: apiError.message }))
+    // 后端 ErrDuplicateServer 带稳定前缀 "duplicate server:"（同命令/URL 已管理）：
+    // 视为已安装，跳过而非报错。其余含 "already exists" 的错误（如同名但 key 不同的
+    // 真实冲突、server id 冲突）是安装失败，必须提示用户而不是假装成功。
+    if (apiError.message.includes('duplicate server:')) {
+      await mcpStore.fetch()
+      toast.info(t('market.toast.alreadyInstalled', { name: serverToInstall.title || serverToInstall.name }))
+    } else {
+      toast.error(t('market.toast.installFailed', { error: apiError.message }))
+    }
   } finally {
     busy.value = false
   }

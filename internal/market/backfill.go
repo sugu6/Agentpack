@@ -3,6 +3,7 @@ package market
 import (
 	"context"
 	"log"
+	"path/filepath"
 	"sort"
 	"sync"
 	"time"
@@ -18,6 +19,15 @@ type BackfillCandidate struct {
 
 // maxBackfillCandidates 是每个目录返回的最大候选数（防止内容验证开销过大）。
 const maxBackfillCandidates = 10
+
+// AcceptBackfillMatch 判断验证通过的远端定位（fullPath）是否可写入锁文件。
+// 仅接受远端目录名与本地目录名一致的匹配：内容回退匹配（目录名不同）会把
+// 本地目录名关联到仓库，市场页上同仓库同名但内容不同的条目会被误判为「已安装」；
+// 目录名一致且内容已验证的匹配不存在误报路径。
+// fullPath 为空（仓库根级技能）也不接受——市场条目没有对应的可匹配目录。
+func AcceptBackfillMatch(dir, fullPath string) bool {
+	return fullPath != "" && filepath.Base(fullPath) == dir
+}
 
 // BackfillSkillSources 为每个目录名查询 skills.sh，返回候选仓库列表：
 // 仅 GitHub 来源（域名已过滤），按下载量（installs）降序。

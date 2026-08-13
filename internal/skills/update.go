@@ -277,6 +277,9 @@ func (s *Store) CheckUpdates(reg *agents.Registry) []UpdateStatus {
 	now := time.Now().UTC().Format(time.RFC3339)
 	results := make([]UpdateStatus, len(skillsList))
 	wroteCache := false
+	// modified 记录本次运行更新过的缓存条目，写回前用于合并到最新缓存，
+	// 避免与并发的 CacheSkillCommitSHA 互相覆盖（read-modify-write）。
+	modified := make(map[string]bool)
 	for i, sk := range skillsList {
 		branch := resolveDefaultBranch(&sk)
 		rk := repoKey{sk.RepoOwner, sk.RepoName, branch}
@@ -385,6 +388,7 @@ func (s *Store) CheckUpdates(reg *agents.Registry) []UpdateStatus {
 				ChangedFiles: status.ChangedFiles,
 				CheckedAt:    status.CheckedAt,
 			}
+			modified[sk.ID] = true
 			wroteCache = true
 		case res.gitSHA != "":
 			// git fallback：与缓存基线对比
@@ -398,6 +402,7 @@ func (s *Store) CheckUpdates(reg *agents.Registry) []UpdateStatus {
 				CommitSHA: res.gitSHA,
 				CheckedAt: status.CheckedAt,
 			}
+			modified[sk.ID] = true
 			wroteCache = true
 		}
 
@@ -407,7 +412,16 @@ func (s *Store) CheckUpdates(reg *agents.Registry) []UpdateStatus {
 	// 内容级或 git fallback 任一产生新结果时持久化缓存
 	if wroteCache {
 		updateCacheMu.Lock()
-		if err := writeUpdateCacheFunc(cache); err != nil {
+		// 重新读取最新缓存，合并本次新增/更新的条目，避免与并发的
+		// CacheSkillCommitSHA 互相覆盖（read-modify-write，与 CacheSkillCommitSHA 一致）。
+		latest := readUpdateCache()
+		if latest == nil {
+			latest = make(map[string]updateCacheEntry)
+		}
+		for id := range modified {
+			latest[id] = cache[id]
+		}
+		if err := writeUpdateCacheFunc(latest); err != nil {
 			log.Printf("warning: write update cache: %v", err)
 		}
 		updateCacheMu.Unlock()
@@ -613,6 +627,19 @@ func (s *Store) updateSkillViaTree(ctx context.Context, sk Skill, fullPath, bran
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
+			// 远程路径必须通过校验才能拼入本地路径，防止恶意仓库逃逸目标目录
+			safeRel, err := safeRelPath(rel)
+			if err != nil {
+				mu.Lock()
+				if firstErr == nil {
+					firstErr = err
+				}
+				mu.Unlock()
+				cancelDownload()
+				return
+			}
+			rel = safeRel
+
 			target := filepath.Join(ssotPath, filepath.FromSlash(rel))
 			if localHashEqual(target, rh, tree.hashFn) {
 				return
@@ -743,9 +770,41 @@ func persistSkillRepoInfo(sk Skill, branch, fullPath, ssotPath string) error {
 	})
 }
 
+// safeRelPath 校验远程树返回的相对路径，确保其可安全拼入本地文件系统路径。
+// 远程树（GitHub Trees API / jsDelivr）虽然 git 层面禁止 ".." 组件，但允许
+// 文件名含反斜杠（Linux/macOS 上是合法字符）；在 Windows 上反斜杠会被视为
+// 路径分隔符，未经校验的 rel 可借 filepath.Join 的 Clean 逃出目标目录造成
+// 任意文件写入。返回清洗后的正斜杠相对路径。
+func safeRelPath(rel string) (string, error) {
+	if rel == "" {
+		return "", fmt.Errorf("empty relative path")
+	}
+	// 拒绝 Windows 分隔符、盘符及绝对路径前缀（跨平台统一视为危险形态）
+	if strings.ContainsAny(rel, "\\:") {
+		return "", fmt.Errorf("unsafe relative path: %q", rel)
+	}
+	if strings.HasPrefix(rel, "/") {
+		return "", fmt.Errorf("absolute path rejected: %q", rel)
+	}
+	clean := filepath.ToSlash(filepath.Clean(rel))
+	if clean == "." {
+		return "", fmt.Errorf("unsafe relative path: %q", rel)
+	}
+	for _, seg := range strings.Split(clean, "/") {
+		if seg == "" || seg == "." || seg == ".." {
+			return "", fmt.Errorf("unsafe path segment in %q", rel)
+		}
+	}
+	return clean, nil
+}
+
 // writeTmpFile 将下载内容写入临时目录中对应的相对路径。
 func writeTmpFile(tmpDir, rel string, data []byte) error {
-	tmpTarget := filepath.Join(tmpDir, filepath.FromSlash(rel))
+	safeRel, err := safeRelPath(rel)
+	if err != nil {
+		return err
+	}
+	tmpTarget := filepath.Join(tmpDir, filepath.FromSlash(safeRel))
 	if err := os.MkdirAll(filepath.Dir(tmpTarget), 0755); err != nil {
 		return err
 	}
@@ -753,12 +812,13 @@ func writeTmpFile(tmpDir, rel string, data []byte) error {
 }
 
 // refreshSkillAfterFileUpdate 重新计算技能内容 hash 并刷新内存中的
-// ContentHash / UpdatedAt，返回最新副本。
+// ContentHash / SkillMdHash / UpdatedAt，返回最新副本。
 func (s *Store) refreshSkillAfterFileUpdate(skillID, ssotPath string) (Skill, error) {
 	contentHash, complete := HashDir(ssotPath)
 	if !complete {
 		log.Printf("warning: skill content hash may be incomplete for %s", ssotPath)
 	}
+	skillMdHash, _ := HashSkillMarkdown(ssotPath)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	sk, ok := s.skills[skillID]
@@ -766,6 +826,7 @@ func (s *Store) refreshSkillAfterFileUpdate(skillID, ssotPath string) (Skill, er
 		return Skill{}, fmt.Errorf("skill %s not found after update", skillID)
 	}
 	sk.ContentHash = contentHash
+	sk.SkillMdHash = skillMdHash
 	sk.UpdatedAt = shared.NowRFC3339()
 	s.skills[skillID] = sk
 	sk.BoundAgents = copySlice(boundAgentsFromMap(s.bindings, skillID))

@@ -3,9 +3,9 @@ package mcp
 type Transport string
 
 const (
-	TransportStdio         Transport = "stdio"
-	TransportSSE           Transport = "sse"
-	TransportHTTP          Transport = "http"
+	TransportStdio          Transport = "stdio"
+	TransportSSE            Transport = "sse"
+	TransportHTTP           Transport = "http"
 	TransportStreamableHTTP Transport = "streamable-http"
 )
 
@@ -46,7 +46,7 @@ type ScanSource struct {
 // ScanItem 表示从 Agent 配置文件扫描到的单个 MCP 服务器
 type ScanItem struct {
 	Server     Server       `json:"server"`
-	Managed    bool         `json:"managed"`    // 是否已在 Store 中管理
+	Managed    bool         `json:"managed"`    // 是否已在 Store 中管理（已管理的不再展示为"新发现"）
 	AgentID    string       `json:"agentId"`    // 主来源（向后兼容），取 Sources[0]
 	AgentName  string       `json:"agentName"`  // 主来源（向后兼容），取 Sources[0]
 	ConfigPath string       `json:"configPath"` // 主来源（向后兼容），取 Sources[0]
@@ -59,4 +59,5 @@ type ScanResult struct {
 	Total    int        `json:"total"`
 	Managed  int        `json:"managed"`
 	NewFound int        `json:"newFound"`
+	Failed   int        `json:"failed"` // 无法读取的配置文件数（其服务器未显示）
 }

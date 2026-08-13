@@ -5,8 +5,10 @@ import (
 	"agentpack/internal/iowriter"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 type JsonBackend struct {
@@ -71,16 +73,28 @@ func (b *JsonBackend) Read(path string) (map[string]Server, error) {
 	}
 
 	out := make(map[string]Server, len(mcServers))
+	partial := false
+	var skipped []string
 	for name, raw := range mcServers {
 		s, err := b.parseJsonServer(name, raw)
 		if err != nil {
-			return nil, err
+			// 单条 entry 解析失败（危险命令/非法 JSON）只跳过该条，不毒化整个文件，
+			// 与 TomlBackend 对残缺 [[mcp_servers]] 条目的容忍行为保持一致。
+			// 同时标记 partial：写路径必须拒绝，避免整表重写时静默删除该条目。
+			log.Printf("mcp: skip server %q in %s: %v", name, path, err)
+			partial = true
+			skipped = append(skipped, name)
+			continue
 		}
 		s.Source = "config"
 		if s.ID == "" {
-			s.ID = name + "@" + path
+			s.ID = serverDeterministicID(name, path)
 		}
 		out[name] = s
+	}
+	if partial {
+		// 错误信息带上被跳过的 server 名，方便用户定位配置中的坏条目
+		return out, fmt.Errorf("%w; skipped entries in %s: %s", ErrPartialRead, path, strings.Join(skipped, ", "))
 	}
 	return out, nil
 }
@@ -127,7 +141,8 @@ func (b *JsonBackend) parseStandardJsonServer(name string, raw json.RawMessage) 
 		}
 	}
 	transport := TransportStdio
-	if js.Transport == "sse" {
+	if js.Transport == "sse" || js.Type == "sse" {
+		// Claude Code / Cursor 的远程服务器格式为 {"type":"sse","url":...}
 		transport = TransportSSE
 	} else if js.Transport == "http" || js.Type == "http" {
 		transport = TransportHTTP
@@ -297,7 +312,9 @@ func (b *JsonBackend) writeOpencode(path string, servers map[string]Server) erro
 	} else {
 		var mcpObj map[string]json.RawMessage
 		if mcpRaw, ok := existing["mcp"]; ok {
-			_ = json.Unmarshal(mcpRaw, &mcpObj)
+			if err := json.Unmarshal(mcpRaw, &mcpObj); err != nil {
+				return fmt.Errorf("parse existing mcp field: %w", err)
+			}
 		}
 		if mcpObj == nil {
 			mcpObj = make(map[string]json.RawMessage)

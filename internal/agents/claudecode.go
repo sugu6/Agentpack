@@ -51,8 +51,9 @@ func (a *ClaudeCodeDesktopAdapter) Detect() *DetectInfo {
 	}
 
 	configPath := filepath.Join(h, ".claude.json")
+	hasConfig := fileExists(configPath)
 
 	hasDesktop := CheckAppInstalledViaRegistry([]string{"Claude Desktop", "Anthropic Claude"})
 
-	return BuildDetectInfo(false, false, hasDesktop, false, VariantDesktop, configPath)
+	return BuildDetectInfo(false, false, hasDesktop, hasConfig, VariantDesktop, configPath)
 }

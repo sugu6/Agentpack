@@ -30,6 +30,7 @@ const (
 type Manager struct {
 	mu          sync.Mutex
 	wg          sync.WaitGroup
+	closed      bool // 置位后拒绝新的异步备份，避免 Shutdown 的 Wait 与 runAsync 的 Add 并发
 	registry    *agents.Registry
 	mcpStore    *mcp.Store
 	baseDir     string
@@ -71,8 +72,24 @@ func (m *Manager) Wait() {
 	m.wg.Wait()
 }
 
+// Shutdown 标记不再接受新的异步备份，并等待所有在途任务完成。
+// 必须在 m.mu 保护下置位 closed（与 runAsync 的 Add 互斥），
+// 避免 WaitGroup 计数器归零后仍发生 Add 与 Wait 并发导致的 panic。
+func (m *Manager) Shutdown() {
+	m.mu.Lock()
+	m.closed = true
+	m.mu.Unlock()
+	m.wg.Wait()
+}
+
 func (m *Manager) runAsync(fn func()) {
+	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		return
+	}
 	m.wg.Add(1)
+	m.mu.Unlock()
 	go func() {
 		defer m.wg.Done()
 		defer func() {

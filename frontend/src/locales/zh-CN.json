@@ -118,9 +118,6 @@
         "copy": "复制"
       },
       "repos": "GitHub 仓库",
-      "backfillSource": "从 skills.sh 回填来源",
-      "backfillDesc": "在 skills.sh 上匹配缺少仓库来源的已安装技能，写入仓库信息以便后续更新。",
-      "backfilling": "回填中…",
       "reposTitle": "Skills 仓库扫描",
       "reposDesc": "配置市场 Skills Tab 扫描的 GitHub 仓库列表。",
       "reposEmpty": "暂无扫描仓库。添加仓库后，市场 Skills Tab 会扫描其中含 SKILL.md 的目录。",
@@ -205,9 +202,6 @@
       "toggleAgentFailed": "切换 Agent 状态失败：{error}",
       "backupCreated": "已创建备份",
       "backfillSuccess": "已回填 {count} 个技能来源，{skipped} 个跳过，{failed} 个失败",
-      "backfillSkipped": "{count} 个技能未写入（无匹配内容或无候选仓库）",
-      "backfillNoMatch": "没有需要回填的技能来源",
-      "backfillFailed": "来源回填失败：{error}",
       "backupFailed": "备份失败：{error}",
       "createBackupFailedNoId": "创建备份失败：未返回备份 ID",
       "exportSuccess": "已导出到 {dest}",
@@ -274,7 +268,7 @@
     "deleteConfirmMessage": "确定要删除 MCP 服务器 \"{name}\" 吗？将从所有绑定的 Agent 配置中移除。",
     "scanning": "扫描中...",
     "scanFoundNew": "发现 {count} 个新 MCP 服务器",
-    "scanResultDesc": "从各 Agent 配置文件中发现以下 MCP 服务器，选择要纳管的目标 Agent。默认只启用来源 Agent。",
+    "scanResultDesc": "从各 Agent 配置文件中发现以下未管理的 MCP 服务器，勾选要纳管的服务器。扫描不会自动管理任何服务器。",
     "scanRedoDesc": "重新扫描所有 Agent 配置文件，发现已配置的 MCP 服务器。",
     "allManaged": "所有 MCP 服务器均已管理",
     "noNewServers": "未发现新的 MCP 服务器配置",
@@ -287,7 +281,7 @@
     "switchToForm": "切换回表单",
     "jsonConfig": "JSON 配置",
     "parseHint": "解析当前服务器。",
-    "jsonSupportHint": "支持 Claude Code / Cursor / Trae / OpenCode 格式，支持 // 注释，",
+    "jsonSupportHint": "支持 Claude Code / Cursor / TraeCode / OpenCode 格式，支持 // 注释，",
     "descriptionPlaceholder": "此服务器的功能...",
     "tab": {
       "form": "表单"
@@ -319,7 +313,8 @@
       "addedBatch": "已添加 {count} 个 MCP 服务器",
       "batchAddFailed": "{count} 个 MCP 服务器添加失败",
       "addFailed": "添加失败"
-    }
+    },
+    "scanFailedConfigs": "有 {count} 个配置文件无法读取，其 MCP 服务器未显示"
   },
   "skills": {
     "title": "Skills",
@@ -447,7 +442,8 @@
       "installed": "已安装 MCP 服务器 {name}",
       "uninstalled": "已卸载 MCP 服务器 {name}",
       "uninstallFailed": "MCP 卸载失败：{error}",
-      "installFailed": "安装失败：{error}"
+      "installFailed": "安装失败：{error}",
+      "alreadyInstalled": "「{name}」已存在，跳过安装"
     }
   },
   "update": {

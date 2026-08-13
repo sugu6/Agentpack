@@ -26,3 +26,5 @@ docs/
 .worktrees/
 .superpowers/.git-commit-msg.txt
 *.syso
+diff_all.txt
+diff_frontend.txt

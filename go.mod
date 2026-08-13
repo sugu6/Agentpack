@@ -5,8 +5,8 @@ go 1.25.0
 require (
 	github.com/BurntSushi/toml v1.6.0
 	github.com/google/uuid v1.6.0
-	github.com/wailsapp/wails/v3 v3.0.0-alpha2.117
-	golang.org/x/sys v0.44.0
+	github.com/wailsapp/wails/v3 v3.0.0-beta.8
+	golang.org/x/sys v0.46.0
 	modernc.org/sqlite v1.51.0
 )
 

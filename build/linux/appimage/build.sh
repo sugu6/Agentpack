@@ -16,14 +16,18 @@ cp "${DESKTOP_FILE}" "${APP_DIR}/"
 
 if [[ $(uname -m) == *x86_64* ]]; then
     # Download linuxdeploy and make it executable
+    # Note: linuxdeploy ships only a `continuous` channel; echo SHA256 for audit.
     wget -q -4 -N https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+    sha256sum linuxdeploy-x86_64.AppImage
     chmod +x linuxdeploy-x86_64.AppImage
 
     # Run linuxdeploy to bundle the application
     ./linuxdeploy-x86_64.AppImage --appdir "${APP_DIR}" --output appimage
 else
     # Download linuxdeploy and make it executable (arm64)
+    # Note: linuxdeploy ships only a `continuous` channel; echo SHA256 for audit.
     wget -q -4 -N https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-aarch64.AppImage
+    sha256sum linuxdeploy-aarch64.AppImage
     chmod +x linuxdeploy-aarch64.AppImage
 
     # Run linuxdeploy to bundle the application (arm64)

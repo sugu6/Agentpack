@@ -66,6 +66,7 @@ export const useMarketStore = defineStore('market', () => {
   async function loadMore() {
     if (!servers.value.hasMore || !servers.value.nextPage) return
     if (loadingServers.value) return
+    const requestId = serverRequestId
     loadingServers.value = true
     try {
       const more = await api.market.searchServers(
@@ -74,6 +75,8 @@ export const useMarketStore = defineStore('market', () => {
         servers.value.nextPage,
         DEFAULT_PAGE_SIZE,
       )
+      // 若期间发起了新的搜索，丢弃本次过期响应，避免旧查询的下一页污染新结果。
+      if (requestId !== serverRequestId) return
       // 后端某些边界情况(如 nil slice)会序列化为 items: null,这里做防御性处理避免崩溃
       const newItems = Array.isArray(more?.items) ? more.items : []
       servers.value = {
@@ -86,10 +89,13 @@ export const useMarketStore = defineStore('market', () => {
         baseServers.value = { ...servers.value, items: [...servers.value.items] }
       }
     } catch (e) {
+      if (requestId !== serverRequestId) return
       const apiError = ApiError.from(e)
       error.value = apiError.message
     } finally {
-      loadingServers.value = false
+      if (requestId === serverRequestId) {
+        loadingServers.value = false
+      }
     }
   }
 

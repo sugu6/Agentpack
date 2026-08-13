@@ -91,8 +91,8 @@ func DefaultSettings() Settings {
 	return Settings{
 		Theme: "system",
 		MarketSources: map[string]MarketSource{
-			"registry": {Enabled: true},
-			"github":   {Enabled: true},
+			"registry":  {Enabled: true},
+			"github":    {Enabled: true},
 			"skills-sh": {Enabled: true},
 		},
 		AutoBackup:      true,
@@ -127,6 +127,20 @@ func configPath() string {
 	return filepath.Join(dir, "config.json")
 }
 
+// sanitizePathError 将路径类错误（*os.LinkError / *os.PathError）中的完整路径
+// 替换为基名，避免用户目录等本地路径信息通过 startupErrors 暴露到 UI。
+func sanitizePathError(err error) string {
+	var le *os.LinkError
+	if errors.As(err, &le) {
+		return fmt.Sprintf("(%s -> %s): %v", filepath.Base(le.Old), filepath.Base(le.New), le.Err)
+	}
+	var pe *os.PathError
+	if errors.As(err, &pe) {
+		return fmt.Sprintf("%s: %v", filepath.Base(pe.Path), pe.Err)
+	}
+	return err.Error()
+}
+
 func Load() *AppConfig {
 	setLastLoadError(nil)
 	path := configPath()
@@ -150,7 +164,9 @@ func Load() *AppConfig {
 		quarantine := nextCorruptPath(path)
 		if rerr := os.Rename(path, quarantine); rerr != nil {
 			log.Printf("config parse failed and unable to quarantine: parse=%v rename=%v", err, rerr)
-			setLastLoadError(fmt.Errorf("config corrupted (parse=%v, quarantine failed: %v)", err, rerr))
+			// rerr 为 *os.LinkError，Error() 含完整路径；只展示基名，避免用户目录
+			// 信息通过 startupErrors 暴露到 UI。
+			setLastLoadError(fmt.Errorf("config corrupted (parse=%v, quarantine failed: %s)", err, sanitizePathError(rerr)))
 		} else {
 			log.Printf("config parse failed, original file moved to %s: %v", quarantine, err)
 			setLastLoadError(fmt.Errorf("config corrupted, original moved to %s: %w", filepath.Base(quarantine), err))

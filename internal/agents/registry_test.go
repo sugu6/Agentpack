@@ -1,6 +1,7 @@
 package agents
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -9,6 +10,23 @@ import (
 func TestMain(m *testing.M) {
 	restore := SetSkipRegistryLookupForTesting(true)
 	defer restore()
+
+	// 测试隔离：skillDirCache 在包初始化时基于真实 HOME 计算，
+	// 若不在 TestMain 重置，AgentSkillsDir 会返回开发机的真实路径。
+	// 用临时 HOME 重算缓存，测试之间（以及测试与开发机）互不污染。
+	home, err := os.MkdirTemp("", "agentpack-agt-test-")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "create temp home:", err)
+		os.Exit(1)
+	}
+	defer os.RemoveAll(home)
+	os.Setenv("HOME", home)
+	os.Setenv("USERPROFILE", home)
+
+	ResetNpmCache()
+	ResetRegistryCache()
+	ResetSkillDirCacheForTesting()
+
 	os.Exit(m.Run())
 }
 

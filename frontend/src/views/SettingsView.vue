@@ -2,7 +2,7 @@
 </script>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onActivated, onDeactivated } from 'vue'
 import { useSettingsStore } from '@/stores/settings'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription, Switch, Button, Separator, Input, Label, Tabs, TabsList, TabsTrigger, Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter, Checkbox, RadioGroup, RadioGroupItem } from '@/components/ui'
 
@@ -20,7 +20,6 @@ const scrollContainer = ref<HTMLElement | null>(null)
 
 const saving = ref(false)
 const backupLoading = ref<'create' | 'export' | 'import' | null>(null)
-const backfillingSources = ref(false)
 const updateChecking = ref(false)
 const updateResult = ref<UpdateCheckResult | null>(null)
 let saveDirty = false
@@ -40,15 +39,18 @@ const importDialog = ref({
 // 监听 settings:changed 事件，导入设置后刷新前端状态
 let offSettingsChanged: (() => void) | null = null
 onMounted(() => {
-  offSettingsChanged = events.on('settings:changed', () => {
-    void settings.fetch()
-  })
   // 主动拉取一次设置，防止 store 在其他页面操作后陈旧
   void settings.fetch()
   // 从后端获取版本号
   api.system.getAppVersion().then(v => { appVersion.value = v }).catch(() => {})
 })
-onUnmounted(() => {
+// KeepAlive 下用 onActivated/onDeactivated 管理事件订阅，避免缓存视图与 App.vue 双重处理
+onActivated(() => {
+  offSettingsChanged = events.on('settings:changed', () => {
+    void settings.fetch()
+  })
+})
+onDeactivated(() => {
   if (offSettingsChanged) offSettingsChanged()
 })
 
@@ -92,7 +94,7 @@ async function autoSave(previous?: ReturnType<typeof cloneConfig>) {
   // Re-save if changes occurred during the in-flight save
   if (saveDirty) {
     saveDirty = false
-    await autoSave()
+    await autoSave(cloneConfig())
   }
 }
 
@@ -210,29 +212,6 @@ async function createBackup() {
     toast.error(t('settings.toast.backupFailed', { error: apiError.message }))
   } finally {
     backupLoading.value = null
-  }
-}
-
-// 从 skills.sh 回填缺失的仓库来源（按下载量优先），方便后续检查/更新
-async function backfillSources() {
-  backfillingSources.value = true
-  try {
-    const res = await api.skills.backfillSources()
-    const matched = res?.matched?.length ?? 0
-    const skipped = (res?.mismatched?.length ?? 0) + (res?.unmatched?.length ?? 0)
-    const failed = res?.failed?.length ?? 0
-    if (matched > 0) {
-      toast.success(t('settings.toast.backfillSuccess', { count: matched, skipped, failed }))
-    } else if (skipped > 0) {
-      toast.info(t('settings.toast.backfillSkipped', { count: skipped }))
-    } else {
-      toast.info(t('settings.toast.backfillNoMatch'))
-    }
-    await refreshSkillRepos()
-  } catch (e: unknown) {
-    toast.error(t('settings.toast.backfillFailed', { error: toast.fromError(e, String(e)) }))
-  } finally {
-    backfillingSources.value = false
   }
 }
 
@@ -637,16 +616,7 @@ const marketSourceList = computed(() => {
         <CardDescription>{{ t('settings.skills.reposDesc') }}</CardDescription>
       </CardHeader>
       <CardContent class="space-y-4">
-        <div class="flex items-center justify-between">
-          <div>
-            <Label>{{ t('settings.skills.backfillSource') }}</Label>
-            <p class="text-xs text-muted-foreground">{{ t('settings.skills.backfillDesc') }}</p>
-          </div>
-          <Button variant="outline" size="sm" :disabled="backfillingSources" @click="backfillSources">
-            <PhArrowsClockwise :size="14" :class="{ 'animate-spin': backfillingSources }" />
-            <span>{{ backfillingSources ? t('settings.skills.backfilling') : t('settings.skills.backfillSource') }}</span>
-          </Button>
-        </div>
+        <!-- 来源回填已改为启动时后台自动执行，成功时由 App.vue 提示，此处不再提供手动按钮 -->
         <Separator />
         <div v-if="skillRepos.length === 0" class="text-xs text-muted-foreground">
           {{ t('settings.skills.reposEmpty') }}

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -76,6 +77,28 @@ func TestJsonBackend_SyncsBothContainersWhenBothExist(t *testing.T) {
 		if _, ok := servers["legacy"]; ok {
 			t.Fatalf("container %s still has stale entry", key)
 		}
+	}
+}
+
+// TestServerDeterministicID_NoPathLeak 验证确定性 ID 不含完整配置路径（L3 回归）。
+func TestServerDeterministicID_NoPathLeak(t *testing.T) {
+	path := filepath.Join("C:\\Users", "someuser", ".config", "cursor", "mcp.json")
+	serverID := serverDeterministicID("context7", path)
+	if serverID == "" {
+		t.Fatal("expected non-empty ID")
+	}
+	// 不泄露完整路径（含用户名目录）
+	if strings.Contains(serverID, path) || strings.Contains(serverID, "someuser") {
+		t.Errorf("ID must not contain full config path, got %q", serverID)
+	}
+	// 确定性：同一路径多次生成一致
+	if again := serverDeterministicID("context7", path); again != serverID {
+		t.Errorf("ID not deterministic: %q != %q", again, serverID)
+	}
+	// 不同路径生成不同 ID（同一 name 前缀下）
+	other := serverDeterministicID("context7", filepath.Join("D:\\other", "mcp.json"))
+	if other == serverID {
+		t.Errorf("expected different IDs for different paths, both %q", other)
 	}
 }
 

@@ -1,6 +1,7 @@
 package skills
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -304,6 +305,20 @@ func HashDir(dir string) (string, bool) {
 		log.Printf("hash: %d files skipped (incomplete hash) for %s", skipped, dir)
 	}
 	return hex.EncodeToString(h.Sum(nil)), skipped == 0
+}
+
+// HashSkillMarkdown 计算技能目录中 SKILL.md 的内容哈希。
+// 算法与市场侧完全一致（CRLF 归一化为 LF 后 SHA256，见 internal/market），
+// 使市场页能按内容精确匹配已安装技能 —— HashDir 是全目录哈希（含相对路径前缀），
+// 与市场侧的单文件哈希无法互相比较，是已安装检测中规则 0 失效的根本原因。
+func HashSkillMarkdown(dir string) (string, bool) {
+	data, err := os.ReadFile(filepath.Join(dir, "SKILL.md"))
+	if err != nil {
+		return "", false
+	}
+	normalized := bytes.ReplaceAll(data, []byte{'\r', '\n'}, []byte{'\n'})
+	h := sha256.Sum256(normalized)
+	return hex.EncodeToString(h[:]), true
 }
 
 func MigrateSSOTDir(oldDir, newDir string) (int, []string) {

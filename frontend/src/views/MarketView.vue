@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, onActivated, onDeactivated, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { PhStorefront, PhMagnifyingGlass, PhBooks, PhSparkle } from '@phosphor-icons/vue'
 import { Button, Input, Spinner, Tabs, TabsList, TabsTrigger, TabsContent, Empty, EmptyHeader, EmptyTitle, EmptyDescription } from '@/components/ui'
@@ -28,6 +28,7 @@ const transportFilter = ref<string>('')
 const mode = ref<'servers' | 'skills'>('servers')
 const skillSource = ref<'github' | 'skills-sh'>('github')
 const mounted = ref(true)
+const initialized = ref(false)
 const skillsSearched = ref(false)
 // 搜索按钮加载状态（含最小显示时间，避免太快看不到 spinner）
 const searching = ref(false)
@@ -71,14 +72,43 @@ const mcpSourceAvailable = registryEnabled
 const serversLoaded = computed(() => filteredServers.value.length)
 const skillsLoaded = computed(() => market.skills.items.length)
 
-onMounted(async () => {
+onMounted(() => {
+  ensureInit()
+})
+
+// KeepAlive 下用 onActivated/onDeactivated 管理事件订阅，避免缓存视图与 App.vue 双重处理
+onActivated(() => {
+  mounted.value = true
+  unsubscribeReposChanged = events.on('skills:repos-changed', onReposChanged)
+  unsubscribeMcpChanged = events.on('mcp:changed', onMcpChanged)
+  // 若首次初始化在异步等待中被 deactivate 打断，这里补跑，避免列表一直为空
+  ensureInit()
+})
+
+onDeactivated(() => {
+  mounted.value = false
+  unsubscribeReposChanged?.()
+  unsubscribeMcpChanged?.()
+})
+
+// 单飞初始化：onMounted 与 onActivated 都可能触发，避免并发重复搜索；
+// initView 内任何检查 mounted 失败（视图被切走）都不会置 initialized，
+// 恢复激活时会通过 ensureInit 重新执行完整初始化。
+let initPromise: Promise<void> | null = null
+function ensureInit(): Promise<void> {
+  if (initialized.value) return Promise.resolve()
+  if (!initPromise) {
+    initPromise = initView().finally(() => { initPromise = null })
+  }
+  return initPromise
+}
+
+async function initView(): Promise<void> {
   await settings.ensureLoaded()
   if (!mounted.value) return
-  unsubscribeReposChanged = events.on('skills:repos-changed', onReposChanged)
   if (settings.isSkillReposChanged()) {
     await onReposChanged()
   }
-  unsubscribeMcpChanged = events.on('mcp:changed', onMcpChanged)
   if (!githubEnabled.value && skillsShEnabled.value) {
     skillSource.value = 'skills-sh'
   }
@@ -90,13 +120,8 @@ onMounted(async () => {
   mcpStore.refresh()
   // Skills 已安装列表必须等加载完成
   await skillsStore.reload()
-})
-
-onUnmounted(() => {
-  mounted.value = false
-  unsubscribeReposChanged?.()
-  unsubscribeMcpChanged?.()
-})
+  initialized.value = true
+}
 
 async function onSearch() {
   if (!mcpSourceAvailable.value) return
@@ -125,24 +150,9 @@ function restoreServersIfEmpty() {
   }
 }
 
-// 直接在原生 DOM input 上监听 input 事件,绕开 Input 组件的事件透传问题。
-// 使用 data-slot="input" 选择器,与 Input.vue 内部 input 元素一致。
-let inputCleanup: (() => void) | undefined
-onMounted(() => {
-  import('vue').then(({ nextTick }) => {
-    nextTick(() => {
-      const el = document.querySelector<HTMLInputElement>('input[data-slot="input"]')
-      if (!el) return
-      const handler = () => {
-        if (el.value === '') restoreServersIfEmpty()
-      }
-      el.addEventListener('input', handler)
-      inputCleanup = () => el.removeEventListener('input', handler)
-    })
-  })
-})
-onUnmounted(() => {
-  inputCleanup?.()
+// 搜索框清空时恢复全部列表(替代原生 DOM 监听,避免 KeepAlive 下元素重建导致监听失效)
+watch(query, (val) => {
+  if (val === '') restoreServersIfEmpty()
 })
 
 // transport 筛选由前端 computed 过滤,切换时不需要调 API,瞬时无 loading。

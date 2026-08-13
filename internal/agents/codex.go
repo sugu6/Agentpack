@@ -53,10 +53,11 @@ func (a *CodexDesktopAdapter) Detect() *DetectInfo {
 	}
 
 	configPath := filepath.Join(h, ".codex", "config.toml")
+	hasConfig := fileExists(configPath)
 
 	// 微软商店 UWP 应用不会出现在传统 Uninstall 注册表中，
 	// 需通过 AppModel\Repository\Packages 注册表键检测。
 	hasDesktop := CheckAppxPackageInstalled("OpenAI.Codex")
 
-	return BuildDetectInfo(false, false, hasDesktop, false, VariantDesktop, configPath)
+	return BuildDetectInfo(false, false, hasDesktop, hasConfig, VariantDesktop, configPath)
 }

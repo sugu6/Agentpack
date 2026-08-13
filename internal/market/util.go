@@ -61,4 +61,3 @@ func isStatusErr(err error, code int) bool {
 	prefix := "status " + strconv.Itoa(code)
 	return strings.Contains(err.Error(), prefix+" ") || strings.HasSuffix(err.Error(), prefix)
 }
-
