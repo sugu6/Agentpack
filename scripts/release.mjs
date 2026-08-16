@@ -52,6 +52,9 @@ if (!repoUrl) {
 
 const today = new Date().toISOString().slice(0, 10)
 
+// 脚本实际修改过的文件（用于 commit + tag）
+const changedFiles = []
+
 // --- 1. 更新 build/config.yml (Wails v3) ---
 function updateBuildConfig() {
   let content = readFileSync('build/config.yml', 'utf8')
@@ -68,6 +71,7 @@ function updateBuildConfig() {
   }
   content = content.replace(pattern, `$1${version}$2`)
   writeFileSync('build/config.yml', content)
+  changedFiles.push('build/config.yml')
   console.log(`build/config.yml: ${oldVersion} -> ${version}`)
 }
 
@@ -81,6 +85,7 @@ function updatePackageJson() {
   }
   pkg.version = version
   writeFileSync('frontend/package.json', JSON.stringify(pkg, null, 2) + '\n')
+  changedFiles.push('frontend/package.json')
   console.log(`frontend/package.json: ${oldVersion} -> ${version}`)
 }
 
@@ -100,6 +105,7 @@ function updatePlatformVersionFiles() {
       return
     }
     writeFileSync(file, newContent)
+    changedFiles.push(file)
     console.log(`${file}: ${label} -> ${version}`)
   }
 
@@ -124,6 +130,7 @@ function updatePlatformVersionFiles() {
     }
     if (changed) {
       writeFileSync(file, JSON.stringify(info, null, '\t') + '\n')
+      changedFiles.push(file)
       console.log(`${file}: file_version/ProductVersion -> ${version}`)
     } else {
       console.log(`${file}: already ${version}, skipping`)
@@ -173,6 +180,16 @@ function updateChangelog(file) {
     console.error(`Error: [Unreleased] section in ${file} is empty and [${version}] section does not exist.`)
     console.error(`Please add changelog entries under [Unreleased] before releasing.`)
     process.exit(1)
+  }
+
+  // 发版时始终将目标版本节的发版日期刷新为今天（含用户已手动维护但日期滞后的场景）
+  const datePattern = new RegExp(`(^## \\[${version}\\]\\s*-\\s*)\\d{4}-\\d{2}-\\d{2}`, 'm')
+  const dateMatch = content.match(datePattern)
+  const currentDate = dateMatch && dateMatch[0].match(/\d{4}-\d{2}-\d{2}/)[0]
+  if (currentDate !== today) {
+    content = content.replace(datePattern, `$1${today}`)
+    modified = true
+    console.log(`${file}: [${version}] release date ${currentDate ?? '(none)'} -> ${today}`)
   }
 
   // 修正底部 compare 链接的 repo URL
@@ -230,7 +247,36 @@ function updateChangelog(file) {
 
   if (modified) {
     writeFileSync(file, content)
+    changedFiles.push(file)
   }
+}
+
+// --- 5. git commit + tag（发版统一经过脚本打标签） ---
+function gitCommitAndTag() {
+  if (changedFiles.length === 0) {
+    console.log('No files changed; skipping commit and tag.')
+    return
+  }
+  // 去重（CHANGELOG 可能被重复 push）并过滤相对 HEAD 无实际改动的文件
+  const files = [...new Set(changedFiles)].filter((f) => {
+    try {
+      execSync(`git diff --quiet HEAD -- ${JSON.stringify(f)}`, { stdio: 'ignore' })
+      return false // 无改动
+    } catch {
+      return true // 有改动，或文件被脚本改后尚未提交
+    }
+  })
+  if (files.length === 0) {
+    console.log('No modifications relative to HEAD; skipping commit and tag.')
+    return
+  }
+
+  console.log(`\n=== Commit & Tag v${version} ===\n`)
+  execSync(`git add ${files.map((f) => JSON.stringify(f)).join(' ')}`, { stdio: 'inherit' })
+  execSync(`git commit -m "release: v${version}"`, { stdio: 'inherit' })
+  // git tag 统一走脚本，创建轻量标签（与历史 v* 标签一致）；已存在则强制更新
+  execSync(`git tag -f v${version}`, { stdio: 'inherit' })
+  console.log(`Created tag v${version}. Push with: git push origin v${version}`)
 }
 
 // --- 执行 ---
@@ -240,4 +286,5 @@ updatePackageJson()
 updatePlatformVersionFiles()
 updateChangelog('CHANGELOG.md')
 updateChangelog('CHANGELOG_EN.md')
-console.log(`\nDone. Review changes, then commit and tag.`)
+gitCommitAndTag()
+console.log(`\nDone.`)
