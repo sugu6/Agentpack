@@ -9,8 +9,6 @@ versioned by [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [0.2.4] - 2026-08-16
 
-> **Installation**: this update switches to a per-user install (into the current user's `%LOCALAPPDATA%\Programs`). Click "Install now" inside the app to install directly — **no administrator rights needed**, and the previous install location is remembered.
-
 ### Features
 
 - **Update downloads support pause/resume/cancel**: pausing keeps the temp file and resuming continues from the breakpoint via HTTP `Range`; canceling cleans up the temp file immediately and no longer reports a spurious failure
@@ -40,8 +38,6 @@ versioned by [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - tar/zip skill extraction did not apply the permission mask (`&^ 0022`), inheriting overly permissive package permissions
 - App shutdown didn't cancel the download goroutine, leaving `.downloading` temp files in the Downloads dir
 - `.gitignore` used the wrong ignore path (`build/bin` → root `bin/`)
-- **Installer switched to per-user scope (no UAC elevation)**: clicking "Install now" launches the install wizard directly with no admin rights; version 0.2.3 (`cmd start`) can also install under normal privileges, no longer relying on `ShellExecuteW("runas")`
-- **NSIS remembers install location per-user (HKCU)**: under the per-user install, reads/writes the current user's own HKCU, restoring the last install directory on upgrade/reinstall
 
 ## [0.2.3] - 2026-08-13
 
