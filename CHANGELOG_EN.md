@@ -7,7 +7,7 @@ versioned by [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-## [0.2.4] - 2026-08-16
+## [0.2.4] - 2026-08-17
 
 ### Features
 
