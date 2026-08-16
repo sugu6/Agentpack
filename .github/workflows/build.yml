@@ -305,6 +305,29 @@ jobs:
           update_release_body: true
           update_release_assets: true
 
+      # 兜底：用 REST API 强制把 release body 更新为最新 CHANGELOG.txt。
+      # action-gh-release 对已存在 release 的 update_release_body 可能不生效
+      # （表现为重新打 tag 后 notes 不刷新），PATCH 是确定生效的更新方式。
+      - name: Update release notes body (REST API)
+        if: steps.check_changelog.outputs.has_changelog == 'true'
+        run: |
+          release_id="$(curl -s -H "Authorization: token ${GITHUB_TOKEN}" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/tags/${GITHUB_REF_NAME}" | jq -r '.id // empty')"
+          if [ -n "$release_id" ]; then
+            body_json="$(jq -Rs . artifacts/CHANGELOG.txt)"
+            curl -s -X PATCH -H "Authorization: token ${GITHUB_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              -d "{\"body\": ${body_json}}" \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/${release_id}"
+            echo "Updated release body for release_id=${release_id}"
+          else
+            echo "No release found to update body"
+          fi
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+
       - name: Create GitHub release (auto-generated notes)
         if: steps.check_changelog.outputs.has_changelog != 'true'
         uses: softprops/action-gh-release@v2
