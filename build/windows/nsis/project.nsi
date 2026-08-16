@@ -69,6 +69,9 @@ ManifestDPIAware true
 
 ## 记住上次安装位置（Windows 注册表键与值名）
 ## 升级/重装时读取该键作为默认安装目录，安装完成后写回，卸载时删除。
+## 本安装器为 machine 级（RequestExecutionLevel=admin）：提权后写 HKCU 会落到管理员
+## 账户下，普通用户读取不到；改用 HKLM，全用户共享，普通权限的 AgentPack 升级时
+## 也能读到上次安装目录。读不到时沿用下方 InstallDir 默认值（兜底）。
 !define AGENTPACK_INSTALL_DIR_KEY "Software\${INFO_COMPANYNAME}\${INFO_PRODUCTNAME}"
 !define AGENTPACK_INSTALL_DIR_VALUE "InstallDir"
 
@@ -94,7 +97,7 @@ Function .onInit
 
    # 记住上次安装位置：若能读到注册表中保存的目录，则作为本次默认安装目录
    # （覆盖 InstallDir 初值）。读不到/为空则沿用默认，不覆盖 wails 的架构判断。
-   ReadRegStr $0 HKCU "${AGENTPACK_INSTALL_DIR_KEY}" "${AGENTPACK_INSTALL_DIR_VALUE}"
+   ReadRegStr $0 HKLM "${AGENTPACK_INSTALL_DIR_KEY}" "${AGENTPACK_INSTALL_DIR_VALUE}"
    StrCmp $0 "" skip_restore_dir
    StrCpy $INSTDIR $0
    skip_restore_dir:
@@ -117,7 +120,7 @@ Section
     
     !insertmacro wails.writeUninstaller
     # 记住安装位置，供下次升级/重装时还原目录
-    WriteRegStr HKCU "${AGENTPACK_INSTALL_DIR_KEY}" "${AGENTPACK_INSTALL_DIR_VALUE}" "$INSTDIR"
+    WriteRegStr HKLM "${AGENTPACK_INSTALL_DIR_KEY}" "${AGENTPACK_INSTALL_DIR_VALUE}" "$INSTDIR"
 SectionEnd
 
 Section "uninstall" 
@@ -136,5 +139,5 @@ Section "uninstall"
     !insertmacro wails.deleteUninstaller
 
     # 清理记住的安装位置，卸载后不留残留
-    DeleteRegKey HKCU "${AGENTPACK_INSTALL_DIR_KEY}"
+    DeleteRegKey HKLM "${AGENTPACK_INSTALL_DIR_KEY}"
 SectionEnd

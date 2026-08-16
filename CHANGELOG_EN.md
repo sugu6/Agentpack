@@ -9,6 +9,10 @@ versioned by [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [0.2.4] - 2026-08-16
 
+> **⚠️ Upgrade note**: This update requires administrator privileges to install. If "Install now" inside the app doesn't work, take either approach:
+> 1. **Right-click AgentPack → "Run as administrator"**, then click "Install now" again;
+> 2. Go to the **GitHub Releases page** and download/run the latest installer manually
+
 ### Features
 
 - **Update downloads support pause/resume/cancel**: pausing keeps the temp file and resuming continues from the breakpoint via HTTP `Range`; canceling cleans up the temp file immediately and no longer reports a spurious failure
@@ -38,6 +42,8 @@ versioned by [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - tar/zip skill extraction did not apply the permission mask (`&^ 0022`), inheriting overly permissive package permissions
 - App shutdown didn't cancel the download goroutine, leaving `.downloading` temp files in the Downloads dir
 - `.gitignore` used the wrong ignore path (`build/bin` → root `bin/`)
+- **Windows could not launch the update installer from within the app (elevation)**: 0.2.3 switched to CreateProcess, which cannot trigger UAC elevation from a non-elevated process (`ERROR_ELEVATION_REQUIRED`); now uses `ShellExecuteW("runas")` to elevate, restoring 0.2.2's auto-elevation via `cmd start` without going through cmd.exe (no metacharacter injection)
+- **NSIS "remember last install location" failed under the machine-scope installer (elevation)**: writing HKCU after elevation lands under the admin account that an ordinary user can't read; now uses HKLM (shared across users) so a normal-privilege app can also read the last install directory on upgrade
 
 ## [0.2.3] - 2026-08-13
 

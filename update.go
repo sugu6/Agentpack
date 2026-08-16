@@ -929,12 +929,12 @@ func (a *App) InstallUpdate() error {
 	}
 
 	// 完全脱离父进程启动安装程序
-	// 注意：Windows 下用 ShellExecuteW（"runas"）启动，可触发 UAC 提权以运行
-	// machine 级安装器；不经 cmd.exe，避免文件名中的 & 等 cmd.exe 元字符导致命令注入。
+	// 注意：Windows 安装器为 machine 级（RequestExecutionLevel=admin），需以管理员权限
+	// 运行；exec.Command(CreateProcess) 无法在普通权限下触发 UAC 提权，会报
+	// ERROR_ELEVATION_REQUIRED，故用 ShellExecuteW("runas") 提权启动。不经 cmd.exe，
+	// 避免文件名中的 & 等 cmd.exe 元字符导致命令注入。非 Windows 平台用 open/xdg-open。
 	switch runtime.GOOS {
 	case "windows":
-		// 用 ShellExecuteW("runas") 提权启动：安装器是 machine 级、请求管理员权限，
-		// exec.Command(CreateProcess) 无法提权会失败。非 Windows 平台用 open/xdg-open。
 		if err := launchInstallerWindows(dlPath); err != nil {
 			return err
 		}
