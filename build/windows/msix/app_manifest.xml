@@ -10,7 +10,7 @@
   <Identity
     Name="com.sugu6.agentpack"
     Publisher="CN=sugu6"
-    Version="0.2.3.0"
+    Version="0.2.4.0"
     ProcessorArchitecture="x64" />
 
   <Properties>

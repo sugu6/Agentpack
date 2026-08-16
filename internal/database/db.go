@@ -5,8 +5,10 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	_ "modernc.org/sqlite"
@@ -122,7 +124,29 @@ func Init(dbPath string) error {
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return err
 	}
-	conn, err := sql.Open("sqlite", dbPath+"?_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)")
+	// busy_timeout(5000)：外部进程（DB 工具/杀毒扫描/dev 双实例）短暂持锁时
+	// 写操作等待而不是立即 SQLITE_BUSY 失败；SetMaxOpenConns(1) 已避免应用内自锁。
+	// DSN 用 url.URL 编码：dbPath 可能含空格、中文、& 等特殊字符（如 Windows
+	// 用户名），直接字符串拼接会让 DSN 解析错位或把 pragma 参数吞进路径。
+	// file:/// 三斜杠形式（Path 以 / 开头）才能被 modernc 正确解析 Windows 盘符；
+	// 裸 "C:/x.db" 会被误认为 URI authority。":memory:" 不走 URI 编码。
+	var dsn string
+	if dbPath == ":memory:" {
+		dsn = dbPath + "?_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)"
+	} else {
+		slashPath := filepath.ToSlash(dbPath)
+		if !strings.HasPrefix(slashPath, "/") {
+			slashPath = "/" + slashPath
+		}
+		dsn = (&url.URL{
+			Scheme: "file",
+			Path:   slashPath,
+			RawQuery: url.Values{
+				"_pragma": []string{"journal_mode(WAL)", "foreign_keys(1)", "busy_timeout(5000)"},
+			}.Encode(),
+		}).String()
+	}
+	conn, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return err
 	}

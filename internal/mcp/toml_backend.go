@@ -50,7 +50,12 @@ func (b *TomlBackend) Read(path string) (map[string]Server, error) {
 		var skipped []string
 		for _, ts := range codexCfg.McpServers {
 			if ts.Command == "" && ts.URL == "" {
-				continue // skip invalid entries
+				// 残缺条目（仅 name 无 command/url）：同样标记 partial，
+				// 否则整表重写时该条目被静默删除
+				log.Printf("mcp: skip incomplete entry %q in %s: missing command/url", ts.Name, path)
+				partial = true
+				skipped = append(skipped, ts.Name)
+				continue
 			}
 			if ts.Command != "" {
 				if err := ValidateCommand(ts.Command); err != nil {
@@ -85,6 +90,7 @@ func (b *TomlBackend) Read(path string) (map[string]Server, error) {
 				URL:        ts.URL,
 				Timeout:    ts.Timeout,
 				Cwd:        ts.Cwd,
+				Headers:    ts.Headers,
 				Source:     "config",
 			}
 			if s.ID == "" {
@@ -110,16 +116,26 @@ func (b *TomlBackend) Read(path string) (map[string]Server, error) {
 		return map[string]Server{}, nil
 	}
 	out := make(map[string]Server, len(raw.McpServers))
+	partial := false
+	var skipped []string
 	for name, prim := range raw.McpServers {
 		s, err := parseTomlServer(name, prim)
 		if err != nil {
-			return nil, err
+			// 单个坏条目只跳过该条目并标记 partial（与 JSON/数组格式一致），
+			// 不因一个坏条目导致整个文件的服务器全部不可见
+			log.Printf("mcp: skip server %q in %s: %v", name, path, err)
+			partial = true
+			skipped = append(skipped, name)
+			continue
 		}
 		s.Source = "config"
 		if s.ID == "" {
 			s.ID = serverDeterministicID(name, path)
 		}
 		out[name] = s
+	}
+	if partial {
+		return out, fmt.Errorf("%w; skipped entries in %s: %s", ErrPartialRead, path, strings.Join(skipped, ", "))
 	}
 	return out, nil
 }
@@ -131,6 +147,7 @@ type tomlMcpServer struct {
 	Command string            `toml:"command"`
 	Args    []string          `toml:"args"`
 	Env     map[string]string `toml:"env"`
+	Headers map[string]string `toml:"headers"`
 	URL     string            `toml:"url"`
 	Timeout int               `toml:"timeout"`
 	Cwd     string            `toml:"cwd"`
@@ -141,6 +158,7 @@ type tomlServer struct {
 	Command string            `toml:"command"`
 	Args    []string          `toml:"args"`
 	Env     map[string]string `toml:"env"`
+	Headers map[string]string `toml:"headers"`
 	URL     string            `toml:"url"`
 	Timeout int               `toml:"timeout"`
 	Cwd     string            `toml:"cwd"`
@@ -186,6 +204,7 @@ func parseTomlServer(name string, prim toml.Primitive) (Server, error) {
 		URL:        ts.URL,
 		Timeout:    ts.Timeout,
 		Cwd:        ts.Cwd,
+		Headers:    ts.Headers,
 		Source:     "config",
 	}, nil
 }
@@ -242,6 +261,9 @@ func (b *TomlBackend) writeArrayFormat(path string, existing map[string]any, ser
 		if len(s.Env) > 0 {
 			entry["env"] = s.Env
 		}
+		if len(s.Headers) > 0 {
+			entry["headers"] = s.Headers
+		}
 		if s.URL != "" {
 			entry["url"] = s.URL
 		}
@@ -292,12 +314,12 @@ func (b *TomlBackend) writeTableFormat(path string, existing map[string]any, ser
 		s := servers[name]
 		fmt.Fprintf(&buf, "[mcp_servers.%s]\n", quoteTomlKey(name))
 		if s.ConfigType != "" {
-			fmt.Fprintf(&buf, "type = %q\n", s.ConfigType)
+			fmt.Fprintf(&buf, "type = %s\n", tomlQuoteValue(s.ConfigType))
 		} else {
-			fmt.Fprintf(&buf, "type = %q\n", string(s.Transport))
+			fmt.Fprintf(&buf, "type = %s\n", tomlQuoteValue(string(s.Transport)))
 		}
 		if s.Command != "" {
-			fmt.Fprintf(&buf, "command = %q\n", s.Command)
+			fmt.Fprintf(&buf, "command = %s\n", tomlQuoteValue(s.Command))
 		}
 		if len(s.Args) > 0 {
 			buf.WriteString("args = [")
@@ -305,7 +327,7 @@ func (b *TomlBackend) writeTableFormat(path string, existing map[string]any, ser
 				if i > 0 {
 					buf.WriteString(", ")
 				}
-				fmt.Fprintf(&buf, "%q", a)
+				fmt.Fprintf(&buf, "%s", tomlQuoteValue(a))
 			}
 			buf.WriteString("]\n")
 		}
@@ -325,14 +347,29 @@ func (b *TomlBackend) writeTableFormat(path string, existing map[string]any, ser
 			}
 			buf.WriteString("}\n")
 		}
+		if len(s.Headers) > 0 {
+			buf.WriteString("headers = {")
+			headerKeys := make([]string, 0, len(s.Headers))
+			for k := range s.Headers {
+				headerKeys = append(headerKeys, k)
+			}
+			sort.Strings(headerKeys)
+			for i, k := range headerKeys {
+				if i > 0 {
+					buf.WriteString(", ")
+				}
+				fmt.Fprintf(&buf, "%s = %s", quoteTomlKey(k), tomlQuoteValue(s.Headers[k]))
+			}
+			buf.WriteString("}\n")
+		}
 		if s.URL != "" {
-			fmt.Fprintf(&buf, "url = %q\n", s.URL)
+			fmt.Fprintf(&buf, "url = %s\n", tomlQuoteValue(s.URL))
 		}
 		if s.Timeout > 0 {
 			fmt.Fprintf(&buf, "timeout = %d\n", s.Timeout)
 		}
 		if s.Cwd != "" {
-			fmt.Fprintf(&buf, "cwd = %q\n", s.Cwd)
+			fmt.Fprintf(&buf, "cwd = %s\n", tomlQuoteValue(s.Cwd))
 		}
 		buf.WriteByte('\n')
 	}
@@ -341,6 +378,8 @@ func (b *TomlBackend) writeTableFormat(path string, existing map[string]any, ser
 }
 
 // quoteTomlKey quotes anything outside TOML's bare-key character set.
+// 引号 key 使用 TOML 兼容转义（与 tomlQuoteValue 一致，避免 %q 输出
+// \xNN 产生非法 TOML——key 与值共用基本字符串转义规则）。
 func quoteTomlKey(name string) string {
 	if name == "" {
 		return `""`
@@ -349,7 +388,7 @@ func quoteTomlKey(name string) string {
 		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_' {
 			continue
 		}
-		return fmt.Sprintf("%q", name)
+		return tomlQuoteValue(name)
 	}
 	return name
 }
@@ -357,7 +396,7 @@ func quoteTomlKey(name string) string {
 func writeTomlValue(buf *bytes.Buffer, val any) {
 	switch v := val.(type) {
 	case string:
-		fmt.Fprintf(buf, "%q", v)
+		buf.WriteString(tomlQuoteValue(v))
 	case bool:
 		fmt.Fprintf(buf, "%t", v)
 	case int64:
@@ -384,7 +423,7 @@ func writeTomlValue(buf *bytes.Buffer, val any) {
 			if i > 0 {
 				buf.WriteString(", ")
 			}
-			fmt.Fprintf(buf, "%q = ", k)
+			fmt.Fprintf(buf, "%s = ", quoteTomlKey(k))
 			writeTomlValue(buf, v[k])
 		}
 		buf.WriteByte('}')
@@ -397,7 +436,7 @@ func writeTomlValue(buf *bytes.Buffer, val any) {
 			buf.WriteString(`""`)
 			return
 		}
-		fmt.Fprintf(buf, "%q", string(b))
+		buf.WriteString(tomlQuoteValue(string(b)))
 	}
 }
 
@@ -405,9 +444,10 @@ func writeTomlValue(buf *bytes.Buffer, val any) {
 // 正确处理引号、换行、控制字符等特殊场景，避免生成非法 TOML。
 func tomlQuoteValue(val string) string {
 	// 如果字符串不含特殊字符，使用普通双引号基本字符串
+	// TOML 基本字符串要求转义 0x00-0x1F 控制字符与 0x7F（DEL）
 	needsEscape := false
 	for _, c := range val {
-		if c == '"' || c == '\\' || c == '\n' || c == '\r' || c == '\t' || (c >= 0 && c < 0x20) {
+		if c == '"' || c == '\\' || c == '\n' || c == '\r' || c == '\t' || c < 0x20 || c == 0x7f {
 			needsEscape = true
 			break
 		}
@@ -432,8 +472,8 @@ func tomlQuoteValue(val string) string {
 		case '\t':
 			b.WriteString(`\t`)
 		default:
-			if c < 0x20 {
-				// 其他控制字符使用 Unicode 转义
+			if c < 0x20 || c == 0x7f {
+				// 其他控制字符（含 DEL）使用 Unicode 转义
 				fmt.Fprintf(&b, "\\u%04x", c)
 			} else {
 				b.WriteRune(c)

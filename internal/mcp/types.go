@@ -20,12 +20,19 @@ type Server struct {
 	Transport   Transport         `json:"transport"`
 	ConfigType  string            `json:"configType,omitempty"`
 	URL         string            `json:"url,omitempty"`
-	Timeout     int               `json:"timeout,omitempty"`
-	Source      string            `json:"source"`
-	SourceID    string            `json:"sourceId,omitempty"`
-	BoundAgents []string          `json:"boundAgents"`
-	InstalledAt string            `json:"installedAt"`
-	UpdatedAt   string            `json:"updatedAt"`
+	// Headers 透传远程服务器（SSE/HTTP/streamable-http）的认证/自定义请求头，
+	// 读写回写时原样保留。此前该字段在解析时被丢弃，任何一次写文件都会
+	// 让需要鉴权的远程服务器失去 headers。
+	Headers map[string]string `json:"headers,omitempty"`
+	// Enabled 透传 opencode 的 "enabled" 状态（用户手动禁用的服务器）。
+	// 缺失时 opencode 默认视为启用，因此不保留会导致禁用被写回后撤销。
+	Enabled     *bool    `json:"enabled,omitempty"`
+	Timeout     int      `json:"timeout,omitempty"`
+	Source      string   `json:"source"`
+	SourceID    string   `json:"sourceId,omitempty"`
+	BoundAgents []string `json:"boundAgents"`
+	InstalledAt string   `json:"installedAt"`
+	UpdatedAt   string   `json:"updatedAt"`
 }
 
 type McpInstallOptions struct {

@@ -156,10 +156,19 @@ func checkNpmPackageSingle(pkg string) bool {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, npmPath, "list", "-g", pkg, "--depth=0")
+	// --json + 结构化解析（与 loadNpmCache 一致）：文本输出的子串匹配
+	// 会把 "foo@" 误匹配到 "foobar@1.0.0"，导致包名互为前缀时误判已安装
+	cmd := exec.CommandContext(ctx, npmPath, "list", "-g", pkg, "--depth=0", "--json")
 	hideConsoleWindow(cmd)
 	output, _ := cmd.CombinedOutput()
-	return strings.Contains(string(output), pkg+"@")
+	var result struct {
+		Dependencies map[string]struct{} `json:"dependencies"`
+	}
+	if err := json.Unmarshal(output, &result); err != nil {
+		return false
+	}
+	_, ok := result.Dependencies[pkg]
+	return ok
 }
 
 // ResetNpmCache 重置 npm 缓存（用于测试或重新扫描时）

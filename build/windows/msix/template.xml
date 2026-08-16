@@ -17,7 +17,7 @@
         PackageDisplayName="AgentPack"
         PublisherName="CN=sugu6"
         PublisherDisplayName="sugu6"
-        Version="0.2.3.0"
+        Version="0.2.4.0"
         PackageDescription="AgentPack - Unified management of MCP / Skills / Agent configurations">
         <Capabilities>
             <Capability Name="runFullTrust" />

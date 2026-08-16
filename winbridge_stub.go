@@ -26,7 +26,8 @@ func WndProcHook(hwnd uintptr, msg uint32, wParam, lParam uintptr) (uintptr, boo
 }
 
 // registerSystemThemeHook 在非 Windows 平台为空操作（SystemThemeChanged 仅 Windows 触发）。
-func registerSystemThemeHook(*application.App) {}
+// 签名与 winbridge.go 的 Windows 实现保持一致，main.go 调用点在所有平台传两个参数。
+func registerSystemThemeHook(*application.App, func() string) {}
 
 // TrimWorkingSet 在非 Windows 平台为空操作。
 func TrimWorkingSet() {}

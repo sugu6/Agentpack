@@ -88,12 +88,12 @@ func (r *Registry) Scan() {
 			if agent.Status != StatusDisabled {
 				agent.Status = StatusNotFound
 			}
-case StatusDetected:
-		// 保留用户手动 disabled 的状态，不要被 Scan 覆盖
-		if !existed || agent.Status != StatusDisabled {
-			agent.Status = StatusEnabled
-		}
-		detectedIDs[id] = true
+		case StatusDetected:
+			// 保留用户手动 disabled 的状态，不要被 Scan 覆盖
+			if !existed || agent.Status != StatusDisabled {
+				agent.Status = StatusEnabled
+			}
+			detectedIDs[id] = true
 		default:
 			agent.Status = info.Status
 		}
@@ -332,6 +332,13 @@ var skillDirCache = computeSkillDirCache()
 
 func computeSkillDirCache() map[string]string {
 	m := make(map[string]string, 8)
+	// 主目录解析失败时所有代理的技能目录统一置空：Adapter.SkillsDir() 内部
+	// 是 filepath.Join(homeDir(), ...)，homeDir() 为空会得到 ".claude/skills"
+	// 这类非空相对路径，SkillCapableAgentIDs 会误判为支持技能，
+	// 技能将被写入进程 CWD 而非用户主目录。
+	if homeDir() == "" {
+		return m
+	}
 	for id, ad := range map[string]Adapter{
 		"claude-code":         NewClaudeCodeAdapter(),
 		"claude-code-desktop": NewClaudeCodeDesktopAdapter(),

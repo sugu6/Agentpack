@@ -32,33 +32,35 @@ import (
 type App struct {
 	ctx       context.Context
 	wailsApp  *application.App
-	mu        sync.RWMutex // 保护 App 内部状态（registry, stores, cfg）
-	rescanMu  sync.Mutex   // 序列化 RescanAgents（先于 storeOpMu 获取）
-	storeOpMu sync.Mutex   // 序列化 MCP/Skills 存储操作（后于 rescanMu）
+	mainWin   *application.WebviewWindow // 主窗口引用（main.go 创建后注入）
+	mu        sync.RWMutex               // 保护 App 内部状态（registry, stores, cfg）
+	rescanMu  sync.Mutex                 // 序列化 RescanAgents（先于 storeOpMu 获取）
+	storeOpMu sync.Mutex                 // 序列化 MCP/Skills 存储操作（后于 rescanMu）
 	// ⚠️ 锁定顺序约定（违反将导致死锁）：
 	//   1. rescanMu (仅在 RescanAgents 中获取)
 	//   2. storeOpMu
 	//   3. a.mu
 	// Go vet 建议：新增方法若需要多种锁，请严格遵循此顺序。
-	cfg                *config.AppConfig
-	registry           *agents.Registry
-	mcpStore           *mcp.Store
-	mcpStoreReady      bool
-	mcpStoreErr        string
-	skillsStore        *skills.Store
-	marketStore        *market.Store
-	backups            *backup.Manager
-	exporter           *backup.Exporter
-	closed             bool
-	allowClose         bool
-	startupErrors      []string
+	cfg           *config.AppConfig
+	registry      *agents.Registry
+	mcpStore      *mcp.Store
+	mcpStoreReady bool
+	mcpStoreErr   string
+	skillsStore   *skills.Store
+	marketStore   *market.Store
+	backups       *backup.Manager
+	exporter      *backup.Exporter
+	closed        bool
+	allowClose    bool
+	startupErrors []string
 	// 最近一次自动来源回填的结果（受 mu 保护；lastBackfillDone 区分"从未执行"与"结果为空"）
-	lastBackfill     SkillSourceBackfillResult
-	lastBackfillDone bool
-	inFlight         int
+	lastBackfill       SkillSourceBackfillResult
+	lastBackfillDone   bool
+	inFlight           int
 	flightCond         *sync.Cond
 	downloadCtx        context.Context
 	downloadCancel     context.CancelFunc
+	downloadDone       chan struct{} // 当前下载 goroutine 结束信号（受 mu 保护），CancelDownload 等待其关闭
 	downloadPausedFile string        // 暂停时保存的临时文件路径
 	downloadOffset     int64         // 暂停时的下载偏移量
 	downloadURL        string        // 当前下载的 URL
@@ -70,6 +72,16 @@ type App struct {
 	liteMode           bool
 	liteTimer          *time.Timer
 	liteUnit           time.Duration // 计时单位，生产为 time.Minute，测试可覆盖
+	// CheckUpdate 的 singleflight + 结果缓存状态（checkUpdateMu 保护）。
+	// 缓存用于避免高频次反复请求 GitHub API（未认证 60 次/小时/IP）触发限流。
+	checkUpdateMu        sync.Mutex
+	checkUpdateCh        chan checkUpdateRes
+	updateCheckAt        time.Time                 // 上次检查时间
+	updateCheckRateLtd   bool                      // 上次结果是否命中限流(决定退避时长)
+	updateCheckResult    *UpdateCheckResult        // 缓存的结果
+	updateCheckMsgKey    string                    // 结果消息的 i18n key（cache 命中时按当前语言重生成）
+	updateCheckMsgArgs   map[string]interface{}    // 消息参数
+	updateCheckErr       error                     // 缓存的结果错误
 }
 
 // DownloadState 下载状态
@@ -89,6 +101,16 @@ var downloadStateNames = [...]string{"idle", "downloading", "paused", "complete"
 // setWailsApp 注入 v3 应用实例引用
 func (a *App) setWailsApp(app *application.App) {
 	a.wailsApp = app
+}
+
+// setMainWindow 注入主窗口引用。HideWindow/showWindowRaw 必须使用该引用
+// 而非 wailsApp.Window.Current()：v3 的 currentWindowID 只在窗口收到
+// WM_ACTIVATE(WA_ACTIVE) 时赋值，主窗口从未被激活时 Current() 返回 nil，
+// 直接 nil 解引用 panic（lite 空闲计时器到点隐藏窗口可触发）。
+func (a *App) setMainWindow(win *application.WebviewWindow) {
+	a.mu.Lock()
+	a.mainWin = win
+	a.mu.Unlock()
 }
 
 // setTray 注入 v3 原生系统托盘引用
@@ -173,6 +195,14 @@ func (a *App) ServiceStartup(ctx context.Context, options application.ServiceOpt
 	// 注册 MCP Server fetcher
 	a.marketStore.RegisterServer(market.NewRegistryFetcher())
 
+	// 启动时清理过期的市场缓存：缓存键含 query+cursor+page，每次新查询
+	// 写一个新文件，长期使用只增不减；过期条目读取时只跳过不删除。
+	if removed, err := a.marketStore.CleanCache(); err != nil {
+		log.Printf("market cache cleanup: %v", err)
+	} else if removed > 0 {
+		log.Printf("market cache cleanup: removed %d expired file(s)", removed)
+	}
+
 	// 注册 Skill fetchers
 	a.marketStore.RegisterSkillFetcher(market.NewGitHubSkillFetcher(func() []market.RepoRef {
 		// 从当前配置读取仓库列表（App 可能随时更新配置）
@@ -211,6 +241,15 @@ func (a *App) ServiceShutdown() error {
 	// v3: 系统托盘由 application.App 统一管理生命周期，无需手动清理
 	a.mu.Lock()
 	a.closed = true
+	// 先取消活动下载再等待 inFlight：下载 goroutine 的 ctx 上限是 30 分钟，
+	// 若不取消，inFlight 等待 5 秒超时后进程强杀 goroutine，removeTmp 清理
+	// 不执行，Downloads 目录永久残留 .downloading 文件（下载完成才改名，
+	// 下次更新 URL 变更时 os.Create 覆盖也命中不了，无法回收）。
+	var dlDone chan struct{}
+	if a.downloadCancel != nil {
+		a.downloadCancel()
+		dlDone = a.downloadDone
+	}
 	if a.inFlight > 0 {
 		// 后台 goroutine 在超时后强制 Broadcast，避免 Wait() 在任务挂起时永久阻塞
 		// close(done) 必须在 Unlock() 之前调用，确保主循环重新获取 a.mu 时 done 已关闭，
@@ -247,6 +286,16 @@ func (a *App) ServiceShutdown() error {
 		a.mu.Unlock()
 	}
 
+	// 等待下载 goroutine 完成清理（removeTmp）。取消后应快速退出；
+	// 极端卡死时 2 秒兜底，不阻塞退出流程。
+	if dlDone != nil {
+		select {
+		case <-dlDone:
+		case <-time.After(2 * time.Second):
+			log.Printf("shutdown: download goroutine did not exit within 2s, tmp file may remain")
+		}
+	}
+
 	if a.backups != nil {
 		done := make(chan struct{})
 		go func() {
@@ -261,6 +310,14 @@ func (a *App) ServiceShutdown() error {
 			log.Printf("shutdown: timeout waiting for backup hooks")
 		}
 	}
+
+	// 排空无 inFlight 保护的 store 写操作（AddMcpServer/ToggleAgent/
+	// withSkillsStore 系列等只持 storeOpMu）：它们在 closed 检查后、
+	// 写库前可能仍在途。database.Close 与它们的事务并发会让最后一次
+	// 写静默失败（回滚保证一致，但用户操作丢失）。取一次 storeOpMu
+	// 等队列排空，之后不会再有新操作进入（closed 已置位）。
+	a.storeOpMu.Lock()
+	a.storeOpMu.Unlock()
 
 	if err := database.Close(); err != nil {
 		log.Printf("database close: %v", err)
@@ -278,7 +335,12 @@ func (a *App) beforeClose(e *application.WindowEvent) {
 	a.mu.RUnlock()
 
 	if closed || allowClose {
-		// 允许关闭，不取消事件
+		// 允许关闭，不取消事件。窗口随后被销毁：置空 mainWin 引用，
+		// 防止退出流程中（closed 尚未置位）的 ShowWindow 回调命中
+		// wails 的"窗口已销毁则静默重建"逻辑，闪现一个正在退出的窗口。
+		a.mu.Lock()
+		a.mainWin = nil
+		a.mu.Unlock()
 		return
 	}
 	if inFlight > 0 {
@@ -294,6 +356,13 @@ func (a *App) beforeClose(e *application.WindowEvent) {
 func (a *App) beginInFlight() error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	return a.beginInFlightLocked()
+}
+
+// beginInFlightLocked 在已持有 a.mu 的临界区内登记 in-flight 计数。
+// startDownload 等需要在持锁状态下完成"状态转换 + 登记"的原子操作，
+// 避免解锁后、登记前被 CancelDownload 介入造成状态撕裂。
+func (a *App) beginInFlightLocked() error {
 	if a.closed {
 		return fmt.Errorf("app is shutting down")
 	}
@@ -612,14 +681,18 @@ func (a *App) RescanAgents() ([]*agents.Agent, error) {
 	a.mcpStoreReady = true
 	a.mcpStoreErr = ""
 	a.skillsStore = newSkillsStore
-	a.backups.Bind(a.registry, a.mcpStore)
-	a.exporter = backup.NewExporter(a.mcpStore, a.registry)
-	a.setConfigProviders()
 	a.refreshBackupHooksLocked()
 	a.emitLocked("agents:changed", all)
 	a.emitLocked("mcp:changed", a.mcpStore.List())
 	a.emitLocked("skills:changed", a.skillsStore.List())
 	a.mu.Unlock()
+
+	// 重新绑定备份管理器/导出器（取 m.mu）。必须放在 a.mu 临界区之外：
+	// 备份 Capture 持 m.mu 时会回调 cfgProvider 取 a.mu.RLock，若此处持 a.mu 再取
+	// m.mu 则构成 a.mu→m.mu 与 m.mu→a.mu 的反向锁序死锁。
+	a.backups.Bind(newReg, newMcpStore)
+	a.exporter = backup.NewExporter(newMcpStore, newReg)
+	a.setConfigProviders()
 
 	return all, nil
 }
@@ -672,7 +745,10 @@ func (a *App) ListMcpServers() ([]mcp.Server, error) {
 }
 
 func (a *App) ScanMcpServers() (*mcp.ScanResult, error) {
-	reg, ms := a.getRegistry(), a.getMcp()
+	// 单次 snapshot：getRegistry/getMcp 是两次独立 RLock，之间 RescanAgents
+	// 可完成整代替换，旧 reg 的 ConfigPath × 新 ms 的 managedKeys 会把已管理
+	// 条目误标为"未管理"（ListAgents 已用同一模式规避）
+	reg, ms, _, _, _, _ := a.snapshot()
 	if reg == nil {
 		return nil, fmt.Errorf("registry not initialized")
 	}
@@ -816,7 +892,9 @@ func (a *App) InstallMarketServer(server market.MarketServer, agentIDs []string)
 		}
 		return mcp.Server{}, err
 	}
+	a.mu.Lock()
 	a.emitMcpChangedLocked()
+	a.mu.Unlock()
 	return created, nil
 }
 
@@ -849,6 +927,11 @@ func (a *App) SearchMarketSkills(query string, pageSize int, page int, source st
 			}
 		}
 		enabledSources = filtered
+	}
+	// 所有可用来源均被禁用时直接返回空结果，而不是让 store 的
+	// "nil = 搜索全部已注册来源" 语义绕过禁用设置（nil 与空切片无法区分）。
+	if len(enabledSources) == 0 {
+		return &market.SearchResultSkills{Items: []market.MarketSkill{}, Total: 0, Page: 1}, nil
 	}
 	log.Printf("SearchMarketSkills: query=%q pageSize=%d page=%d source=%q enabledSources=%v", query, pageSize, page, source, enabledSources)
 	// Skills 搜索可能需要扫描多个 GitHub 仓库（每个仓库含多个 SKILL.md），超时设长一些
@@ -890,10 +973,6 @@ func (a *App) InstallMarketSkill(skill market.MarketSkill, agentIDs []string) (s
 		branch = "main"
 	}
 
-	// 构造 tarball URL
-	tarballURL := fmt.Sprintf("https://codeload.github.com/%s/%s/tar.gz/refs/heads/%s",
-		skill.RepoOwner, skill.RepoName, branch)
-
 	reg, ss := a.getRegistry(), a.getSkills()
 	if ss == nil || reg == nil {
 		return skills.Skill{}, fmt.Errorf("skills store or registry not initialized")
@@ -902,17 +981,44 @@ func (a *App) InstallMarketSkill(skill market.MarketSkill, agentIDs []string) (s
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	input := skills.TarballInstallInput{
-		TarballURL: tarballURL,
-		Directory:  skill.Directory,
-		FullPath:   skill.FullPath, // 传递完整相对路径（如 "skills/pdf"），安装时精准定位
-		RepoOwner:  skill.RepoOwner,
-		RepoName:   skill.RepoName,
-		RepoBranch: branch,
+	// 分支兜底枚举：{存储分支} ∪ {main, master} 去重。
+	// 场景：扫描侧通过 jsDelivr @master 别名（=仓库默认分支）解析出的分支
+	// 存为 "master"，而真实默认分支可能是 main（别名只用于扫描，不保证
+	// 与仓库实际分支名一致）；反之 master-only 仓库在默认 main 404 时需重试。
+	// 依次尝试直到成功，成功后以实际命中的分支落库。
+	attempts := []string{branch, "main", "master"}
+	seen := map[string]bool{}
+	var installed skills.Skill
+	var lastErr error
+	for _, cand := range attempts {
+		if cand == "" || seen[cand] {
+			continue
+		}
+		seen[cand] = true
+		tarballURL := fmt.Sprintf("https://codeload.github.com/%s/%s/tar.gz/refs/heads/%s",
+			skill.RepoOwner, skill.RepoName, cand)
+		input := skills.TarballInstallInput{
+			TarballURL: tarballURL,
+			Directory:  skill.Directory,
+			FullPath:   skill.FullPath, // 传递完整相对路径（如 "skills/pdf"），安装时精准定位
+			RepoOwner:  skill.RepoOwner,
+			RepoName:   skill.RepoName,
+			RepoBranch: cand,
+		}
+		// 5 分钟总预算共享给多个候选分支时，第一个失败的分支可能耗尽整个
+		// 预算，后续候选直接因 ctx 超时失败。为每个候选派生独立子预算
+		// （90 秒/候选，3 候选共 270 秒，不超过 5 分钟总预算）。
+		childCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
+		installed, lastErr = ss.InstallFromTarball(childCtx, input, agentIDs, reg)
+		cancel()
+		if lastErr == nil {
+			branch = cand
+			skill.RepoBranch = cand
+			break
+		}
 	}
-	installed, err := ss.InstallFromTarball(ctx, input, agentIDs, reg)
-	if err != nil {
-		return skills.Skill{}, err
+	if lastErr != nil {
+		return skills.Skill{}, lastErr
 	}
 
 	// 写入 ~/.agents/.skill-lock.json（兼容 CC Switch 等工具）
@@ -936,8 +1042,8 @@ func (a *App) InstallMarketSkill(skill market.MarketSkill, agentIDs []string) (s
 	a.emitLocked("skills:changed", ss.List())
 	// 安装成功后异步缓存 Commit SHA 作为更新检测基线
 	go func() {
-		_ = skills.CacheSkillCommitSHA(installed.ID, input.RepoOwner, input.RepoName,
-			input.RepoBranch)
+		_ = skills.CacheSkillCommitSHA(installed.ID, skill.RepoOwner, skill.RepoName,
+			skill.RepoBranch)
 	}()
 	return installed, nil
 }
@@ -1041,6 +1147,12 @@ func (a *App) CheckSkillUpdates() ([]skills.UpdateStatus, error) {
 		return nil, err
 	}
 	defer a.endInFlight()
+	// 与 UpdateSkill/UpdateSkills 互斥：CheckUpdates 会读 SSOT 目录
+	// (localDirFileHashes/readUpdateCache) 并可能 RemoveAgentsLockEntry，
+	// 与 UpdateSkill 的 tarball fallback（RemovePath + 重建 SSOT）并发时
+	// 会读到半写入目录、误报"有更新"，且 lock 条目的写删互相竞争。
+	a.storeOpMu.Lock()
+	defer a.storeOpMu.Unlock()
 
 	ss := a.getSkills()
 	if ss == nil {
@@ -1152,7 +1264,10 @@ func (a *App) UpdateSettings(s config.Settings) error {
 	a.storeOpMu.Lock()
 	defer a.storeOpMu.Unlock()
 
-	res := a.applySettingsLocked(s)
+	res, err := a.applySettingsLocked(s)
+	if err != nil {
+		return err
+	}
 	newLang := i18n.ResolveLanguage(s.Language)
 	a.rebuildTrayIfNeeded(res.oldLang, newLang)
 	a.syncLiteModeIfNeeded(res.oldLiteEnabled, s.LiteAutoEnabled)
@@ -1167,9 +1282,37 @@ type settingsApplyResult struct {
 	oldLiteEnabled bool
 }
 
+// extractSettingsFromSnapshot 从快照 settings.appSettings 解码应用设置，
+// 供导入/恢复在应用 MCP 之前预检（settings 数据非法时提前失败，避免
+// MCP 已落盘后的部分生效状态）。
+func extractSettingsFromSnapshot(snap backup.Snapshot) (*config.Settings, error) {
+	if snap.Settings == nil {
+		return nil, nil
+	}
+	raw, ok := snap.Settings["appSettings"]
+	if !ok {
+		return nil, nil
+	}
+	m, ok := raw.(map[string]any)
+	if !ok {
+		return nil, nil
+	}
+	data, err := json.Marshal(m)
+	if err != nil {
+		return nil, fmt.Errorf("restore: encode settings: %w", err)
+	}
+	var settings config.Settings
+	if err := json.Unmarshal(data, &settings); err != nil {
+		return nil, fmt.Errorf("restore: decode settings: %w", err)
+	}
+	settings = normalizeBackupConfig(settings)
+	return &settings, nil
+}
+
 // normalizeBackupConfig 归一化备份保留配置：BackupRetention 与 BackupCount 互为兜底。
+// BackupRetention 为 0 表示无限保留（不清理旧快照），只有负数才回退兜底。
 func normalizeBackupConfig(s config.Settings) config.Settings {
-	if s.BackupRetention <= 0 {
+	if s.BackupRetention < 0 {
 		if s.BackupCount > 0 {
 			s.BackupRetention = s.BackupCount
 		} else {
@@ -1185,7 +1328,8 @@ func normalizeBackupConfig(s config.Settings) config.Settings {
 // applySettingsLocked applies settings changes while holding a.mu.
 // It collects old values before modifying state, performs file I/O outside the lock,
 // and returns the data needed for post-lock side effects (tray rebuild, lite timer).
-func (a *App) applySettingsLocked(s config.Settings) settingsApplyResult {
+// 返回错误时，内存中设置已回滚为旧值，调用方应将其透传给前端。
+func (a *App) applySettingsLocked(s config.Settings) (settingsApplyResult, error) {
 	// Normalize backup config
 	s = normalizeBackupConfig(s)
 	s.LiteAutoDelay = config.ClampLiteDelay(s.LiteAutoDelay)
@@ -1208,6 +1352,12 @@ func (a *App) applySettingsLocked(s config.Settings) settingsApplyResult {
 	skillsStore = a.skillsStore
 	registry = a.registry
 	backups = a.backups
+	oldSettings := a.cfg.Settings
+	// skillRepos 有专门的 Add/Remove API，UpdateSettings 的全量替换会抹掉
+	// 并发修改：用户添加 repo 后，在途 autoSave 携带旧 skillRepos 快照
+	// 到达后端即把新增仓库静默回滚（前端 display 合并只保护 UI，不保护
+	// 已发出的 payload）。以现存配置为准，仓库列表的变更走专用 API。
+	s.SkillRepos = oldSettings.SkillRepos
 	newCfg := *a.cfg
 	newCfg.Settings = s
 	newSettings := newCfg.Settings
@@ -1216,6 +1366,19 @@ func (a *App) applySettingsLocked(s config.Settings) settingsApplyResult {
 	a.mu.Unlock()
 
 	result := settingsApplyResult{newSettings: newSettings, oldLang: oldLang, oldLiteEnabled: oldLiteEnabled}
+	// 失败路径统一回滚内存设置，避免"前端收到失败但设置已部分生效"的不一致
+	rollbackAll := func() {
+		a.mu.Lock()
+		if a.cfg != nil {
+			a.cfg.Settings = oldSettings
+			// 恢复设置后必须同步恢复备份 hook：成功路径在写 Settings 后立即
+			// refreshBackupHooksLocked 切换 hook；若此处只回滚设置而 hook 保持
+			// 新的 nil/非 nil 值（如 AutoBackup 从 true→false 保存失败），
+			// 后续 MCP 变更将不再触发自动备份，用户以为在备份而实际已静默失效。
+			a.refreshBackupHooksLocked()
+		}
+		a.mu.Unlock()
+	}
 
 	// rollbackSyncMethod reverts the skill sync method in both the store and in-memory cfg.
 	rollbackSyncMethod := func() {
@@ -1234,18 +1397,25 @@ func (a *App) applySettingsLocked(s config.Settings) settingsApplyResult {
 		if s.SkillSyncMethod != oldSkillSyncMethod {
 			skillsStore.SetSyncMethod(skills.SyncMethod(s.SkillSyncMethod))
 			if err := skillsStore.Resync(registry); err != nil {
+				// Resync 失败后若只 rollbackAll（恢复 cfg.Settings），
+				// store 内仍以新 sync method 运行，后续行为与配置不一致：
+				// 必须先恢复 store 的 method 再回滚配置
 				rollbackSyncMethod()
-				return result
+				rollbackAll()
+				return result, fmt.Errorf("apply settings: resync skills: %w", err)
 			}
 		}
 		if s.SkillStorage != oldSkillStorage {
 			newDir := skills.ResolveSSOTDir(skills.StorageLocation(s.SkillStorage))
 			migrated, err := skillsStore.MigrateStorage(newDir, registry)
 			if err != nil {
+				// MigrateStorage 失败时目录与指针已内部回滚，恢复 store 的
+				// sync method（若本次也改了）与内存配置
 				if s.SkillSyncMethod != oldSkillSyncMethod {
 					rollbackSyncMethod()
 				}
-				return result
+				rollbackAll()
+				return result, fmt.Errorf("apply settings: migrate skill storage: %w", err)
 			}
 			if migrated.Migrated > 0 {
 				log.Printf("migrated %d skills to %s", migrated.Migrated, newDir)
@@ -1266,14 +1436,8 @@ func (a *App) applySettingsLocked(s config.Settings) settingsApplyResult {
 				log.Printf("rollback skill sync method after settings save failure: %v", rollbackErr)
 			}
 		}
-		// Always reset in-memory settings on save failure
-		a.mu.Lock()
-		if a.cfg != nil {
-			a.cfg.Settings.SkillStorage = oldSkillStorage
-			a.cfg.Settings.SkillSyncMethod = oldSkillSyncMethod
-		}
-		a.mu.Unlock()
-		return result
+		rollbackAll()
+		return result, fmt.Errorf("apply settings: save config: %w", err)
 	}
 
 	// Emit skills:changed if storage or sync method changed
@@ -1287,7 +1451,7 @@ func (a *App) applySettingsLocked(s config.Settings) settingsApplyResult {
 		}
 	}
 
-	return result
+	return result, nil
 }
 
 // OpenURL 在系统浏览器中打开指定 URL。
@@ -1317,14 +1481,24 @@ func isSafeURL(raw string) bool {
 }
 
 // Quit 退出应用程序。设置 allowClose 标志后调用 application.Quit。
+// 有任务在途（下载/更新/迁移/备份）时拒绝退出并通知前端——
+// 与 beforeClose 的 inFlight 拦截策略保持一致；否则退出流程 5 秒
+// 超时后强杀任务 goroutine，下载残留 .downloading 文件、备份半写。
 func (a *App) Quit() error {
 	a.mu.Lock()
-	a.allowClose = true
+	inFlight := a.inFlight
 	closed := a.closed
 	a.mu.Unlock()
 	if closed {
 		return nil
 	}
+	if inFlight > 0 {
+		a.emit("app:close-blocked")
+		return fmt.Errorf("tasks in progress, close blocked")
+	}
+	a.mu.Lock()
+	a.allowClose = true
+	a.mu.Unlock()
 	a.wailsApp.Quit()
 	return nil
 }
@@ -1334,7 +1508,18 @@ func (a *App) HideWindow() {
 	if a.isClosed() {
 		return
 	}
-	a.wailsApp.Window.Current().Hide()
+	// mainWin 由 setMainWindow/beforeClose 持 a.mu 写入，读点必须同步取
+	// 副本：否则与 beforeClose 置 nil 并发时可能读到已销毁窗口的旧指针，
+	// 命中 wails 的"窗口已销毁则静默重建"，在退出流程中闪现窗口。
+	win := a.mainWindow()
+	if win != nil {
+		win.Hide()
+		return
+	}
+	// 防御：窗口引用未注入时回退到 Current()（极端启动时序下可能为 nil）
+	if w := a.wailsApp.Window.Current(); w != nil {
+		w.Hide()
+	}
 }
 
 // ShowWindow 显示窗口（从系统托盘恢复）。同时退出轻量模式并停用空闲计时器，
@@ -1358,7 +1543,32 @@ func (a *App) showWindowRaw() {
 	if a.isClosed() {
 		return
 	}
-	a.wailsApp.Window.Current().Show()
+	win := a.mainWindow()
+	if win != nil {
+		win.Show()
+		return
+	}
+	if w := a.wailsApp.Window.Current(); w != nil {
+		w.Show()
+	}
+}
+
+// mainWindow 持 a.mu 返回当前主窗口引用副本。所有读点都必须经过它，
+// 与 setMainWindow/beforeClose 的持锁写入配对。
+func (a *App) mainWindow() *application.WebviewWindow {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.mainWin
+}
+
+// getTheme 返回当前主题配置（供 winbridge 系统主题切换钩子读取）
+func (a *App) getTheme() string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if a.cfg == nil {
+		return "system"
+	}
+	return a.cfg.Settings.Theme
 }
 
 func (a *App) SetTheme(theme string) {
@@ -1437,18 +1647,31 @@ func (a *App) RestoreBackup(id string, opts backup.ImportOptions) (backup.Import
 		return backup.ImportResult{}, err
 	}
 	defer a.endInFlight()
-	a.storeOpMu.Lock()
-	defer a.storeOpMu.Unlock()
 
-	exporter, backupsMgr, err := a.prepareRestore(opts)
-	if err != nil {
-		return backup.ImportResult{}, err
-	}
-
-	res, err := exporter.RestoreFromBackup(backupsMgr, id, opts)
+	// 持锁阶段（store 的 MCP 恢复 + Agent 状态提取）收敛到闭包内，
+	// 锁的释放始终由 defer 保证。此前实现在此处手动 Unlock → 调用
+	// UpdateSettings → 重新 Lock：若 UpdateSettings 链路 panic，
+	// 函数退出时 deferred Unlock 会作用在已解锁的 Mutex 上，
+	// 触发 "sync: unlock of unlocked mutex" 并掩盖原始 panic。
+	res, importedSettings, cfgAfter, err := a.restoreBackupLocked(id, opts)
 	if err != nil {
 		return res, err
 	}
+	if a.isClosed() {
+		return res, nil
+	}
+
+	// storeOpMu 已释放，UpdateSettings 可安全获取同一把锁
+	if importedSettings != nil {
+		if settingsErr := a.UpdateSettings(*importedSettings); settingsErr != nil {
+			return res, fmt.Errorf("restore: apply settings: %w", settingsErr)
+		}
+	} else if opts.ApplyAgentStatus {
+		if err := config.Save(&cfgAfter); err != nil {
+			return res, fmt.Errorf("restore: save agent status: %w", err)
+		}
+	}
+
 
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -1457,6 +1680,81 @@ func (a *App) RestoreBackup(id string, opts backup.ImportOptions) (backup.Import
 	}
 	a.emitMcpChangedLocked()
 	return res, nil
+}
+
+// restoreBackupLocked 执行 RestoreBackup 的持锁阶段，返回恢复结果、
+// 待应用的导入设置与含最新 Agent 禁用列表的配置快照。
+func (a *App) restoreBackupLocked(id string, opts backup.ImportOptions) (backup.ImportResult, *config.Settings, config.AppConfig, error) {
+	var noCfg config.AppConfig
+	a.storeOpMu.Lock()
+	defer a.storeOpMu.Unlock()
+
+	exporter, backupsMgr, err := a.prepareRestore(opts)
+	if err != nil {
+		return backup.ImportResult{}, nil, noCfg, err
+	}
+
+	// 前置解码并校验备份内设置：在应用 MCP 之前完成。RestoreFromBackup
+	// 成功后 MCP/绑定已全部落盘，若随后设置解码/应用失败，恢复是"部分
+	// 生效"且无回滚——用户看到失败提示，系统却已改。settings 数据非法
+	// 在这里就失败，MCP 尚未被触碰。
+	var importedSettings *config.Settings
+	if opts.ApplySettings {
+		snap, gerr := backupsMgr.GetSnapshot(id)
+		if gerr != nil {
+			return backup.ImportResult{}, nil, noCfg, fmt.Errorf("restore: read backup: %w", gerr)
+		}
+		importedSettings, err = extractSettingsFromSnapshot(snap)
+		if err != nil {
+			return backup.ImportResult{}, nil, noCfg, err
+		}
+	}
+
+	// 挂起自动备份 hook：RestoreFromBackup 内部逐条 Add/Update 会触发
+	// OnMutation 逐个 Capture，几十个服务器的快照产出几十个"中间状态"
+	// 快照，把用户历史手动快照挤出 retention 配额。
+	suppress := a.backups.Suppress()
+	// defer 释放：RestoreFromBackup panic 时计数也必须归还，否则自动
+	// 备份永久静默失效（Suppress 计数再也无法归零）。
+	defer suppress()
+	res, err := exporter.RestoreFromBackup(backupsMgr, id, opts)
+	if err != nil {
+		return res, nil, noCfg, err
+	}
+
+	if opts.ApplySettings && res.ExportedSettings != nil && len(res.ExportedSettings) > 0 {
+		// res.ExportedSettings 为 nil 表示未提取到设置（旧快照/未导出设置），
+		// 不视为错误；仅当解码失败（类型错配）才报错——此时 MCP 已应用，
+		// 错误信息明确说明"服务器已恢复"。
+		data, marshalErr := json.Marshal(res.ExportedSettings)
+		if marshalErr != nil {
+			return res, nil, noCfg, fmt.Errorf("restore: encode settings: %w", marshalErr)
+		}
+		var settings config.Settings
+		if unmarshalErr := json.Unmarshal(data, &settings); unmarshalErr != nil {
+			return res, nil, noCfg, fmt.Errorf("restore: apply settings: %w", unmarshalErr)
+		}
+		settings = normalizeBackupConfig(settings)
+		importedSettings = &settings
+	}
+
+	a.mu.Lock()
+	if a.closed {
+		a.mu.Unlock()
+		return res, nil, noCfg, nil
+	}
+	if a.cfg == nil {
+		a.cfg = config.Default()
+	}
+	// 恢复 Agent 状态后必须与 ImportBackupFromFile 一致地持久化禁用列表，
+	// 否则重启后 registry.LoadDisabled 从旧 config 读取，恢复的状态丢失。
+	if opts.ApplyAgentStatus && a.registry != nil {
+		a.cfg.DisabledAgents = a.registry.DisabledIDs()
+	}
+	cfgAfter := *a.cfg
+	a.mu.Unlock()
+
+	return res, importedSettings, cfgAfter, nil
 }
 
 func (a *App) ExportBackupToFile(id, dest string) (string, error) {
@@ -1473,59 +1771,24 @@ func (a *App) ImportBackupFromFile(src string, opts backup.ImportOptions) (backu
 		return backup.ImportResult{}, err
 	}
 	defer a.endInFlight()
-	a.storeOpMu.Lock()
-	defer a.storeOpMu.Unlock()
 
-	exporter, _, err := a.prepareRestore(opts)
-	if err != nil {
-		return backup.ImportResult{}, err
-	}
-
-	res, err := exporter.ImportFromFile(src, opts)
+	// 持锁阶段收敛到闭包内，锁的释放始终由 defer 保证（见 RestoreBackup
+	// 的说明：手动 Unlock/Lock 在 panic 时会触发未持锁解锁并掩盖根因）。
+	res, importedSettings, cfgAfter, err := a.importBackupLocked(src, opts)
 	if err != nil {
 		return res, err
 	}
-
-	var importedSettings *config.Settings
-	if opts.ApplySettings && len(res.ExportedSettings) > 0 {
-		data, marshalErr := json.Marshal(res.ExportedSettings)
-		if marshalErr != nil {
-			return res, fmt.Errorf("import: encode settings: %w", marshalErr)
-		}
-		var settings config.Settings
-		if unmarshalErr := json.Unmarshal(data, &settings); unmarshalErr != nil {
-			return res, fmt.Errorf("import: decode settings: %w", unmarshalErr)
-		}
-		settings = normalizeBackupConfig(settings)
-		importedSettings = &settings
-	}
-
-	a.mu.Lock()
-	if a.closed {
-		a.mu.Unlock()
+	if a.isClosed() {
 		return res, nil
 	}
-	if a.cfg == nil {
-		a.cfg = config.Default()
-	}
-	if opts.ApplyAgentStatus && a.registry != nil {
-		a.cfg.DisabledAgents = a.registry.DisabledIDs()
-	}
-	cfgAfterAgentStatus := *a.cfg
-	a.mu.Unlock()
 
-	// Apply imported settings through the normal runtime-aware path. The
-	// current function already owns storeOpMu, so release it before calling
-	// UpdateSettings, which acquires the same lock.
+	// storeOpMu 已释放，UpdateSettings 可安全获取同一把锁
 	if importedSettings != nil {
-		a.storeOpMu.Unlock()
-		settingsErr := a.UpdateSettings(*importedSettings)
-		a.storeOpMu.Lock()
-		if settingsErr != nil {
+		if settingsErr := a.UpdateSettings(*importedSettings); settingsErr != nil {
 			return res, fmt.Errorf("import: apply settings: %w", settingsErr)
 		}
 	} else if opts.ApplyAgentStatus {
-		if err := config.Save(&cfgAfterAgentStatus); err != nil {
+		if err := config.Save(&cfgAfter); err != nil {
 			return res, fmt.Errorf("import: save agent status: %w", err)
 		}
 	}
@@ -1536,7 +1799,93 @@ func (a *App) ImportBackupFromFile(src string, opts backup.ImportOptions) (backu
 	return res, nil
 }
 
+// importBackupLocked 执行 ImportBackupFromFile 的持锁阶段（见 restoreBackupLocked）。
+func (a *App) importBackupLocked(src string, opts backup.ImportOptions) (backup.ImportResult, *config.Settings, config.AppConfig, error) {
+	var noCfg config.AppConfig
+	a.storeOpMu.Lock()
+	defer a.storeOpMu.Unlock()
+
+	exporter, _, err := a.prepareRestore(opts)
+	if err != nil {
+		return backup.ImportResult{}, nil, noCfg, err
+	}
+
+	// 前置解码并校验备份内设置（与 RestoreBackup 同理）：ImportFromFile
+	// 应用 MCP 之后若设置解码失败，恢复是"部分生效"且无回滚。
+	var importedSettings *config.Settings
+	if opts.ApplySettings {
+		info, serr := os.Stat(src)
+		if serr != nil {
+			return backup.ImportResult{}, nil, noCfg, fmt.Errorf("import: stat file: %w", serr)
+		}
+		const maxImportSize = 100 * 1024 * 1024
+		if info.Size() > maxImportSize {
+			return backup.ImportResult{}, nil, noCfg, fmt.Errorf("import file too large: %d bytes (max %d MB)", info.Size(), maxImportSize/(1024*1024))
+		}
+		data, rerr := os.ReadFile(src)
+		if rerr != nil {
+			return backup.ImportResult{}, nil, noCfg, fmt.Errorf("import: read file: %w", rerr)
+		}
+		snap, derr := backup.DecodeSnapshot(data)
+		if derr != nil {
+			return backup.ImportResult{}, nil, noCfg, derr
+		}
+		importedSettings, err = extractSettingsFromSnapshot(snap)
+		if err != nil {
+			return backup.ImportResult{}, nil, noCfg, err
+		}
+	}
+
+	// 挂起自动备份 hook（见 RestoreBackup 注释）
+	suppress := a.backups.Suppress()
+	// defer 释放：ImportFromFile panic 时计数也必须归还（见 RestoreBackup）
+	defer suppress()
+	res, err := exporter.ImportFromFile(src, opts)
+	if err != nil {
+		return res, nil, noCfg, err
+	}
+
+	if opts.ApplySettings && res.ExportedSettings != nil && len(res.ExportedSettings) > 0 {
+		// res.ExportedSettings 为 nil 表示未提取到设置（旧快照/未导出设置），
+		// 不视为错误；仅当解码失败（类型错配）才报错——此时 MCP 已应用，
+		// 错误信息明确说明"服务器已恢复"。
+		data, marshalErr := json.Marshal(res.ExportedSettings)
+		if marshalErr != nil {
+			return res, nil, noCfg, fmt.Errorf("import: encode settings: %w", marshalErr)
+		}
+		var settings config.Settings
+		if unmarshalErr := json.Unmarshal(data, &settings); unmarshalErr != nil {
+			return res, nil, noCfg, fmt.Errorf("import: apply settings: %w", unmarshalErr)
+		}
+		settings = normalizeBackupConfig(settings)
+		importedSettings = &settings
+	}
+
+	a.mu.Lock()
+	if a.closed {
+		a.mu.Unlock()
+		return res, nil, noCfg, nil
+	}
+	if a.cfg == nil {
+		a.cfg = config.Default()
+	}
+	if opts.ApplyAgentStatus && a.registry != nil {
+		a.cfg.DisabledAgents = a.registry.DisabledIDs()
+	}
+	cfgAfterAgentStatus := *a.cfg
+	a.mu.Unlock()
+
+	return res, importedSettings, cfgAfterAgentStatus, nil
+}
+
 func (a *App) CreateBackupNow(description string) (backup.Summary, error) {
+	// 参与 in-flight 计数：backup.Capture 不检查 m.closed 也不加入 wg，
+	// 若不加 beginInFlight，关闭流程的 wg.Wait 返回后 database.Close 可能
+	// 与正在执行的事务并发，导致备份静默失败（"sql: database is closed"）。
+	if err := a.beginInFlight(); err != nil {
+		return backup.Summary{}, err
+	}
+	defer a.endInFlight()
 	return withBackups(a, func(m *backup.Manager) (backup.Summary, error) {
 		return m.Capture("manual", "", "", description)
 	})
@@ -1658,11 +2007,14 @@ func (a *App) ScanUnmanagedSkills() ([]skills.UnmanagedSkill, error) {
 // PauseDownload 暂停当前正在进行的下载
 func (a *App) PauseDownload() error {
 	a.mu.Lock()
+	defer a.mu.Unlock()
 	if a.closed || a.downloadState != DownloadStateDownloading {
-		a.mu.Unlock()
 		return fmt.Errorf("no active download")
 	}
-	a.mu.Unlock()
+	// 置位必须在持锁临界区内完成：下载 goroutine 在锁内做状态转换
+	// (Downloading→Completed/Paused)。若解锁后再置位，窗口期内下载可能
+	// 已完成，留下 paused=1 且 state=Completed 的错位——恢复时报
+	// "no paused download"，文件实际已完整，UI 却显示失败。
 	atomic.StoreInt32(&a.paused, 1)
 	return nil
 }
@@ -1674,8 +2026,9 @@ func (a *App) ResumeDownload() error {
 		a.mu.Unlock()
 		return fmt.Errorf("no paused download to resume")
 	}
-	a.mu.Unlock()
+	// 与 PauseDownload 对称：锁内清暂停标志，避免与暂停/取消的置位交错
 	atomic.StoreInt32(&a.paused, 0)
+	a.mu.Unlock()
 	// 不在此处读取 url/offset：由 startDownload(resume=true) 在持锁时从
 	// a.downloadURL/a.downloadOffset 读取并连同状态一起转换，消除与
 	// CancelDownload 清空状态之间的检查-使用竞态。
@@ -1689,7 +2042,13 @@ func (a *App) GetDownloadState() (state string, fileName string, offset int64) {
 	if i := int(a.downloadState); i >= 0 && i < len(downloadStateNames) {
 		state = downloadStateNames[i]
 	}
-	return state, a.downloadPausedFile, a.downloadOffset
+	// downloadPausedFile 是完整临时路径（xxx.downloading），前端只展示
+	// 文件名，剥掉目录部分避免把临时目录路径暴露给 UI。
+	name := a.downloadPausedFile
+	if name != "" {
+		name = filepath.Base(name)
+	}
+	return state, name, a.downloadOffset
 }
 
 func (a *App) MigrateSkillStorage(target string) (skills.MigrationResult, error) {
@@ -1751,11 +2110,10 @@ func (a *App) BackfillSkillSources() (SkillSourceBackfillResult, error) {
 	if err != nil {
 		return SkillSourceBackfillResult{}, err
 	}
-	verify := func(dir string, cands []market.BackfillCandidate) (market.BackfillCandidate, string, bool, bool) {
+	verify := func(dir string, cands []market.BackfillCandidate) (market.BackfillCandidate, string, string, bool, bool) {
 		hadNetworkErr := false
 		for _, c := range cands {
-			fp, ok, verr := skills.VerifySkillSource(ctx, dir, c.Owner, c.Repo, "main",
-				filepath.Join(ssotDir, dir))
+			fp, branch, ok, verr := verifyBackfillCandidate(ctx, ssotDir, dir, c)
 			if verr != nil {
 				hadNetworkErr = true
 				continue
@@ -1766,26 +2124,72 @@ func (a *App) BackfillSkillSources() (SkillSourceBackfillResult, error) {
 				if !market.AcceptBackfillMatch(dir, fp) {
 					continue
 				}
-				return c, fp, true, false
+				return c, fp, branch, true, false
 			}
 		}
-		return market.BackfillCandidate{}, "", false, hadNetworkErr
+		return market.BackfillCandidate{}, "", "", false, hadNetworkErr
 	}
-	return applyBackfillWithVerification(matches, directories, verify), nil
+	return applyBackfillWithVerification(matches, directories, verify, ss.HasDirectory, a.applyBackfillEntry), nil
+}
+
+// applyBackfillEntry 在 storeOpMu 下用"当前" store 重新校验技能仍被纳管
+// （回填验证期间用户可能已卸载，旧 store 指针的 HasDirectory 检查不反映
+// RescanAgents 后的新状态），校验通过则同步内存来源。返回 false 时调用方
+// 回滚刚写入的 lock 条目，避免锁文件残留已卸载技能的来源。
+func (a *App) applyBackfillEntry(dir string, entry skills.AgentsLockEntry) bool {
+	ok := false
+	_ = a.withStoreOp(func() error {
+		ss := a.skillsStore
+		if ss == nil || !ss.HasDirectory(dir) {
+			return nil
+		}
+		owner, repo, _ := strings.Cut(entry.Source, "/")
+		if owner == "" || repo == "" {
+			return nil
+		}
+		// SetRepoSource 以技能 ID（"skill:"+目录名）为 map 键，不能传裸目录名，
+		// 否则恒返回 false，回填来源被回滚、功能失效。
+		ok = ss.SetRepoSource("skill:"+dir, owner, repo, entry.Branch, entry.FullPath)
+		return nil
+	})
+	return ok
+}
+
+// verifyBackfillCandidate 验证单个回填候选：先按 main 分支，查询失败时
+// 追加一次 master 尝试（master 默认分支的仓库），与安装/更新侧的分支
+// 兜底行为保持一致，避免 master-only 仓库的来源回填永久无果。
+// 返回匹配成功时实际使用的分支（写入 lock，后续更新检测按此分支进行）。
+func verifyBackfillCandidate(ctx context.Context, ssotDir, dir string, c market.BackfillCandidate) (fullPath, branch string, ok bool, err error) {
+	localDir := filepath.Join(ssotDir, dir)
+	fp, ok, err := skills.VerifySkillSource(ctx, dir, c.Owner, c.Repo, "main", localDir)
+	if err == nil {
+		return fp, "main", ok, nil
+	}
+	fp2, ok2, err2 := skills.VerifySkillSource(ctx, dir, c.Owner, c.Repo, "master", localDir)
+	if err2 != nil {
+		return fp, "", ok, err
+	}
+	return fp2, "master", ok2, nil
 }
 
 // backfillVerifier 验证候选列表：按序验证（下载量降序），返回首个内容一致的
-// 匹配（含 fullPath）。ok=false 且 networkErr=true 表示候选全部因网络失败未验证；
-// ok=false 且 networkErr=false 表示候选都验证过但内容不一致。
-type backfillVerifier func(dir string, candidates []market.BackfillCandidate) (match market.BackfillCandidate, fullPath string, ok bool, networkErr bool)
+// 匹配（含 fullPath 与实际匹配分支）。ok=false 且 networkErr=true 表示候选全部
+// 因网络失败未验证；ok=false 且 networkErr=false 表示候选都验证过但内容不一致。
+type backfillVerifier func(dir string, candidates []market.BackfillCandidate) (match market.BackfillCandidate, fullPath, branch string, ok bool, networkErr bool)
 
 // applyBackfillWithVerification 并发验证匹配项并把通过验证的写入 lock。
 // 拆分为独立函数便于单元测试（网络查询/验证由调用方注入）。
-func applyBackfillWithVerification(matches map[string][]market.BackfillCandidate, directories []string, verify backfillVerifier) SkillSourceBackfillResult {
+// stillExists 在写 lock 前校验技能仍被 store 纳管：回填验证期间（后台最多
+// 120s 窗口）用户可能已卸载该技能，跳过写回避免锁文件残留已删除技能的来源。
+// applyMemory 在写 lock 后同步内存来源（storeOpMu 下用当前 store 重新校验）：
+// 返回 false 时回滚 lock 条目并静默跳过，防止"写 lock 后、落内存前"卸载
+// 的窗口残留条目，同时保证 CheckUpdates/UpdateSkill 入口立即可用。
+func applyBackfillWithVerification(matches map[string][]market.BackfillCandidate, directories []string, verify backfillVerifier, stillExists func(dir string) bool, applyMemory func(dir string, entry skills.AgentsLockEntry) bool) SkillSourceBackfillResult {
 	type verified struct {
 		dir        string
 		match      market.BackfillCandidate
 		fullPath   string
+		branch     string
 		ok         bool
 		networkErr bool
 	}
@@ -1799,9 +2203,9 @@ func applyBackfillWithVerification(matches map[string][]market.BackfillCandidate
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			m, fullPath, ok, networkErr := verify(dir, cands)
+			m, fullPath, branch, ok, networkErr := verify(dir, cands)
 			mu.Lock()
-			verifiedMap[dir] = verified{dir: dir, match: m, fullPath: fullPath, ok: ok, networkErr: networkErr}
+			verifiedMap[dir] = verified{dir: dir, match: m, fullPath: fullPath, branch: branch, ok: ok, networkErr: networkErr}
 			mu.Unlock()
 		}()
 	}
@@ -1823,17 +2227,31 @@ func applyBackfillWithVerification(matches map[string][]market.BackfillCandidate
 			res.Mismatched = append(res.Mismatched, dir)
 			continue
 		}
+		if stillExists != nil && !stillExists(dir) {
+			// 技能已被卸载：静默跳过（不写入锁文件，也不计入失败统计）
+			log.Printf("backfill: skip %s: skill was uninstalled during verification", dir)
+			continue
+		}
 		entry := skills.AgentsLockEntry{
 			Directory:  dir,
 			Source:     v.match.Owner + "/" + v.match.Repo,
 			SourceType: "github",
 			SourceURL:  "https://github.com/" + v.match.Owner + "/" + v.match.Repo,
-			Branch:     "main",
+			Branch:     v.branch,
 			FullPath:   v.fullPath,
 		}
 		if err := skills.WriteAgentsLock(entry); err != nil {
 			log.Printf("backfill source for %s: %v", dir, err)
 			res.Failed = append(res.Failed, dir)
+			continue
+		}
+		if applyMemory != nil && !applyMemory(dir, entry) {
+			// 技能在"写 lock 后、落内存前"被卸载（或应用关闭）：回滚 lock
+			// 条目并静默跳过，不把已卸载技能的来源留在锁文件。
+			log.Printf("backfill: %s: skill gone or app closing after lock write, rolling back", dir)
+			if rerr := skills.RemoveAgentsLockEntry(dir); rerr != nil {
+				log.Printf("backfill: rollback lock entry for %s: %v", dir, rerr)
+			}
 			continue
 		}
 		res.Matched = append(res.Matched, dir)

@@ -139,7 +139,8 @@
         "migrateBtn": "开始迁移",
         "cancelBtn": "取消",
         "success": "Skills 迁移完成，共迁移 {count} 个",
-        "error": "Skills 迁移失败：{error}"
+        "error": "Skills 迁移失败：{error}",
+        "persistFailed": "迁移成功但保存设置失败：{error}。重启后将使用新位置。"
       }
     },
     "agents": {
@@ -170,8 +171,9 @@
       "pauseDownload": "暂停下载",
       "pauseFailed": "暂停失败",
       "pausedLabel": "已暂停",
-      "installNow": "立即安装",
+      "installNow": "重启并安装",
       "installFailed": "启动安装程序失败",
+      "downloadCompleteHint": "下载完成。点击下方按钮将关闭应用并启动安装程序，即可完成更新。",
       "resumeFailed": "续传失败：服务器不支持续传",
       "resumeDownload": "继续下载",
       "downloading": "下载中… {percent}%",
@@ -218,6 +220,7 @@
       "foundNewVersion": "发现新版本 v{latest}（当前 v{current}）",
       "canDownloadBelow": "可在下方下载安装包",
       "checkUpdateFailed": "检查更新失败：{error}",
+      "closeBlocked": "有任务正在进行，已阻止关闭。请等待任务完成。",
       "startDownloadFailed": "启动下载失败：{error}",
       "manualBackupLabel": "手动备份",
       "exportBackupLabel": "导出备份",
@@ -255,6 +258,7 @@
     "name": "名称",
     "command": "命令",
     "args": "参数",
+    "url": "URL",
     "env": "环境变量",
     "transport": "传输方式",
     "boundAgents": "绑定 Agent",
@@ -378,6 +382,7 @@
       "installSuccess": "已安装 Skill {name}",
       "uninstalled": "已卸载 Skill {name}",
       "uninstallFailed": "Skill 卸载失败：{error}",
+      "refreshFailed": "Skill 列表刷新失败，切换页面后查看最新状态。",
       "updateSuccess": "更新成功",
       "updateFailed": "更新失败：{error}",
       "updateAllSuccess": "已更新 {count} 个 Skill",
@@ -431,6 +436,8 @@
     "transportLabel": "Transport",
     "envVarsHint": "环境变量（安装时填写）",
     "installsCount": "{count} 次安装",
+    "starsCount": "{count} stars",
+    "url": "URL",
     "homepage": "主页",
     "docs": "文档",
     "installTargetDesc": "选择要将 {name} 安装到哪些 Agent。",
@@ -443,7 +450,8 @@
       "uninstalled": "已卸载 MCP 服务器 {name}",
       "uninstallFailed": "MCP 卸载失败：{error}",
       "installFailed": "安装失败：{error}",
-      "alreadyInstalled": "「{name}」已存在，跳过安装"
+      "alreadyInstalled": "「{name}」已存在，跳过安装",
+      "getServerDetailFailed": "获取服务器详情失败：{error}"
     }
   },
   "update": {

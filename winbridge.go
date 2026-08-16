@@ -22,7 +22,7 @@ var (
 	dwmapiProc           = syscall.NewLazyDLL("dwmapi.dll")
 	procSetClassLongPtr  = user32Proc.NewProc("SetClassLongPtrW")
 	procGetClassLongPtr  = user32Proc.NewProc("GetClassLongPtrW")
-	procCreateSolidBrush = gdi32Proc.NewProc("CreateSolidBrush")
+	procGetStockObject   = gdi32Proc.NewProc("GetStockObject")
 	procDeleteObject     = gdi32Proc.NewProc("DeleteObject")
 	procSetWindowPos     = user32Proc.NewProc("SetWindowPos")
 	procDwmSetWindowAttr = dwmapiProc.NewProc("DwmSetWindowAttribute")
@@ -39,6 +39,7 @@ var (
 const (
 	// GCLP_HBRBACKGROUND = -10 用二进制补码表示
 	gclpHbrBackground         = ^uintptr(10)
+	hollowBrush               = 5 // GetStockObject: HOLLOW_BRUSH（NULL_BRUSH 别名）
 	swpFrameChanged           = 0x0020
 	swpNoMove                 = 0x0002
 	swpNoSize                 = 0x0001
@@ -74,6 +75,17 @@ func getMainWindowHWND() uintptr {
 // 在每次 Windows 消息到达时检查是否需要修补窗口。
 func WndProcHook(hwnd uintptr, msg uint32, wParam, lParam uintptr) (uintptr, bool) {
 	switch msg {
+	case 0x0002: // WM_DESTROY — 窗口销毁时清理缓存句柄：
+		// 若不清理，主题切换事件仍会对已销毁窗口调用 DwmSetWindowAttribute，
+		// 且 wails 若重建窗口，旧句柄会阻止新窗口进入修补缓存。
+		hwndCache.mu.Lock()
+		delete(hwndCache.set, hwnd)
+		hwndCache.mu.Unlock()
+		hwndMu.Lock()
+		if mainWindowHWND == hwnd {
+			mainWindowHWND = 0
+		}
+		hwndMu.Unlock()
 	case 0x0006: // WM_ACTIVATE — 窗口激活时修补背景（仅首次生效，后续命中缓存跳过）
 		hwndCache.mu.Lock()
 		_, done := hwndCache.set[hwnd]
@@ -99,20 +111,34 @@ func WndProcHook(hwnd uintptr, msg uint32, wParam, lParam uintptr) (uintptr, boo
 // registerSystemThemeHook 在系统深色/浅色切换时同步原生标题栏。
 // v3 beta 内置了 WM_SETTINGCHANGE → SystemThemeChanged 应用事件，
 // 取代旧版在 WndProcHook 中手动解析 "ImmersiveColorSet" 的实现。
-func registerSystemThemeHook(app *application.App) {
+//
+// themeGetter 返回当前主题配置（"dark"/"light"/"system"）。仅在 system
+// 主题下跟随系统切换；固定主题下若跟随，系统切换会把标题栏拉回系统色，
+// 与前端固定不变的 UI 产生视觉撕裂，直到用户在设置里重切一次主题才恢复。
+func registerSystemThemeHook(app *application.App, themeGetter func() string) {
 	app.Event.OnApplicationEvent(events.Windows.SystemThemeChanged, func(e *application.ApplicationEvent) {
 		hwnd := getMainWindowHWND()
 		if hwnd == 0 {
 			return
 		}
-		SetDarkMode(hwnd, e.Context().IsDarkMode())
+		switch themeGetter() {
+		case "light":
+			SetDarkMode(hwnd, false)
+		case "dark":
+			SetDarkMode(hwnd, true)
+		default:
+			// system（或未知/空）：跟随系统
+			SetDarkMode(hwnd, e.Context().IsDarkMode())
+		}
 	})
 }
 
-// fixBackground 替换窗口类背景画刷为透明，
+// fixBackground 替换窗口类背景画刷为空画刷（HOLLOW_BRUSH，不填充背景），
 // 解决 v3 BackgroundTypeTranslucent 下 COLOR_BTNFACE 灰色画刷残留的问题。
+// 注意：不能用 CreateSolidBrush(0)——那创建的是不透明纯黑实体画刷，并非
+// 透明；若 wails 走系统擦除路径（WM_ERASEBKGND），窗口背景会被刷成纯黑。
 func fixBackground(hwnd uintptr) {
-	ret, _, _ := procCreateSolidBrush.Call(0x00000000) // 透明黑画刷
+	ret, _, _ := procGetStockObject.Call(hollowBrush)
 	if ret == 0 {
 		return
 	}
@@ -121,12 +147,12 @@ func fixBackground(hwnd uintptr) {
 	// 避免在替换失败（返回 0）时误删仍由类持有的句柄。
 	current, _, _ := procGetClassLongPtr.Call(hwnd, gclpHbrBackground)
 	if current != ret {
-		// 替换失败：新画刷未被采用，释放它避免 GDI 对象泄漏
-		procDeleteObject.Call(ret)
+		// 替换失败：stock 对象由系统管理，无需也不应释放
 		return
 	}
 	// 替换成功：释放被替换的旧画刷，避免 GDI 对象泄漏。
-	// 旧画刷为 NULL 时 DeleteObject 静默返回 0，调用安全。
+	// 旧画刷为 NULL 或系统 stock 对象（如默认 COLOR_BTNFACE）时
+	// DeleteObject 静默返回 0，调用安全。
 	procDeleteObject.Call(oldBrush)
 	// 触发窗口重绘以应用新画刷
 	procSetWindowPos.Call(hwnd, 0, 0, 0, 0, 0,

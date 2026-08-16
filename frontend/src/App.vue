@@ -27,6 +27,7 @@ let unsubscribeAgentsChanged: (() => void) | undefined
 let unsubscribeMcpChanged: (() => void) | undefined
 let unsubscribeSkillsChanged: (() => void) | undefined
 let unsubscribeCloseRequested: (() => void) | undefined
+let unsubscribeCloseBlocked: (() => void) | undefined
 let unsubscribeSettingsChanged: (() => void) | undefined
 let unsubscribeBackfill: (() => void) | undefined
 
@@ -109,6 +110,12 @@ onMounted(async () => {
   unsubscribeMcpChanged = events.on('mcp:changed', handleMcpChanged)
   unsubscribeSkillsChanged = events.on('skills:changed', handleSkillsChanged)
   unsubscribeCloseRequested = events.on('app:close-requested', handleCloseRequested)
+  // 任务在途时关闭被拦截（后端 Quit/beforeClose 均会广播）：提示用户等待
+  // 任务完成，否则无任何反馈，用户会误以为界面卡死
+  unsubscribeCloseBlocked = events.on('app:close-blocked', () => {
+    if (!mounted.value) return
+    toast.warning(t('settings.toast.closeBlocked'))
+  })
   // 自动来源回填结果（启动后后台执行；事件可能早于监听注册完成，用兜底查询补齐）
   unsubscribeBackfill = events.on('skills:backfill', handleBackfillResult)
   // 全局 settings:changed 监听：SettingsView 未挂载时（如在市场/技能页操作）也能同步设置 store
@@ -137,10 +144,20 @@ onMounted(async () => {
   // 兜底查询自动来源回填结果（事件监听可能晚于回填完成；无结果时静默）
   api.skills.lastBackfillResult().then(handleBackfillResult).catch(() => {})
 
-  // 首次启动时静默检查更新：使用 localStorage 记录检测状态，防止重复检测
+  // 首次启动时静默检查更新：使用 sessionStorage 记录检测状态。
+  // 用 sessionStorage 而非 localStorage：每次应用启动都应检查一次最新版本，
+  // 但同一会话内（HMR/组件重挂载）不重复检测。
   const UPDATE_CHECK_KEY = 'agentpack_update_checked_session'
-  if (!localStorage.getItem(UPDATE_CHECK_KEY)) {
-    localStorage.setItem(UPDATE_CHECK_KEY, '1')
+  // sessionStorage 在禁用 Cookie 的 WebView2 环境可能抛 SecurityError
+  //（如隐私模式），未捕获异常会使 onMounted 的 Promise 链整体拒绝
+  let updateChecked = false
+  try {
+    updateChecked = !!sessionStorage.getItem(UPDATE_CHECK_KEY)
+    if (!updateChecked) sessionStorage.setItem(UPDATE_CHECK_KEY, '1')
+  } catch {
+    // 存取失败按"未检测"处理（多检测一次无害）
+  }
+  if (!updateChecked) {
     // 后台静默执行，不干扰用户操作
     api.system.checkUpdate().then((result: UpdateCheckResult) => {
       if (!mounted.value) return
@@ -165,6 +182,7 @@ onBeforeUnmount(() => {
   unsubscribeMcpChanged?.()
   unsubscribeSkillsChanged?.()
   unsubscribeCloseRequested?.()
+  unsubscribeCloseBlocked?.()
   unsubscribeSettingsChanged?.()
   unsubscribeBackfill?.()
   settings.dispose()

@@ -82,6 +82,10 @@ onMounted(() => {
       downloadSpeed.value = ''
       downloadedBytes.value = data.downloaded || 0
       totalBytes.value = data.total || 0
+      // 暂停期间无进度事件：重置本地速度推算基准，恢复后第一个
+      // 进度包的字节差分不会把暂停时长计入（否则速度虚高/异常）
+      lastTick = 0
+      lastTickBytes = 0
     }
   })
   offComplete = events.on('update:download:complete', () => {
@@ -176,6 +180,9 @@ async function pauseDownload() {
 async function resumeDownload() {
   const prev = downloadStatus.value
   downloadStatus.value = 'downloading'
+  // 与 paused 事件同步重置推算基准（事件可能先于本函数到达）
+  lastTick = 0
+  lastTickBytes = 0
   try {
     await api.system.resumeDownload()
   } catch {
@@ -263,6 +270,12 @@ function handleClose() {
           </div>
           <span class="w-10 text-right text-xs tabular-nums text-muted-foreground">{{ downloadProgress }}%</span>
         </div>
+      </div>
+
+      <!-- 下载完成：提示用户点击后重启以安装（会关闭应用并启动安装程序） -->
+      <div v-if="downloadStatus === 'complete'" class="flex items-center gap-2 rounded-md border border-primary/30 bg-primary/5 px-3 py-2 text-xs text-primary">
+        <PhDownload :size="14" class="shrink-0" />
+        <span>{{ t('settings.update.downloadCompleteHint') }}</span>
       </div>
 
       <DialogFooter>

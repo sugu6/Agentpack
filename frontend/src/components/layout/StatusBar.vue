@@ -2,12 +2,10 @@
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useAgentsStore } from '@/stores/agents'
-import { useMcpStore } from '@/stores/mcp'
 import { PhCircleNotch, PhCheckCircle, PhWarning } from '@phosphor-icons/vue'
 
 const { t } = useI18n()
 const agents = useAgentsStore()
-const mcp = useMcpStore()
 
 const status = computed(() => {
   if (agents.loading) return 'loading'
@@ -26,6 +24,12 @@ const status = computed(() => {
           <PhCircleNotch :size="11" class="animate-spin" />
           <span>{{ t('common.loading') }}</span>
         </template>
+        <!-- 错误优先于"未扫描"：error 时若 lastScanAt 为空，
+             原分支顺序会让错误被"检测中"永久遮蔽，用户无感知 -->
+        <template v-else-if="status === 'error'">
+          <PhWarning :size="11" weight="fill" class="text-destructive" />
+          <span>{{ t('common.error') }}</span>
+        </template>
         <template v-else-if="!agents.lastScanAt">
           <PhCircleNotch :size="11" class="animate-spin" />
           <span>{{ t('status.detecting') }}</span>
@@ -34,13 +38,6 @@ const status = computed(() => {
           <PhCheckCircle :size="11" weight="fill" class="text-success" />
           <span>{{ t('status.agentsDetected', { count: agents.detected.length }) }}</span>
         </template>
-        <template v-else>
-          <PhWarning :size="11" weight="fill" class="text-destructive" />
-          <span>{{ t('common.error') }}</span>
-        </template>
-      </span>
-      <span class="font-mono text-[10px] opacity-60">
-        {{ mcp.total }} MCP
       </span>
     </div>
     <div class="flex items-center gap-3">

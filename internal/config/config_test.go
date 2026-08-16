@@ -233,6 +233,71 @@ func TestConfigLoad_LiteDefaults(t *testing.T) {
 	}
 }
 
+// TestConfigLoad_BackupRetentionZeroIsPreserved 验证显式的 backupRetention=0
+// （语义：无限保留）不会被 Load 覆盖为默认值；仅字段缺失（旧配置迁移）才填默认。
+func TestConfigLoad_BackupRetentionZeroIsPreserved(t *testing.T) {
+	setTempHome(t)
+
+	dir := AgentPackDir()
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// 显式写入 backupRetention: 0（无限保留）
+	explicitCfg := map[string]any{
+		"version": 1,
+		"settings": map[string]any{
+			"backupRetention": 0,
+			"backupCount":     10,
+		},
+		"disabledAgents": []string{},
+	}
+	data, err := json.Marshal(explicitCfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), data, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := Load()
+	if cfg.Settings.BackupRetention != 0 {
+		t.Errorf("expected backupRetention 0 to be preserved (infinite retention), got %d", cfg.Settings.BackupRetention)
+	}
+}
+
+// TestConfigLoad_BackupRetentionMissingGetsDefault 验证旧配置缺少 backupRetention
+// 字段时（默认 int 0 与"无限保留"语义冲突），应填默认值 50。
+func TestConfigLoad_BackupRetentionMissingGetsDefault(t *testing.T) {
+	setTempHome(t)
+
+	dir := AgentPackDir()
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	oldCfg := map[string]any{
+		"version": 1,
+		"settings": map[string]any{
+			"theme": "dark",
+		},
+		"disabledAgents": []string{},
+	}
+	data, err := json.Marshal(oldCfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), data, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := Load()
+	if cfg.Settings.BackupRetention != DefaultSettings().BackupRetention {
+		t.Errorf("expected backupRetention default %d when field missing, got %d",
+			DefaultSettings().BackupRetention, cfg.Settings.BackupRetention)
+	}
+}
+
 // TestConfigRoundTrip_Lite ensures lite fields survive Save/Load cycle
 func TestConfigRoundTrip_Lite(t *testing.T) {
 	setTempHome(t)
@@ -271,5 +336,90 @@ func TestSanitizePathError(t *testing.T) {
 	// 非路径错误原样返回
 	if sanitizePathError(os.ErrPermission) != os.ErrPermission.Error() {
 		t.Error("non-path error should pass through unchanged")
+	}
+}
+
+func TestConfigLoad_PreservesUnknownFields(t *testing.T) {
+	setTempHome(t)
+
+	dir := AgentPackDir()
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	oldCfg := map[string]any{
+		"version":        1,
+		"disabledAgents": []string{},
+		"customTopLevel": "keep-me",
+		"settings": map[string]any{
+			"theme":            "dark",
+			"customNested":     42,
+			"futureNestedFlag": true,
+		},
+	}
+	data, err := json.Marshal(oldCfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), data, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := Load()
+	if err := Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	raw, err := os.ReadFile(filepath.Join(dir, "config.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var saved map[string]any
+	if err := json.Unmarshal(raw, &saved); err != nil {
+		t.Fatal(err)
+	}
+	if saved["customTopLevel"] != "keep-me" {
+		t.Errorf("top-level unknown field lost after Save: %v", saved["customTopLevel"])
+	}
+	settings, ok := saved["settings"].(map[string]any)
+	if !ok {
+		t.Fatalf("settings not an object: %T", saved["settings"])
+	}
+	if settings["customNested"] != float64(42) {
+		t.Errorf("nested unknown field lost after Save: %v", settings["customNested"])
+	}
+	if settings["futureNestedFlag"] != true {
+		t.Errorf("nested unknown bool field lost after Save: %v", settings["futureNestedFlag"])
+	}
+}
+
+func TestConfigLoad_BackupCountZeroIsPreserved(t *testing.T) {
+	setTempHome(t)
+
+	dir := AgentPackDir()
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	oldCfg := map[string]any{
+		"version":        1,
+		"disabledAgents": []string{},
+		"settings": map[string]any{
+			"theme":           "dark",
+			"backupCount":     0,
+			"backupRetention": 5,
+		},
+	}
+	data, err := json.Marshal(oldCfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), data, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := Load()
+	if cfg.Settings.BackupCount != 0 {
+		t.Errorf("expected explicit backupCount 0 to be preserved, got %d", cfg.Settings.BackupCount)
 	}
 }

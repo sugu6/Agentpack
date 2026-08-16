@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { api, type Skill, type Agent, type UnmanagedSkill, type UpdateStatus, ApiError } from '@/lib/api'
 
 export const useSkillsStore = defineStore('skills', () => {
@@ -17,8 +17,20 @@ export const useSkillsStore = defineStore('skills', () => {
   const updatingSkillIds = ref<Set<string>>(new Set())
   const updatingAll = ref(false)
 
+  // 加载在途时新请求被跳过（loading 守卫）：跳过意味着事件携带的变化
+  // 未同步。置位后下一次 fetchList 补拉一次（强制），避免已安装标记/
+  // 列表在事件丢失后长期陈旧（如 Market 页 reload 在途时 Skills 页卸载）。
+  let pendingReload = false
+
   async function fetchList(force = false) {
-    if (!force && loading.value) return
+    if (!force && loading.value) {
+      pendingReload = true
+      return
+    }
+    if (pendingReload) {
+      pendingReload = false
+      force = true
+    }
     loading.value = true
     try {
       const [skillList, agents] = await Promise.all([
@@ -81,6 +93,9 @@ export const useSkillsStore = defineStore('skills', () => {
   async function uninstall(skillId: string) {
     await withApiError(() => api.skills.uninstall(skillId))
     rebuildList(list => list.filter(s => s.id !== skillId))
+    // 卸载后清除更新状态条目，否则 updateStatuses 残留已卸载技能的
+    // hasUpdate 记录，"全部更新"会把它重新带进来并更新一个已卸载技能。
+    updateStatuses.value = updateStatuses.value.filter(s => s.skillId !== skillId)
   }
 
   async function resync() {
@@ -146,8 +161,10 @@ export const useSkillsStore = defineStore('skills', () => {
     }
   }
 
-  async function updateSkill(skillId: string) {
-    if (updatingSkillIds.value.has(skillId)) return
+async function updateSkill(skillId: string) {
+    // 单卡更新与"全部更新"共用后端同一批锁/目录操作，两套守卫必须互斥，
+    // 否则全部更新在途时单卡更新会并发更新同一技能
+    if (updatingSkillIds.value.has(skillId) || updatingAll.value) return
     const next = new Set(updatingSkillIds.value)
     next.add(skillId)
     updatingSkillIds.value = next
@@ -169,7 +186,11 @@ export const useSkillsStore = defineStore('skills', () => {
     }
   }
 
-  async function updateAllSkills() {
+async function updateAllSkills() {
+    // 与单卡更新互斥（见 updateSkill 注释）：全部更新在途时单卡更新被
+    // updatingAll 拦住，反向的守卫同样需要——单卡在途时启动全部更新会
+    // 并发碰同一批技能/同一后端锁。
+    if (updatingAll.value || updatingSkillIds.value.size > 0) return
     const updatableIds = updateStatuses.value
       .filter(s => s.hasUpdate)
       .map(s => s.skillId)
@@ -180,13 +201,11 @@ export const useSkillsStore = defineStore('skills', () => {
     try {
       const result = await api.skills.updateSkills(updatableIds)
       await fetchList(true)
-      const updatedIds = new Set((result.updated ?? []).map((s: any) => s.id))
-      const errorIds = new Set((result.errors ?? []).map((e: any) => e.skillId))
-      updateStatuses.value = updateStatuses.value.map(s => {
-        if (updatedIds.has(s.skillId)) return { ...s, hasUpdate: false }
-        if (errorIds.has(s.skillId)) return s
-        return s
-      })
+      const updatedIds = new Set((result.updated ?? []).map((s: { id: string }) => s.id))
+      // error 分支无需处理：失败技能保持 hasUpdate 不变，可再次尝试
+      updateStatuses.value = updateStatuses.value.map(s =>
+        updatedIds.has(s.skillId) ? { ...s, hasUpdate: false } : s,
+      )
       return result
     } catch (e) {
       const apiError = ApiError.from(e)
@@ -198,8 +217,14 @@ export const useSkillsStore = defineStore('skills', () => {
   }
 
   // 根据 skillId 查询其更新状态
+  // Map 索引：模板在 v-for 卡片中多次调用，线性 find 构成 O(N²) 渲染
+  const updateStatusMap = computed(() => {
+    const m = new Map<string, UpdateStatus>()
+    for (const s of updateStatuses.value) m.set(s.skillId, s)
+    return m
+  })
   function updateStatusOf(skillId: string): UpdateStatus | undefined {
-    return updateStatuses.value.find(s => s.skillId === skillId)
+    return updateStatusMap.value.get(skillId)
   }
 
   function clearCache() {

@@ -99,20 +99,30 @@ The backend dev server runs at `http://localhost:9245` for browser-based Go meth
 ### 4. Build for production
 
 ```bash
-# Windows build
+# Windows build (produces bin/AgentPack.exe)
 wails3 task windows:build
 
-# macOS build
+# macOS build (produces bin/AgentPack)
 wails3 task darwin:build
 
-# Linux build
+# macOS Universal build (Intel + Apple Silicon merged)
+wails3 task darwin:build:universal
+
+# Linux build (produces bin/AgentPack)
 wails3 task linux:build
 
-# Generate Windows NSIS installer
+# Windows NSIS installer (depends on windows:build)
 wails3 task windows:package
+
+# macOS packaging (run on macOS; depends on darwin:build)
+wails3 task darwin:package          # produces .app bundle
+wails3 task darwin:package:universal  # package .app with the universal binary
+
+# Linux packaging (produces AppImage / deb / rpm / Arch packages)
+wails3 task linux:package
 ```
 
-Build artifacts are located in `build/bin/`.
+Build artifacts are located in `bin/`.
 
 ## Project Structure
 

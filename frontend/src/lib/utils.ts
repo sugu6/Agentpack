@@ -54,10 +54,10 @@ export function transportLabel(transport?: string): string {
 }
 
 export function withTimeout<T>(promise: Promise<T>, ms: number, message?: string): Promise<T> {
-  return Promise.race([
-    promise,
-    new Promise<T>((_, reject) =>
-      setTimeout(() => reject(new Error(message || `Timed out after ${ms}ms`)), ms)
-    ),
-  ])
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<T>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(message || `Timed out after ${ms}ms`)), ms)
+  })
+  // promise 先 settle 时清理定时器，避免高频调用累积未触发的定时器引用
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer))
 }

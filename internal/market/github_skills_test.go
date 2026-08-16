@@ -9,6 +9,24 @@ import (
 	"testing"
 )
 
+// setMockBases 将所有可覆盖的 base URL 指向测试服务器。
+// 必须覆盖 jsDelivrDataBase：scanRepo 优先走 jsDelivr Data API，
+// 未覆盖时会向真实 data.jsdelivr.com 发请求（依赖网络且结果不确定）。
+// mock 的 catch-all 对 /v1/packages/... 返回 404，驱动 jsDelivr 失败后
+// 回退到 GitHub Trees API 路径。
+func setMockBases(t *testing.T, server *httptest.Server) {
+	t.Helper()
+	origGHAPI := githubAPIBase
+	githubAPIBase = server.URL
+	t.Cleanup(func() { githubAPIBase = origGHAPI })
+	origRawBase := githubRawBase
+	githubRawBase = server.URL
+	t.Cleanup(func() { githubRawBase = origRawBase })
+	origDataBase := jsDelivrDataBase
+	jsDelivrDataBase = server.URL
+	t.Cleanup(func() { jsDelivrDataBase = origDataBase })
+}
+
 // newGitHubMockHandler 创建模拟 GitHub API 和 raw 服务的 handler
 func newGitHubMockHandler(t *testing.T, trees map[string]githubTreeResponse) http.Handler {
 	mux := http.NewServeMux()
@@ -78,14 +96,7 @@ func TestGitHubSkillFetcher_SearchWithRepos(t *testing.T) {
 	}))
 	defer server.Close()
 
-	// 覆盖 base URLs
-	origGHAPI := githubAPIBase
-	githubAPIBase = server.URL
-	defer func() { githubAPIBase = origGHAPI }()
-
-	origRawBase := githubRawBase
-	githubRawBase = server.URL
-	defer func() { githubRawBase = origRawBase }()
+	setMockBases(t, server)
 
 	f := NewGitHubSkillFetcher(func() []RepoRef {
 		return []RepoRef{{Owner: "testowner", Name: "testrepo", Branch: "main"}}
@@ -160,12 +171,7 @@ func TestGitHubSkillFetcher_NestedSkillDirs(t *testing.T) {
 	}))
 	defer server.Close()
 
-	origGHAPI := githubAPIBase
-	githubAPIBase = server.URL
-	defer func() { githubAPIBase = origGHAPI }()
-	origRawBase := githubRawBase
-	githubRawBase = server.URL
-	defer func() { githubRawBase = origRawBase }()
+	setMockBases(t, server)
 
 	f := NewGitHubSkillFetcher(func() []RepoRef {
 		return []RepoRef{{Owner: "anthropics", Name: "skills", Branch: "main"}}
@@ -209,12 +215,7 @@ func TestGitHubSkillFetcher_SearchWithQuery(t *testing.T) {
 	}))
 	defer server.Close()
 
-	origGHAPI := githubAPIBase
-	githubAPIBase = server.URL
-	defer func() { githubAPIBase = origGHAPI }()
-	origRawBase := githubRawBase
-	githubRawBase = server.URL
-	defer func() { githubRawBase = origRawBase }()
+	setMockBases(t, server)
 
 	f := NewGitHubSkillFetcher(func() []RepoRef {
 		return []RepoRef{{Owner: "testowner", Name: "testrepo", Branch: "main"}}
@@ -273,12 +274,7 @@ func TestGitHubSkillFetcher_CDNFailureFallback(t *testing.T) {
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
-	origGHAPI := githubAPIBase
-	githubAPIBase = server.URL
-	defer func() { githubAPIBase = origGHAPI }()
-	origRawBase := githubRawBase
-	githubRawBase = server.URL
-	defer func() { githubRawBase = origRawBase }()
+	setMockBases(t, server)
 
 	f := NewGitHubSkillFetcher(func() []RepoRef {
 		return []RepoRef{{Owner: "testowner", Name: "testrepo", Branch: "main"}}
@@ -347,9 +343,7 @@ func TestGitHubSkillFetcher_RepoNotFound(t *testing.T) {
 	server := httptest.NewServer(newGitHubMockHandler(t, nil))
 	defer server.Close()
 
-	origGHAPI := githubAPIBase
-	githubAPIBase = server.URL
-	defer func() { githubAPIBase = origGHAPI }()
+	setMockBases(t, server)
 
 	f := NewGitHubSkillFetcher(func() []RepoRef {
 		return []RepoRef{{Owner: "testowner", Name: "notfound", Branch: "main"}}
@@ -361,6 +355,176 @@ func TestGitHubSkillFetcher_RepoNotFound(t *testing.T) {
 	}
 	if len(got.Items) != 0 {
 		t.Errorf("expected 0 items for failed repo, got %d", len(got.Items))
+	}
+}
+
+// newJSDelivrMockHandler 创建模拟 jsDelivr Data API 与 CDN raw 服务的 handler
+func newJSDelivrMockHandler(t *testing.T, treeResp jsDelivrTreeResponse) http.Handler {
+	mux := http.NewServeMux()
+	// Data API: /v1/packages/gh/{owner}/{repo}@{branch}?structure=flat
+	mux.HandleFunc("/v1/packages/gh/", func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "truncated-repo") {
+			treeResp.Truncated = true
+		}
+		_ = json.NewEncoder(w).Encode(treeResp)
+	})
+	// CDN raw: catch-all，只处理 SKILL.md
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/SKILL.md") {
+			w.WriteHeader(404)
+			return
+		}
+		_, _ = w.Write([]byte("---\nname: JSDelivr Skill\n---\nbody"))
+	})
+	return mux
+}
+
+// TestGitHubSkillFetcher_JSDelivrTree 验证 jsDelivr Data API 主链路：
+// flat 文件树解析出 skills/ 下的 SKILL.md，不经过 GitHub API。
+func TestGitHubSkillFetcher_JSDelivrTree(t *testing.T) {
+	treeResp := jsDelivrTreeResponse{
+		Name:    "gh/testowner/testrepo",
+		Version: "main",
+		Files: []struct {
+			Name string `json:"name"`
+			Size int64  `json:"size"`
+		}{
+			{Name: "/skills/alpha/SKILL.md"},
+			{Name: "/skills/beta/SKILL.md"},
+			{Name: "/README.md"},
+		},
+	}
+
+	server := httptest.NewServer(newJSDelivrMockHandler(t, treeResp))
+	defer server.Close()
+
+	setMockBases(t, server)
+
+	f := NewGitHubSkillFetcher(func() []RepoRef {
+		return []RepoRef{{Owner: "testowner", Name: "testrepo", Branch: "main"}}
+	})
+
+	got, err := f.Search(context.Background(), SearchOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Items) != 2 {
+		t.Fatalf("expected 2 skills via jsdelivr tree, got %d: %+v", len(got.Items), got.Items)
+	}
+	byDir := map[string]MarketSkill{}
+	for _, s := range got.Items {
+		byDir[s.Directory] = s
+	}
+	alpha, ok := byDir["alpha"]
+	if !ok {
+		t.Fatal("expected skill alpha")
+	}
+	if alpha.FullPath != "skills/alpha" {
+		t.Errorf("alpha fullPath = %q, want %q", alpha.FullPath, "skills/alpha")
+	}
+	if alpha.Name != "JSDelivr Skill" {
+		t.Errorf("alpha name = %q, want frontmatter name", alpha.Name)
+	}
+	if alpha.RepoBranch != "main" {
+		t.Errorf("alpha repoBranch = %q, want %q", alpha.RepoBranch, "main")
+	}
+}
+
+// TestGitHubSkillFetcher_JSDelivrDefaultBranchAlias 验证未配置分支时使用
+// jsDelivr @master 别名扫描（自动解析为仓库默认分支）；别名不落库——
+// 真实默认分支解析失败（GitHub API 不可达）时保持空串，由安装侧分支
+// 枚举（main 优先）决定，避免把别名误当真实分支（双分支仓库安装错内容）。
+func TestGitHubSkillFetcher_JSDelivrDefaultBranchAlias(t *testing.T) {
+	var requestedPath string
+	treeResp := jsDelivrTreeResponse{
+		Name:    "gh/testowner/testrepo",
+		Version: "master",
+		Files: []struct {
+			Name string `json:"name"`
+			Size int64  `json:"size"`
+		}{
+			{Name: "/skills/alpha/SKILL.md"},
+		},
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/packages/gh/", func(w http.ResponseWriter, r *http.Request) {
+		requestedPath = r.URL.Path
+		_ = json.NewEncoder(w).Encode(treeResp)
+	})
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/SKILL.md") {
+			w.WriteHeader(404)
+			return
+		}
+		_, _ = w.Write([]byte("---\nname: Alias Skill\n---\nbody"))
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	setMockBases(t, server)
+
+	f := NewGitHubSkillFetcher(func() []RepoRef {
+		return []RepoRef{{Owner: "testowner", Name: "testrepo"}} // 未配置分支
+	})
+
+	got, err := f.Search(context.Background(), SearchOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Items) != 1 {
+		t.Fatalf("expected 1 skill via jsdelivr default branch alias, got %d", len(got.Items))
+	}
+	if got.Items[0].RepoBranch != "" {
+		t.Errorf("repoBranch = %q, want empty (alias must not be persisted; install enumeration decides)", got.Items[0].RepoBranch)
+	}
+	if !strings.HasSuffix(requestedPath, "@master") {
+		t.Errorf("expected data API request with @master alias, got path %q", requestedPath)
+	}
+}
+
+// TestGitHubSkillFetcher_JSDelivrTruncated 验证超大仓库（>3000 文件，
+// truncated=true）被跳过，而不是静默返回不完整列表。
+func TestGitHubSkillFetcher_JSDelivrTruncated(t *testing.T) {
+	treeResp := jsDelivrTreeResponse{
+		Name:      "gh/testowner/truncated-repo",
+		Version:   "main",
+		Truncated: true,
+	}
+	server := httptest.NewServer(newJSDelivrMockHandler(t, treeResp))
+	defer server.Close()
+
+	setMockBases(t, server)
+
+	f := NewGitHubSkillFetcher(func() []RepoRef {
+		return []RepoRef{{Owner: "testowner", Name: "truncated-repo", Branch: "main"}}
+	})
+
+	got, err := f.Search(context.Background(), SearchOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Items) != 0 {
+		t.Errorf("expected truncated repo to be skipped, got %d items", len(got.Items))
+	}
+}
+
+func TestParseSkillDirs(t *testing.T) {
+	dirs := parseSkillDirs([]string{
+		"skills/pdf/SKILL.md",
+		"skills/pdf/scripts/render.py",
+		"skills/xlsx/SKILL.md",
+		"SKILL.md",               // 根目录，排除
+		"template/SKILL.md",      // 非 skills/ 前缀，排除
+		"skills/nested/SKILL.md", // 正常
+	})
+	if len(dirs) != 3 {
+		t.Fatalf("expected 3 skill dirs, got %d: %+v", len(dirs), dirs)
+	}
+	if d, ok := dirs["pdf"]; !ok || d.fullPath != "skills/pdf" {
+		t.Errorf("pdf dir wrong: %+v", dirs["pdf"])
+	}
+	if d, ok := dirs["nested"]; !ok || d.fullPath != "skills/nested" {
+		t.Errorf("nested dir wrong: %+v", dirs["nested"])
 	}
 }
 

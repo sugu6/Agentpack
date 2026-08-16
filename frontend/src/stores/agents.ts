@@ -128,44 +128,62 @@ export const useAgentsStore = defineStore('agents', () => {
     return groups
   })
 
-  async function fetch() {
-    if (loading.value) return
+  // 串行化队列：fetch/rescan 通过 opChain 排队执行，杜绝并发请求
+  // 响应乱序覆盖（旧响应晚到会把 items 打回过期状态，UI 与后端漂移）
+  let opChain: Promise<void> = Promise.resolve()
+
+  async function runList(op: () => Promise<Agent[]>, fromRescan: boolean) {
     loading.value = true
     error.value = null
     try {
-      const list = await api.agents.list()
+      const list = await op()
       items.value = list
-      // fetch 返回的是后端已扫描的当前状态，更新 lastScanAt 让 StatusBar 不再停留在"正在检测..."
-      if (!lastScanAt.value) lastScanAt.value = new Date().toISOString()
+      if (fromRescan) {
+        lastScanAt.value = new Date().toISOString()
+      } else if (!lastScanAt.value) {
+        // fetch 返回的是后端已扫描的当前状态，更新 lastScanAt 让 StatusBar
+        // 不再停留在"正在检测..."
+        lastScanAt.value = new Date().toISOString()
+      }
     } catch (e) {
       const apiError = ApiError.from(e)
       error.value = apiError.message
+      // 由调用方决定是否提示（fetch 静默、rescan/toggle rethrow）
+      throw apiError
     } finally {
       loading.value = false
     }
   }
 
-  async function rescan() {
-    // 与 fetch 共享 loading 守卫，避免并发请求互相覆盖结果
-    if (loading.value) return
-    loading.value = true
-    error.value = null
-    try {
-      const list = await api.agents.rescan()
-      items.value = list
-      lastScanAt.value = new Date().toISOString()
-    } catch (e) {
-      const apiError = ApiError.from(e)
-      error.value = apiError.message
-    } finally {
-      loading.value = false
-    }
+  function enqueue(op: () => Promise<Agent[]>, fromRescan: boolean): Promise<void> {
+    const p = opChain.then(() => runList(op, fromRescan))
+    // 吞掉错误使队列继续；调用方拿到的 p 仍会 reject
+    opChain = p.catch(() => {})
+    return p
+  }
+
+  async function fetch(force = false) {
+    // loading 守卫防止重复刷新；但 toggle 后的刷新若被跳过会留下
+    // UI 与后端不一致（切换开关后列表仍显示旧状态），因此允许强制排队刷新。
+    if (loading.value && !force) return opChain
+    return enqueue(() => api.agents.list(), false)
+  }
+
+  function rescan() {
+    // 与 fetch 共享队列，避免并发请求互相覆盖结果（enqueue 串行化）。
+    // loading 时排队执行而非静默跳过：scanSkills 等调用方把返回值当作
+    // "已执行"，静默跳过会让后续 resync 基于过期 agent 列表，且 toast
+    // 仍报"扫描完成"（与 fetch 的"刷新列表可跳过"语义不同——rescan
+    // 必须真正重新扫描）。
+    return enqueue(() => api.agents.rescan(), true)
   }
 
   async function toggle(id: string, enabled: boolean) {
     try {
       await api.agents.toggle(id, enabled)
-      await fetch()
+      // 强制刷新：toggle 常被 UI 在 loading 已置位（初始扫描）时调用，
+      // 默认守卫会跳过刷新导致 UI 与后端不一致
+      await fetch(true)
     } catch (e) {
       const apiError = ApiError.from(e)
       error.value = apiError.message

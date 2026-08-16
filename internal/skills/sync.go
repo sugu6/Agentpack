@@ -114,6 +114,12 @@ func copyDirAtomic(source, dest string) error {
 		// Rename 失败（可能跨卷或 dest 被占用），回退到直接复制。
 		// 注意：tmpDir 仍存在，cleanup 保持 true 以便 defer 清理。
 		if copyErr := copyDirRecursive(source, dest); copyErr != nil {
+			// 直接复制失败会留下半成品 dest（调用方在复制前已删除
+			// 原目标），必须清理，否则 ToggleAgent 等路径会把残次
+			// 目录当作已同步内容，UI 显示成功而实际文件不完整。
+			if rmErr := removeAllReliable(dest); rmErr != nil {
+				log.Printf("copyDirAtomic: cleanup half-copied dest %s: %v", dest, rmErr)
+			}
 			return fmt.Errorf("atomic rename failed: %w, direct copy also failed: %w", err, copyErr)
 		}
 		return nil
@@ -351,10 +357,18 @@ func MigrateSSOTDir(oldDir, newDir string) (int, []string) {
 		if err := os.Rename(oldPath, newPath); err != nil {
 			// Cross-device fallback: copy + delete
 			if copyErr := copyDirRecursive(oldPath, newPath); copyErr != nil {
+				// 半迁移目录清理：copyDirRecursive 可能已写入部分文件，残留
+				// 会被 scanFilesystem 当作合法技能加载（只检查 SKILL.md），
+				// 或在下一次迁移时覆盖。失败即清理，保持目标目录干净。
+				_ = removeAllReliable(newPath)
 				errs = append(errs, fmt.Sprintf("migrate %s: %v", e.Name(), copyErr))
 				continue
 			}
-			os.RemoveAll(oldPath)
+			// 复制成功后删除旧目录：失败意味着旧目录残留，下次迁移会重试
+			// 覆盖，残留本身无害；但静默忽略会让用户误以为迁移干净完成。
+			if rmErr := removeAllReliable(oldPath); rmErr != nil {
+				errs = append(errs, fmt.Sprintf("migrate %s: copied but remove old dir: %v", e.Name(), rmErr))
+			}
 		}
 		migrated++
 	}
@@ -382,8 +396,19 @@ func BackupSkillDir(ssotDir, backupDir, skillDir string) (string, error) {
 	backupName := fmt.Sprintf("%s_%s", timestamp, skillDir)
 	backupPath := filepath.Join(backupDir, backupName)
 
-	if err := copyDirRecursive(src, backupPath); err != nil {
+	// 原子化：先复制到 .tmp 后缀路径，成功后 rename 为正式名。
+	// 直接复制到正式名时中途失败（磁盘满/权限/AV 锁文件）会留下"半备份"
+	// 目录：它带最新时间戳、永远排在保留队列末尾，cleanOldBackups 只删
+	// 最旧超量项，半备份被当作有效备份无限保留（占位 + 误导用户）。
+	tmpPath := backupPath + ".tmp"
+	if err := copyDirRecursive(src, tmpPath); err != nil {
+		// 清理半成品，避免 tmp 残留累积
+		_ = removeAllReliable(tmpPath)
 		return "", fmt.Errorf("backup skill: %w", err)
+	}
+	if err := os.Rename(tmpPath, backupPath); err != nil {
+		_ = removeAllReliable(tmpPath)
+		return "", fmt.Errorf("finalize backup: %w", err)
 	}
 
 	return backupPath, nil
@@ -402,6 +427,10 @@ func cleanOldBackups(backupDir string, keep int) {
 
 	toRemove := len(entries) - keep
 	for i := 0; i < toRemove; i++ {
-		os.RemoveAll(filepath.Join(backupDir, entries[i].Name()))
+		// 删除失败（占用/权限）不中止清理，但记录：残留会挤占保留名额，
+		// 下次清理重试同名删除。
+		if rmErr := os.RemoveAll(filepath.Join(backupDir, entries[i].Name())); rmErr != nil {
+			log.Printf("clean old skill backup %s: %v", entries[i].Name(), rmErr)
+		}
 	}
 }

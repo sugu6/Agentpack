@@ -67,6 +67,11 @@ ManifestDPIAware true
 
 !insertmacro MUI_LANGUAGE "English" # Set the Language of the installer
 
+## 记住上次安装位置（Windows 注册表键与值名）
+## 升级/重装时读取该键作为默认安装目录，安装完成后写回，卸载时删除。
+!define AGENTPACK_INSTALL_DIR_KEY "Software\${INFO_COMPANYNAME}\${INFO_PRODUCTNAME}"
+!define AGENTPACK_INSTALL_DIR_VALUE "InstallDir"
+
 ## The following two statements can be used to sign the installer and the uninstaller. The path to the binaries are provided in %1
 ## They are inactive by default; define WAILS_SIGN_INSTALLER (e.g. `makensis -DWAILS_SIGN_INSTALLER`)
 ## with signtool on PATH to enable. !finalize cannot be conditional on its own, so it is wrapped in !ifdef.
@@ -86,6 +91,13 @@ ShowInstDetails show # This will always show the installation details.
 
 Function .onInit
    !insertmacro wails.checkArchitecture
+
+   # 记住上次安装位置：若能读到注册表中保存的目录，则作为本次默认安装目录
+   # （覆盖 InstallDir 初值）。读不到/为空则沿用默认，不覆盖 wails 的架构判断。
+   ReadRegStr $0 HKCU "${AGENTPACK_INSTALL_DIR_KEY}" "${AGENTPACK_INSTALL_DIR_VALUE}"
+   StrCmp $0 "" skip_restore_dir
+   StrCpy $INSTDIR $0
+   skip_restore_dir:
 FunctionEnd
 
 Section
@@ -104,6 +116,8 @@ Section
     !insertmacro wails.associateCustomProtocols
     
     !insertmacro wails.writeUninstaller
+    # 记住安装位置，供下次升级/重装时还原目录
+    WriteRegStr HKCU "${AGENTPACK_INSTALL_DIR_KEY}" "${AGENTPACK_INSTALL_DIR_VALUE}" "$INSTDIR"
 SectionEnd
 
 Section "uninstall" 
@@ -120,4 +134,7 @@ Section "uninstall"
     !insertmacro wails.unassociateCustomProtocols
 
     !insertmacro wails.deleteUninstaller
+
+    # 清理记住的安装位置，卸载后不留残留
+    DeleteRegKey HKCU "${AGENTPACK_INSTALL_DIR_KEY}"
 SectionEnd

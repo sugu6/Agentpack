@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -110,16 +111,30 @@ type ImportResult struct {
 
 func (e *Exporter) Import(snap Snapshot, opts ImportOptions) (ImportResult, error) {
 	res := ImportResult{}
-	for i, srv := range snap.MCPServers {
+	// 解密前复制 MCPServers 切片：解密结果写回会污染调用方传入的 Snapshot
+	//（切片共享底层数组），调用方复用同一快照二次 Import 时，明文 Env
+	// 会被再次解密而失败（旧行为对 ImportFromReader 的每次调用都安全，
+	// 因为快照每次重新反序列化；但对 RestoreFromBackup 等复用路径是隐患）。
+	servers := append([]SnapshotMCP(nil), snap.MCPServers...)
+	// 解密失败的服务器跳过而非中止整个导入：密钥不匹配（跨机器恢复、
+	// 密钥文件损坏后重建）时其余可解密的服务器照常恢复，失败的计入
+	// MCPSkipped 并在结果中体现，用户可重新导出/修复后重试。
+	kept := servers[:0]
+	for i := range servers {
+		srv := &servers[i]
 		if srv.Env != nil {
 			decryptedEnv, err := crypto.DecryptEnv(srv.Env)
 			if err != nil {
-				return res, fmt.Errorf("decrypt env for server %q: %w", srv.Name, err)
+				log.Printf("import: skip server %q: decrypt env: %v", srv.Name, err)
+				res.MCPSkipped++
+				continue
 			}
-			snap.MCPServers[i].Env = decryptedEnv
+			srv.Env = decryptedEnv
 		}
+		kept = append(kept, *srv)
 	}
-	for _, srv := range snap.MCPServers {
+	servers = kept
+	for _, srv := range servers {
 		if srv.Command != "" {
 			if err := mcp.ValidateCommand(srv.Command); err != nil {
 				return res, fmt.Errorf("server %q: %w", srv.Name, err)
@@ -128,7 +143,7 @@ func (e *Exporter) Import(snap Snapshot, opts ImportOptions) (ImportResult, erro
 	}
 	if opts.ApplyMCP && e.mcpStore != nil {
 		beforeMCP := e.mcpStore.List()
-		count, err := e.applyMCP(snap.MCPServers, opts, &res)
+		count, err := e.applyMCP(servers, opts, &res)
 		if err != nil {
 			if rollbackErr := e.rollbackMCP(beforeMCP); rollbackErr != nil {
 				return res, fmt.Errorf("apply mcp: %w; rollback: %v", err, rollbackErr)
@@ -221,6 +236,25 @@ func (e *Exporter) applyMCP(items []SnapshotMCP, opts ImportOptions, res *Import
 
 		// 优先使用快照中保存的 Agent 绑定关系，回退到所有当前启用的 Agent
 		agentIDs := item.BoundAgents
+		if len(agentIDs) > 0 {
+			// 快照绑定可能含本机不存在/已禁用的 agent（跨机器恢复、本机
+			// agent 集变化）：直接透传会在 mcpStore.Add/Update 的
+			// validateAgentIDs 整体报错导致整个导入失败回滚。先过滤到
+			// 本机可用 agent；过滤后为空再回退全部启用 agent。
+			valid := make(map[string]bool)
+			for _, ag := range e.registry.All() {
+				if ag.Status == agents.StatusEnabled || ag.Status == agents.StatusDetected {
+					valid[ag.ID] = true
+				}
+			}
+			filtered := make([]string, 0, len(agentIDs))
+			for _, id := range agentIDs {
+				if valid[id] {
+					filtered = append(filtered, id)
+				}
+			}
+			agentIDs = filtered
+		}
 		if len(agentIDs) == 0 {
 			for _, ag := range e.registry.All() {
 				if ag.Status == agents.StatusEnabled || ag.Status == agents.StatusDetected {
@@ -295,11 +329,58 @@ func (e *Exporter) ImportFromReader(r io.Reader, opts ImportOptions) (ImportResu
 	if len(data) > maxImportSize {
 		return ImportResult{}, fmt.Errorf("import data exceeds maximum size of %d MB", maxImportSize/(1024*1024))
 	}
-	var snap Snapshot
-	if err := json.Unmarshal(data, &snap); err != nil {
-		return ImportResult{}, fmt.Errorf("decode: %w", err)
+	snap, err := DecodeSnapshot(data)
+	if err != nil {
+		return ImportResult{}, err
 	}
 	return e.Import(snap, opts)
+}
+
+// decodeSnapshot 解码导入数据为 Snapshot，兼容两种格式：
+//  1. 裸 Snapshot（早期导入文件，或直接由 Import 序列化的快照）
+//  2. ExportPayload{"manifest":..., "snapshot":...}（Manager.ExportToFile 导出的文件）
+//
+// Manager.ExportToFile 以 ExportPayload 包裹写出，而旧的导入路径直接按裸
+// Snapshot 反序列化——Go 的 json.Unmarshal 对未知顶层 key 静默忽略，导致
+// 导出文件被导入时得到空的 Snapshot（MCP/设置全部丢失但不报错）。此处先
+// 检查顶层是否含 "snapshot" 字段，有则取该字段，否则整体作为 Snapshot。
+// DecodeSnapshot 解码导入数据为 Snapshot，兼容两种格式：
+//  1. 裸 Snapshot（早期导入文件，或直接由 Import 序列化的快照）
+//  2. ExportPayload{"manifest":..., "snapshot":...}（Manager.ExportToFile 导出的文件）
+//
+// Manager.ExportToFile 以 ExportPayload 包裹写出，而旧的导入路径直接按裸
+// Snapshot 反序列化——Go 的 json.Unmarshal 对未知顶层 key 静默忽略，导致
+// 导出文件被导入时得到空的 Snapshot（MCP/设置全部丢失但不报错）。此处先
+// 检查顶层是否含 "snapshot" 字段，有则取该字段，否则整体作为 Snapshot。
+// 导出（decodeSnapshot 保持包内私有）供 app 层在应用 MCP 之前预检设置。
+func DecodeSnapshot(data []byte) (Snapshot, error) {
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(data, &top); err != nil {
+		return Snapshot{}, fmt.Errorf("decode: %w", err)
+	}
+	if raw, ok := top["snapshot"]; ok {
+		var snap Snapshot
+		if err := json.Unmarshal(raw, &snap); err != nil {
+			return Snapshot{}, fmt.Errorf("decode snapshot payload: %w", err)
+		}
+		return validateSnapshotSchema(snap)
+	}
+	var snap Snapshot
+	if err := json.Unmarshal(data, &snap); err != nil {
+		return Snapshot{}, fmt.Errorf("decode: %w", err)
+	}
+	return validateSnapshotSchema(snap)
+}
+
+// validateSnapshotSchema 校验快照 schema 版本：新版本导出的快照包含当前
+// 版本不认识的字段/结构，静默导入会丢数据。拒绝并明确报错，用户升级后重试。
+func validateSnapshotSchema(snap Snapshot) (Snapshot, error) {
+	if snap.SchemaVersion > CurrentSchemaVersion {
+		return Snapshot{}, fmt.Errorf(
+			"snapshot schema version %d is newer than supported %d; please update the app and try again",
+			snap.SchemaVersion, CurrentSchemaVersion)
+	}
+	return snap, nil
 }
 
 func (e *Exporter) ImportFromFile(path string, opts ImportOptions) (ImportResult, error) {

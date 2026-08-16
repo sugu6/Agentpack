@@ -55,7 +55,9 @@ func (f *SkillsShFetcher) Search(ctx context.Context, opts SearchOptions) (*Sear
 
 	limit := opts.PageSize
 	if limit <= 0 {
-		limit = 30
+		// PageSize<=0 表示全量拉取（Store 合并缓存路径）：
+		// 使用 API 允许的大 limit 而非默认 30，避免合并结果被截断。
+		limit = 100
 	}
 	offset := 0
 	if opts.Page > 1 {

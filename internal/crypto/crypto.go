@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
 
 	"agentpack/internal/iowriter"
 )
@@ -21,6 +22,11 @@ var (
 	machineKey    []byte
 	machineKeyErr error
 )
+
+// gcmCiphertextOverhead 是 GCM 密文相对明文的最小附加长度（nonce + tag）。
+// DecryptEnv 用它判定"合法 base64 且长度达密文下限"的真密文，避免把
+// 明文恰好以 enc: 开头、恰好是合法 base64 的值误判为坏密文。
+const gcmCiphertextOverhead = 12 + 16
 
 // MachineKeyError 返回密钥派生/加载阶段的错误（若有）。
 // 密钥文件损坏时此后所有 Encrypt/Decrypt/EncryptEnv 都会失败，
@@ -163,12 +169,16 @@ func EncryptEnv(env map[string]string) (map[string]string, error) {
 	}
 	out := make(map[string]string, len(env))
 	for k, v := range env {
-		// 跳过已加密的值，防止双重加密
-		if IsEncrypted(v) {
-			out[k] = v
-			continue
+		// 跳过已加密的值，防止双重加密。仅当 enc: 前缀后的内容能成功解密时才
+		// 视为已加密：明文恰好以 "enc:" 开头（如 MyMsg=enc:hello）时解密失败，
+		// 会走正常加密路径而不是被误跳过导致明文泄露。
+		if strings.HasPrefix(v, "enc:") {
+			if _, err := Decrypt(strings.TrimPrefix(v, "enc:")); err == nil {
+				out[k] = v
+				continue
+			}
 		}
-		// 检测敏感字段关键词（按 _ 分隔的单词边界匹配，避免误匹配子串如 MONKEY、AUTHOR）
+		// 检测敏感字段关键词（按单词边界匹配，避免误匹配子串如 MONKEY、AUTHOR）
 		if isSensitiveEnvKey(k) {
 			encrypted, err := Encrypt(v)
 			if err != nil {
@@ -183,10 +193,17 @@ func EncryptEnv(env map[string]string) (map[string]string, error) {
 }
 
 // isSensitiveEnvKey 检查环境变量名是否包含敏感关键词。
-// 使用 _ 分隔的单词边界匹配，避免误匹配子串（如 MONKEY 中的 "key"、AUTHOR 中的 "auth"）。
+// 名称先归一化为小写 + 下划线分隔，兼容 SNAKE_CASE / kebab-case /
+// camelCase / PascalCase，再按单词边界匹配，避免误匹配子串（如 MONKEY、AUTHOR）。
 func isSensitiveEnvKey(name string) bool {
-	lower := strings.ToLower(name)
-	sensitiveWords := []string{"token", "secret", "password", "credential", "apikey"}
+	lower := normalizeEnvKey(name)
+	sensitiveWords := []string{
+		"token", "secret", "password", "credential", "apikey",
+		// JWT/SESSION/COOKIE/PASSPHRASE 是 AI 工具 env 中的常见凭据命名
+		//（如 ANTHROPIC_AUTH_TOKEN 已被 token 覆盖，但 JWT 裸词、SESSION_ID、
+		// COOKIE 这类命名无法被上面几个词命中，明文进入快照/导出文件）
+		"jwt", "session", "cookie", "passphrase",
+	}
 	for _, w := range sensitiveWords {
 		if hasWord(lower, w) {
 			return true
@@ -202,6 +219,39 @@ func isSensitiveEnvKey(name string) bool {
 	return false
 }
 
+// normalizeEnvKey 将环境变量名归一化为小写 + 下划线分隔的单词序列：
+//   - API_KEY / api-key / apiKey / ApiKey 均归一化为 api_key
+//   - 连续大写视为同一单词（APIKey → api_key），保留数字
+func normalizeEnvKey(name string) string {
+	rs := []rune(name)
+	var b strings.Builder
+	for i, r := range rs {
+		switch {
+		case r == '-' || r == '_':
+			if b.Len() > 0 && !strings.HasSuffix(b.String(), "_") {
+				b.WriteByte('_')
+			}
+		case unicode.IsUpper(r):
+			if b.Len() > 0 {
+				prev := rs[i-1]
+				next := rune(0)
+				if i+1 < len(rs) {
+					next = rs[i+1]
+				}
+				prevBoundary := !unicode.IsUpper(prev) && prev != '-' && prev != '_'
+				acronymBoundary := unicode.IsUpper(prev) && i+1 < len(rs) && unicode.IsLower(next)
+				if (prevBoundary || acronymBoundary) && !strings.HasSuffix(b.String(), "_") {
+					b.WriteByte('_')
+				}
+			}
+			b.WriteRune(unicode.ToLower(r))
+		default:
+			b.WriteRune(unicode.ToLower(r))
+		}
+	}
+	return b.String()
+}
+
 // hasWord 检查 name 中是否包含按 _ 分隔的完整单词 word。
 // 例如 "api_key" 包含单词 "key"，但 "monkey" 不包含。
 func hasWord(name, word string) bool {
@@ -211,23 +261,38 @@ func hasWord(name, word string) bool {
 		strings.Contains(name, "_"+word+"_")
 }
 
-// DecryptEnv 解密 env map 中的加密值
-// 解密失败时返回错误，避免返回不可用的密文数据
+// DecryptEnv 解密 env map 中的加密值。
+// 值以 "enc:" 开头时区分两种失败：
+//   - payload 不是合法 base64 → 视为"明文恰好以 enc: 开头"，按明文保留；
+//   - payload 是合法 base64 但解密失败 → 判定为真密文但密钥不匹配
+//     （跨机器导入/密钥文件变化），必须返回错误，避免把 enc: 密文
+//     原样写入 agent 配置：那会让认证永久失败，且再次导出时会被
+//     二次加密，数据永久损坏且无法察觉。
 func DecryptEnv(env map[string]string) (map[string]string, error) {
 	if env == nil {
 		return nil, nil
 	}
 	out := make(map[string]string, len(env))
 	for k, v := range env {
-		if IsEncrypted(v) {
-			decrypted, err := Decrypt(strings.TrimPrefix(v, "enc:"))
-			if err != nil {
-				return nil, fmt.Errorf("decrypt env %q: %w", k, err)
+		if strings.HasPrefix(v, "enc:") {
+			payload := strings.TrimPrefix(v, "enc:")
+			decrypted, err := Decrypt(payload)
+			if err == nil {
+				out[k] = decrypted
+				continue
 			}
-			out[k] = decrypted
-		} else {
-			out[k] = v
+			// 密文下限 = GCM nonce + tag（28 字节）。注意不能用
+			// nonce 大小（12）判断——用户明文值恰好以 enc: 开头、
+			// 是合法 base64、长度 12~27 字节（如外部复制的 token）
+			// 会被误判为跨机器密文，导致导入/恢复无法绕过。
+			if data, b64err := base64.StdEncoding.DecodeString(payload); b64err == nil && len(data) >= gcmCiphertextOverhead {
+				// 解码成功且长度达到 GCM 密文下限：这是真密文但解密失败
+				//（密钥不匹配/密文损坏），必须报错而非静默透传。透传会让
+				// 认证永久失败，且再次导出时被二次加密，数据永久损坏。
+				return nil, fmt.Errorf("decrypt env %q: %w (snapshot was encrypted on a different machine)", k, err)
+			}
 		}
+		out[k] = v
 	}
 	return out, nil
 }

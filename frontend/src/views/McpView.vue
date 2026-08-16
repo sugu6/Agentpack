@@ -1,5 +1,4 @@
 <script setup lang="ts">
-import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useMcpStore } from '@/stores/mcp'
 import { useAgentsStore } from '@/stores/agents'
@@ -13,8 +12,6 @@ import { ApiError } from '@/lib/api'
 const { t } = useI18n()
 const mcp = useMcpStore()
 const agents = useAgentsStore()
-
-const search = computed(() => mcp.items)
 
 async function handleUpdated() {
   try {
@@ -68,7 +65,7 @@ async function handleUpdated() {
           <Spinner class="size-5" />
         </div>
 
-        <Empty v-else-if="mcp.items.length === 0" class="mt-4">
+        <Empty v-else-if="mcp.items.length === 0 && !mcp.error" class="mt-4">
           <EmptyMedia><PhPlugsConnected :size="32" class="text-muted-foreground" /></EmptyMedia>
           <EmptyHeader>
             <EmptyTitle>{{ t('mcp.empty') }}</EmptyTitle>

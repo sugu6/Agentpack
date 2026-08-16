@@ -18,7 +18,6 @@ const confirm = useConfirm()
 const toast = useToast()
 const scanning = ref(false)
 const importingZip = ref(false)
-const scannedOnce = ref(false)
 
 // "导入已有"对话框
 const showImportExisting = ref(false)
@@ -285,8 +284,16 @@ async function installFromZip() {
     pendingZipPath.value = zipPath
     showAgentSelector.value = true
   } catch (e: unknown) {
+    // 用户取消文件选择是正常操作，不应提示错误（原生对话框取消时返回 "cancelled by user"）
+    if (isFilePickCancelled(e)) return
     toast.error(toast.fromError(e, t('skills.toast.pickFileFailed')))
   }
+}
+
+// 判断是否为用户取消文件选择
+function isFilePickCancelled(e: unknown): boolean {
+  const msg = (e instanceof Error ? e.message : String(e ?? '')).toLowerCase()
+  return msg === '' || msg.includes('cancel')
 }
 
 async function confirmZipImport() {
@@ -309,9 +316,12 @@ async function confirmZipImport() {
 }
 
 async function uninstallSkill(id: string) {
+  const skill = skills.skills.find(s => s.id === id)
   const ok = await confirm.confirm({
     title: t('dialog.confirm.uninstall'),
-    message: t('skills.uninstallConfirmMessage'),
+    message: skill
+      ? t('skills.uninstallConfirmMessageNamed', { name: skill.name })
+      : t('skills.uninstallConfirmMessage'),
     confirmText: t('common.uninstall'),
     variant: 'destructive',
   })
@@ -330,10 +340,11 @@ async function onCheckUpdates() {
   if (skills.checkingUpdates) return
   try {
     await skills.checkUpdates()
-    const updatesCount = skills.updateStatuses.filter(s => s.hasUpdate).length
+    // 局部变量改名避免遮蔽组件级 computed updatesCount（非响应式局部值）
+    const newUpdatesCount = skills.updateStatuses.filter(s => s.hasUpdate).length
     const errorCount = skills.updateStatuses.filter(s => s.error).length
-    if (updatesCount > 0) {
-      toast.info(t('skills.toast.updatesFound', { count: updatesCount }))
+    if (newUpdatesCount > 0) {
+      toast.info(t('skills.toast.updatesFound', { count: newUpdatesCount }))
     } else if (errorCount > 0 && errorCount === skills.updateStatuses.length) {
       // 所有 skill 都检测失败，可能是 rate limit
       toast.warning(t('update.message.rateLimited'))
@@ -402,7 +413,6 @@ async function scanSkills() {
     await skills.load()
     // 4. Scan unmanaged skills in global ~/.agents/skills (read-only)
     await skills.scanUnmanaged()
-    scannedOnce.value = true
     toast.success(t('skills.toast.scanComplete'))
   } catch (e: unknown) {
     toast.error(toast.fromError(e, t('skills.toast.scanFailed')))
@@ -418,7 +428,7 @@ async function scanSkills() {
     <div class="shrink-0 border-b border-border px-8 pt-8 pb-4">
       <div class="mx-auto max-w-6xl">
         <div class="flex items-baseline justify-between gap-4">
-          <h1 class="text-2xl font-semibold tracking-tight">Skills</h1>
+          <h1 class="text-2xl font-semibold tracking-tight">{{ t('nav.skills') }}</h1>
           <p class="text-sm text-muted-foreground">{{ t('skills.subtitle') }}</p>
         </div>
         <div class="mt-3 flex justify-end gap-2">
@@ -525,10 +535,10 @@ async function scanSkills() {
                   variant="outline"
                   size="icon"
                   class="text-primary hover:bg-primary/10"
-                  :disabled="skills.updatingSkillIds.has(skill.id)"
+                  :disabled="skills.updatingSkillIds.has(skill.id) || skills.updatingAll"
                   :aria-busy="skills.updatingSkillIds.has(skill.id)"
                   :aria-label="t('skills.update')"
-                  :title="skills.updatingSkillIds.has(skill.id) ? t('skills.updating') : t('skills.update')"
+                  :title="skills.updatingSkillIds.has(skill.id) ? t('skills.updating') : skills.updatingAll ? t('skills.updatingAll') : t('skills.update')"
                   @click="onUpdateSkill(skill.id)"
                 >
                   <Spinner v-if="skills.updatingSkillIds.has(skill.id)" class="size-3.5" />

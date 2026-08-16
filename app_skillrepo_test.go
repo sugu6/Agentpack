@@ -158,6 +158,84 @@ func readAgentsLockForTest(t *testing.T) skills.AgentsLockFile {
 	return lock
 }
 
+// TestApplyBackfillEntry_SetsRepoSourceWithSkillIDPrefix 回归测试：applyBackfillEntry
+// 必须以技能 ID（"skill:"+目录名）而非裸目录名调用 SetRepoSource，否则来源写不到
+// 内存 store，回填来源被回滚、功能静默失效。此前实现传裸目录名导致恒返回 false。
+func TestApplyBackfillEntry_SetsRepoSourceWithSkillIDPrefix(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	// 构造真实 skills store：SSOT 目录下放一个含 SKILL.md 的技能目录，Load 扫描生成
+	// ID 为 "skill:code-simplifier" 的技能（无 lock 来源，RepoOwner/RepoName 为空）。
+	ssotDir := filepath.Join(home, ".agents", "skills", "code-simplifier")
+	if err := os.MkdirAll(ssotDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ssotDir, "SKILL.md"), []byte("---\nname: code-simplifier\n---\n# Content"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	ss := skills.NewStore(filepath.Join(home, ".agents", "skills"), skills.SyncMethodSymlink)
+	if err := ss.Load(agents.NewRegistry()); err != nil {
+		t.Fatal(err)
+	}
+	if !ss.HasDirectory("code-simplifier") {
+		t.Fatal("expected store to manage code-simplifier skill")
+	}
+
+	// 构造 App：满足 assertInit（registry/mcpStore/marketStore 非 nil）+ 注入 skillsStore
+	a := &App{
+		mu:          sync.RWMutex{},
+		registry:    agents.NewRegistry(),
+		mcpStore:    mcp.NewStore(),
+		marketStore: market.NewStore(""),
+		skillsStore: ss,
+	}
+
+	entry := skills.AgentsLockEntry{
+		Source:   "simonwong/agent-skills",
+		Branch:   "main",
+		FullPath: "skills/code-simplifier",
+	}
+	if !a.applyBackfillEntry("code-simplifier", entry) {
+		t.Fatal("applyBackfillEntry returned false: repo source was not written to memory store")
+	}
+
+	// 验证来源已写入对应技能（ID 带 "skill:" 前缀）
+	sk, ok := ss.Get("skill:code-simplifier")
+	if !ok {
+		t.Fatal("expected skill:code-simplifier to exist after backfill")
+	}
+	if sk.RepoOwner != "simonwong" || sk.RepoName != "agent-skills" {
+		t.Fatalf("expected repo source simonwong/agent-skills written, got %s/%s", sk.RepoOwner, sk.RepoName)
+	}
+	if sk.RepoBranch != "main" || sk.FullPath != "skills/code-simplifier" {
+		t.Fatalf("unexpected branch/fullPath: %q/%q", sk.RepoBranch, sk.FullPath)
+	}
+}
+
+// TestApplyBackfillEntry_UnmanagedDirReturnsFalse 验证目录未被纳管时返回 false
+// （回填验证期间技能被卸载的场景），避免写入残留来源。
+func TestApplyBackfillEntry_UnmanagedDirReturnsFalse(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	ss := skills.NewStore(filepath.Join(home, ".agents", "skills"), skills.SyncMethodSymlink)
+	if err := ss.Load(agents.NewRegistry()); err != nil {
+		t.Fatal(err)
+	}
+	a := &App{
+		mu:          sync.RWMutex{},
+		registry:    agents.NewRegistry(),
+		mcpStore:    mcp.NewStore(),
+		marketStore: market.NewStore(""),
+		skillsStore: ss,
+	}
+	if a.applyBackfillEntry("nonexistent-dir", skills.AgentsLockEntry{Source: "owner/repo"}) {
+		t.Fatal("expected false for unmanaged directory")
+	}
+}
+
 func TestApplyBackfillWithVerification(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -171,18 +249,18 @@ func TestApplyBackfillWithVerification(t *testing.T) {
 		},
 		"ui-ux-pro-max": {{Owner: "nextlevelbuilder", Repo: "ui-ux-pro-max-skill", Installs: 296028}},
 	}
-	verify := func(dir string, cands []market.BackfillCandidate) (market.BackfillCandidate, string, bool, bool) {
+	verify := func(dir string, cands []market.BackfillCandidate) (market.BackfillCandidate, string, string, bool, bool) {
 		if dir == "debugger" {
 			// 第一个候选（argent）内容不一致，第二个（awesome-llm-apps）内容一致
-			return cands[1], "skills/debugger", true, false
+			return cands[1], "skills/debugger", "main", true, false
 		}
 		if dir == "ui-ux-pro-max" {
 			// 内容不一致：验证过但被拒绝
-			return market.BackfillCandidate{}, "", false, false
+			return market.BackfillCandidate{}, "", "", false, false
 		}
-		return cands[0], "skills/" + dir, true, false
+		return cands[0], "skills/" + dir, "main", true, false
 	}
-	res := applyBackfillWithVerification(matches, directories, verify)
+	res := applyBackfillWithVerification(matches, directories, verify, func(dir string) bool { return true }, nil)
 	if len(res.Matched) != 2 || len(res.Mismatched) != 1 || len(res.Unmatched) != 1 || len(res.Failed) != 0 {
 		t.Fatalf("unexpected result: %+v", res)
 	}

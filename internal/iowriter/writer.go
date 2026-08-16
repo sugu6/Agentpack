@@ -4,9 +4,19 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
+	"time"
 )
+
+// maxBackupsPerBase 控制同一源文件在备份目录中保留的最大版本数。
+// BackupFile 按内容 hash 命名（<base>.<hash>.bak），每次内容变化都产生
+// 新文件且永不删除，长期使用（如 mcp 配置备份目录 ~/.agentpack/backups/mcp/）
+// 会导致磁盘无限增长。
+const maxBackupsPerBase = 20
 
 func WriteAtomic(path string, data []byte, perm os.FileMode) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
@@ -98,5 +108,48 @@ func BackupFile(path, backupDir string) (string, error) {
 	if err := os.WriteFile(dst, data, 0600); err != nil {
 		return "", err
 	}
+	pruneBackupDir(backupDir, filepath.Base(path))
 	return dst, nil
+}
+
+// pruneBackupDir 保留同一源文件的最新 maxBackupsPerBase 份备份，删除更旧的。
+// 仅删除匹配 <base>.<...>.bak 模式的文件，不影响备份目录中的其他内容。
+func pruneBackupDir(backupDir, base string) {
+	entries, err := os.ReadDir(backupDir)
+	if err != nil {
+		return
+	}
+	prefix := base + "."
+	var names []string
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		if strings.HasPrefix(e.Name(), prefix) && strings.HasSuffix(e.Name(), ".bak") {
+			names = append(names, e.Name())
+		}
+	}
+	if len(names) <= maxBackupsPerBase {
+		return
+	}
+	modTime := func(n string) (time.Time, bool) {
+		fi, err := os.Stat(filepath.Join(backupDir, n))
+		if err != nil {
+			return time.Time{}, false
+		}
+		return fi.ModTime(), true
+	}
+	sort.SliceStable(names, func(i, j int) bool {
+		ti, oki := modTime(names[i])
+		tj, okj := modTime(names[j])
+		if oki && okj {
+			return ti.Before(tj)
+		}
+		return oki && !okj
+	})
+	for _, n := range names[:len(names)-maxBackupsPerBase] {
+		if err := os.Remove(filepath.Join(backupDir, n)); err != nil {
+			log.Printf("iowriter: prune backup %s: %v", n, err)
+		}
+	}
 }

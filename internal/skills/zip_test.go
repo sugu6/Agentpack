@@ -189,7 +189,7 @@ func TestExtractTar_TooManyEntriesRejected(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for tar with too many entries")
 	}
-	if !strings.Contains(err.Error(), "too many files") {
-		t.Errorf("expected 'too many files' error, got: %v", err)
+	if !strings.Contains(err.Error(), "too many entries") {
+		t.Errorf("expected 'too many entries' error, got: %v", err)
 	}
 }

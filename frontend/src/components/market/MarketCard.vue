@@ -339,7 +339,7 @@ async function uninstallServer() {
 
         <!-- URL（http/sse） -->
         <div v-if="server.url" class="space-y-1.5">
-          <p class="text-xs font-medium text-muted-foreground">URL</p>
+          <p class="text-xs font-medium text-muted-foreground">{{ t('market.url') }}</p>
           <div class="flex items-center gap-2">
             <PhLink :size="13" class="shrink-0 text-muted-foreground" />
             <code class="truncate font-mono text-[11px]">{{ server.url }}</code>
@@ -382,7 +382,7 @@ async function uninstallServer() {
           </span>
           <span v-if="server.stars" class="inline-flex items-center gap-1">
             <PhStar :size="13" />
-            {{ server.stars.toLocaleString() }} stars
+            {{ t('market.starsCount', { count: server.stars }) }}
           </span>
         </div>
 

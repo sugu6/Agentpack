@@ -60,8 +60,12 @@ func main() {
 
 	app.setWailsApp(wailsApp)
 
-	// 系统主题切换 → 同步原生标题栏暗色（替代 winbridge 手动解析 WM_SETTINGCHANGE）
-	registerSystemThemeHook(wailsApp)
+	// 系统主题切换 → 同步原生标题栏暗色（替代 winbridge 手动解析 WM_SETTINGCHANGE）。
+	// themeGetter 读取当前主题配置：仅 system 主题下跟随系统切换；固定主题
+	// （light/dark）时系统切换不改变标题栏，避免与前端固定 UI 视觉撕裂。
+	registerSystemThemeHook(wailsApp, func() string {
+		return app.getTheme()
+	})
 
 	// 创建主窗口 — 与 v2 完全对齐的 Mica + 透明背景配置
 	mainWindow := wailsApp.Window.NewWithOptions(application.WebviewWindowOptions{
@@ -86,6 +90,9 @@ func main() {
 	mainWindow.RegisterHook(events.Common.WindowClosing, func(e *application.WindowEvent) {
 		app.beforeClose(e)
 	})
+	// 注入主窗口引用：Window.Current() 依赖窗口激活状态，未激活时返回 nil
+	// 会导致 HideWindow/showWindowRaw nil 解引用 panic，故保存创建时的引用
+	app.setMainWindow(mainWindow)
 
 	// 创建 v3 原生系统托盘
 	tray := setupTray(wailsApp, app)

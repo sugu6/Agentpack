@@ -27,8 +27,26 @@ export interface UseInfiniteScrollOptions {
 export function useInfiniteScroll(options: UseInfiniteScrollOptions) {
   const sentinel = ref<HTMLElement | null>(null)
   let observer: IntersectionObserver | null = null
+  // 加载失败后的冷却：失败时 onLoadMore 通常会复位 loading（false）→
+  // watch 立即重连 → sentinel 仍可见 → 立刻再次触发 → 再失败，
+  // 形成无退避的紧循环打爆后端。冷却期内连接会被推迟到冷却结束。
+  const COOLDOWN_MS = 2000
+  let cooldownUntil = 0
+  let cooldownTimer: ReturnType<typeof setTimeout> | null = null
+
+  function scheduleReconnect(delay: number) {
+    if (cooldownTimer) clearTimeout(cooldownTimer)
+    cooldownTimer = setTimeout(() => {
+      cooldownTimer = null
+      if (sentinel.value) connect()
+    }, delay)
+  }
 
   function disconnect() {
+    if (cooldownTimer) {
+      clearTimeout(cooldownTimer)
+      cooldownTimer = null
+    }
     observer?.disconnect()
     observer = null
   }
@@ -36,14 +54,23 @@ export function useInfiniteScroll(options: UseInfiniteScrollOptions) {
   function connect() {
     disconnect()
     if (!sentinel.value) return
+    if (cooldownUntil > Date.now()) {
+      scheduleReconnect(cooldownUntil - Date.now())
+      return
+    }
     observer = new IntersectionObserver(
-      (entries) => {
+      async (entries) => {
         for (const entry of entries) {
           if (!entry.isIntersecting) continue
           // 双重校验,避免与状态切换的竞态
           if (!options.hasMore.value) continue
           if (options.loading.value) continue
-          void options.onLoadMore()
+          try {
+            await options.onLoadMore()
+          } catch {
+            // 加载失败进入冷却,冷却期内不自动重连重试
+            cooldownUntil = Date.now() + COOLDOWN_MS
+          }
         }
       },
       {

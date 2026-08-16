@@ -98,6 +98,12 @@ func validateTarballInput(input TarballInstallInput) error {
 	if input.Directory == "" {
 		return fmt.Errorf("directory is required")
 	}
+	// Directory 会被直接拼入 findSkillRootInTarball 的定位路径，必须通过
+	// 目录名校验（与 zip/ImportWithDirName 一致）：含 /、\、.. 的恶意或
+	// 异常目录名会让 HasSkillManifest 命中解压目录外的任意目录。
+	if err := ValidateDirectoryName(input.Directory); err != nil {
+		return fmt.Errorf("invalid directory %q: %w", input.Directory, err)
+	}
 	// 校验 URL 是 codeload.github.com
 	if !strings.HasPrefix(input.TarballURL, "https://codeload.github.com/") {
 		return fmt.Errorf("tarball URL must be from codeload.github.com")
@@ -188,19 +194,21 @@ func downloadAndExtractTarball(ctx context.Context, tarballURL, dest string) err
 		if err != nil {
 			return fmt.Errorf("tar read: %w", err)
 		}
-		if header.Typeflag == tar.TypeReg {
-			fileCount++
-			totalSize += header.Size
-			if fileCount > maxTarFileCount {
-				return fmt.Errorf("tar contains too many files: %d (max %d)", fileCount, maxTarFileCount)
-			}
-			if totalSize > maxTarTotalSize {
-				return fmt.Errorf("tar total uncompressed size exceeds limit: %d bytes (max %d)", totalSize, maxTarTotalSize)
-			}
-		}
-
-		if err := extractTarEntry(tarReader, header, dest, destAbs); err != nil {
+		// 所有条目都计入 fileCount 上限：仅对普通文件计数时，恶意 tar 可注入
+		// 海量目录条目（每个都触发 MkdirAll 磁盘操作）绕过限制造成资源耗尽。
+		fileCount++
+		// 用实际写入的字节数累计总量：header.Size 是声明值，恶意 tar 可虚报
+		// 绕过 maxTarTotalSize（zip bomb 防护）。
+		written, err := extractTarEntry(tarReader, header, dest, destAbs)
+		if err != nil {
 			return err
+		}
+		totalSize += written
+		if totalSize > maxTarTotalSize {
+			return fmt.Errorf("tar total uncompressed size exceeds limit: %d bytes (max %d)", totalSize, maxTarTotalSize)
+		}
+		if fileCount > maxTarFileCount {
+			return fmt.Errorf("tar contains too many entries: %d (max %d)", fileCount, maxTarFileCount)
 		}
 	}
 
@@ -208,57 +216,65 @@ func downloadAndExtractTarball(ctx context.Context, tarballURL, dest string) err
 }
 
 // extractTarEntry 安全解压单个 tar 条目，防止 Tar Slip（路径穿越）
-func extractTarEntry(reader *tar.Reader, header *tar.Header, dest, destAbs string) error {
-	// 清理路径
+// extractTarEntry 安全解压单个 tar 条目，防止 Tar Slip（路径穿越）。
+// 返回实际写入的字节数（非普通文件条目返回 0），供调用方累计真实解压总量。
+func extractTarEntry(reader *tar.Reader, header *tar.Header, dest, destAbs string) (int64, error) {
+	// 清理路径，逐段拒绝 ".." 段（防 Tar Slip）。
+	// 不用 Contains 子串判断，避免误拒 "foo..bar" 这类合法文件名。
 	name := filepath.FromSlash(header.Name)
-	// 拒绝含 ".." 的路径
-	if strings.Contains(name, "..") {
-		return fmt.Errorf("tar entry contains path traversal: %s", header.Name)
+	for _, seg := range strings.Split(name, string(filepath.Separator)) {
+		if seg == ".." {
+			return 0, fmt.Errorf("tar entry contains path traversal: %s", header.Name)
+		}
 	}
 
 	target := filepath.Join(dest, name)
 	targetAbs, err := filepath.Abs(target)
 	if err != nil {
-		return fmt.Errorf("resolve target abs: %w", err)
+		return 0, fmt.Errorf("resolve target abs: %w", err)
 	}
 
 	// 验证 target 在 dest 内（Tar Slip 防护）
 	if !isWithinDir(targetAbs, destAbs) {
-		return fmt.Errorf("tar entry escapes dest dir: %s", header.Name)
+		return 0, fmt.Errorf("tar entry escapes dest dir: %s", header.Name)
 	}
 
 	switch header.Typeflag {
 	case tar.TypeDir:
-		return os.MkdirAll(target, 0755)
+		return 0, os.MkdirAll(target, 0755)
 	case tar.TypeReg:
 		if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
-			return fmt.Errorf("create parent dir: %w", err)
+			return 0, fmt.Errorf("create parent dir: %w", err)
 		}
-		w, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+		// 权限收敛：归档声明的权限可能带 0777（恶意/异常归档），若原样保留会
+		// 传播到 SSOT 与各 agent 技能目录，本机其他用户可读写。去除 group/other
+		// 写位（&^ 0022），保留 owner 完整权限与可执行位（技能脚本需要）。
+		perm := header.FileInfo().Mode().Perm() &^ 0022
+		w, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, perm)
 		if err != nil {
-			return fmt.Errorf("create file %s: %w", target, err)
+			return 0, fmt.Errorf("create file %s: %w", target, err)
 		}
 		defer w.Close()
 		// 限制单个文件大小，防止 zip bomb。
 		// 先按 tar 头声明的 size 预检，再用 LimitReader+1 校验实际流，
 		// 超过上限时报错而不是静默截断后安装损坏文件。
 		if header.Size > maxTarEntrySize {
-			return fmt.Errorf("tar entry %s too large: %d bytes (max %d)", header.Name, header.Size, maxTarEntrySize)
+			return 0, fmt.Errorf("tar entry %s too large: %d bytes (max %d)", header.Name, header.Size, maxTarEntrySize)
 		}
 		written, err := io.Copy(w, io.LimitReader(reader, maxTarEntrySize+1))
 		if err != nil {
-			return fmt.Errorf("write file %s: %w", target, err)
+			return 0, fmt.Errorf("write file %s: %w", target, err)
 		}
 		if written > maxTarEntrySize {
-			return fmt.Errorf("tar entry %s exceeds size limit: more than %d bytes", header.Name, maxTarEntrySize)
+			return 0, fmt.Errorf("tar entry %s exceeds size limit: more than %d bytes", header.Name, maxTarEntrySize)
 		}
-		return nil
+		return written, nil
 	case tar.TypeSymlink, tar.TypeLink:
 		// 跳过符号链接和硬链接（防止指向 SSOT 外的敏感路径），不报错
-		return nil
+		return 0, nil
 	default:
 		// 忽略其他类型（char device, block device 等）
-		return nil
+		return 0, nil
 	}
 }
 

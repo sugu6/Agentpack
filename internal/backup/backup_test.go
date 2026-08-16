@@ -290,6 +290,50 @@ func TestExporterImportRejectsMissing(t *testing.T) {
 	}
 }
 
+// TestImportExportPayloadRoundTrip 验证 Manager.ExportToFile 写出的 ExportPayload
+// 包裹格式（{"manifest":..., "snapshot":...}）能被 ImportFromReader 正确解码，
+// 而不是被 json.Unmarshal 当作未知顶层 key 静默忽略后导入空快照。
+func TestImportExportPayloadRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	if err := database.Init(filepath.Join(dir, "test.db")); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	reg := agents.NewRegistry()
+	reg.Register(agents.Agent{
+		ID:         "claude-code",
+		Name:       "Claude Code",
+		Type:       agents.AgentType("claude-code"),
+		ConfigPath: filepath.Join(dir, "settings.json"),
+		Status:     agents.StatusDetected,
+	})
+	store := mcp.NewStore()
+	_ = store.Load(reg)
+	ex := NewExporter(store, reg)
+
+	payload := ExportPayload{
+		Manifest: Manifest{AppName: "agentpack", Version: CurrentVersion},
+		Snapshot: Snapshot{
+			Version:       CurrentVersion,
+			SchemaVersion: CurrentSchemaVersion,
+			MCPServers: []SnapshotMCP{
+				{Name: "github", Command: "npx", Args: []string{"-y", "test"}, Transport: "stdio"},
+			},
+		},
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := ex.ImportFromReader(stringReader(data), ImportOptions{ApplyMCP: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.MCPApplied != 1 {
+		t.Errorf("ExportPayload round-trip: expected 1 applied, got %d (snapshot may have been dropped)", res.MCPApplied)
+	}
+}
+
 func TestExporterImportNoAgents(t *testing.T) {
 	reg := agents.NewRegistry()
 	store := mcp.NewStore()
@@ -328,20 +372,26 @@ func TestExporterImport_RollsBackEarlierMCPChangesOnFailure(t *testing.T) {
 
 	snap := Snapshot{MCPServers: []SnapshotMCP{
 		{Name: "first", Command: "echo", Transport: "stdio"},
-		{Name: "second", Command: "echo", Transport: "stdio", BoundAgents: []string{"missing-agent"}},
+		{Name: "second", Command: "echo second", Transport: "stdio", BoundAgents: []string{"missing-agent"}},
 	}}
-	if _, err := ex.Import(snap, ImportOptions{ApplyMCP: true}); err == nil {
-		t.Fatal("expected restore to fail on invalid second agent binding")
+	// 快照中无效的 agent 绑定被过滤：本机不存在/未启用的 agent 不应用
+	// （否则 validateAgentIDs 整体失败导致整个导入回滚），过滤后为空则
+	// 回退绑定所有当前启用的 agent。
+	if _, err := ex.Import(snap, ImportOptions{ApplyMCP: true}); err != nil {
+		t.Fatalf("import with invalid snapshot binding should succeed after filtering: %v", err)
 	}
-	if _, ok := store.FindByName("first"); ok {
-		t.Fatal("first MCP mutation remained after restore failure")
+	if _, ok := store.FindByName("first"); !ok {
+		t.Fatal("first MCP mutation missing after import")
+	}
+	if _, ok := store.FindByName("second"); !ok {
+		t.Fatal("second MCP mutation missing after import")
 	}
 	disk, err := mcp.NewBackend(string(agents.TypeClaudeCode)).Read(configPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(disk) != 0 {
-		t.Fatalf("agent config was not rolled back: %#v", disk)
+	if len(disk) != 2 {
+		t.Fatalf("expected 2 servers on disk, got %d", len(disk))
 	}
 }
 

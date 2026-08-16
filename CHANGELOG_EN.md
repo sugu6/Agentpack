@@ -7,6 +7,38 @@ versioned by [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.4] - 2026-08-16
+
+### Features
+
+- **Update downloads support pause/resume/cancel**: pausing keeps the temp file and resuming continues from the breakpoint via HTTP `Range`; canceling cleans up the temp file immediately and no longer reports a spurious failure
+- **Restart and install**: after download completes the button becomes "Restart and install", which closes the app and launches the installer to finish the update
+- **Close protection**: closing is blocked while a task (download/update check, etc.) is in progress, with a "tasks in progress" toast
+- **NSIS remembers last install location**: restores the previous install directory on upgrade/reinstall and cleans up registry leftovers on uninstall
+- **Settings failure rollback**: on save failure the in-memory settings and the auto-backup hook are rolled back together, avoiding "frontend failed but settings/backup silently diverge"
+
+### Changed
+
+- GitHub skill repo enumeration reworked: prefers the jsDelivr data API (flat tree) with automatic fallback to the GitHub API; default-branch fallback (stored ∪ main/master) avoids skill-count drops from CDN rate limits or branch-name mismatches
+- Update checks now use singleflight + result caching to avoid hitting GitHub API rate limits (unauth 60/hour/IP)
+- Backups: default export dir and snapshot table are both pruned by retention to prevent unbounded growth; auto-backup hook is suppressed (Suppress) during batch import/restore so per-item snapshots don't evict historical manual snapshots
+- MCP managed baseline: when a single entry fails to parse, the baseline's managed entries are preserved until the next clean Load, avoiding silent loss of management state and bindings
+- GitHub skill install branch fallback: candidate branches are tried one by one, each with an independent 90s budget, and the actually-resolved branch is persisted
+- CI: fixed Windows signing order (build → sign exe → package:signed → sign installer), added `windows:package:signed` task that does not rebuild the signed exe
+- Market requests carry a request ID to drop stale responses when switching search/load-more
+
+### Fixed
+
+- MCP form edit dropped `sourceId` / hardcoded `source:manual`, losing the source of managed servers
+- Settings-page save race from debounced writes (`ensureLoaded` / pending queue) that could roll back concurrently added data
+- Market / skill market card URL and stars labels were not i18n'd
+- Skills view leftover dead variable caused refresh logic misbehavior
+- Skill source backfill: skill identifiers missing the `skill:` prefix broke repo-source mapping
+- Backup rollback (rollbackUpdate) deleted the preserved agents' config files
+- tar/zip skill extraction did not apply the permission mask (`&^ 0022`), inheriting overly permissive package permissions
+- App shutdown didn't cancel the download goroutine, leaving `.downloading` temp files in the Downloads dir
+- `.gitignore` used the wrong ignore path (`build/bin` → root `bin/`)
+
 ## [0.2.3] - 2026-08-13
 
 ### Features
@@ -248,7 +280,8 @@ Initial release of AgentPack — a unified MCP / Skills / Agent management deskt
 [0.1.2]: https://github.com/sugu6/Agentpack/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/sugu6/Agentpack/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/sugu6/Agentpack/releases/tag/v0.1.0
-[Unreleased]: https://github.com/sugu6/Agentpack/compare/v0.2.3...HEAD
+[Unreleased]: https://github.com/sugu6/Agentpack/compare/v0.2.4...HEAD
+[0.2.4]: https://github.com/sugu6/Agentpack/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/sugu6/Agentpack/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/sugu6/Agentpack/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/sugu6/Agentpack/compare/v0.2.0...v0.2.1

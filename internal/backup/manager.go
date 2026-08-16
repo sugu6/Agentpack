@@ -11,6 +11,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -35,11 +36,12 @@ type Manager struct {
 	mcpStore    *mcp.Store
 	baseDir     string
 	retention   int
+	suppressed  int                   // >0 时 OnMutation 跳过自动备份（批量导入/恢复期间，见 Suppress）
 	cfgProvider func() map[string]any // 返回应用设置，用于快照导出
 }
 
 func NewManager(baseDir string, retention int, reg *agents.Registry) *Manager {
-	if retention <= 0 {
+	if retention < 0 {
 		retention = defaultRetention
 	}
 	return &Manager{registry: reg, baseDir: baseDir, retention: retention}
@@ -59,6 +61,7 @@ func (m *Manager) SetSettingsProvider(fn func() map[string]any) {
 }
 
 func (m *Manager) SetRetention(retention int) error {
+	// 0 表示无限保留（不清理旧快照）；负数非法。
 	if retention < 0 {
 		return fmt.Errorf("retention must be non-negative")
 	}
@@ -228,7 +231,7 @@ func (m *Manager) Truncate(keep int) error {
 	}
 	_, err := db.Exec(`
 		DELETE FROM backups WHERE id NOT IN (
-			SELECT id FROM backups ORDER BY created_at DESC LIMIT ?
+			SELECT id FROM backups ORDER BY created_at DESC, id DESC LIMIT ?
 		)
 	`, keep)
 	return err
@@ -249,8 +252,9 @@ func (m *Manager) Count() (int, error) {
 func (m *Manager) OnMutation(action string, detail mcp.MutationDetail) {
 	m.mu.Lock()
 	registry := m.registry
+	suppressed := m.suppressed > 0
 	m.mu.Unlock()
-	if registry == nil {
+	if registry == nil || suppressed {
 		return
 	}
 	if len(detail.Agents) == 0 {
@@ -261,6 +265,23 @@ func (m *Manager) OnMutation(action string, detail mcp.MutationDetail) {
 	agentIDs := strings.Join(detail.Agents, ",")
 	if _, err := m.Capture(action, agentIDs, "", desc); err != nil {
 		log.Printf("auto backup on %s server %q: %v", action, detail.ServerName, err)
+	}
+}
+
+// Suppress 挂起自动备份 hook（引用计数）。批量 MCP 操作（导入/恢复快照）
+// 逐条 Add/Update 会触发 OnMutation 逐个 Capture，几十个服务器的快照会
+// 产出几十个"中间状态"快照，把用户历史手动快照挤出 retention 配额。
+// 返回的释放函数恢复计数；计数归零后自动备份恢复。
+func (m *Manager) Suppress() func() {
+	m.mu.Lock()
+	m.suppressed++
+	m.mu.Unlock()
+	return func() {
+		m.mu.Lock()
+		if m.suppressed > 0 {
+			m.suppressed--
+		}
+		m.mu.Unlock()
 	}
 }
 
@@ -307,11 +328,31 @@ func (m *Manager) CreateSnapshot(snap Snapshot) (string, error) {
 		return "", fmt.Errorf("database not initialized")
 	}
 	id := uuid.NewString()
-	_, err = db.Exec(
-		`INSERT INTO export_snapshots (id, name, version, schema_version, mcp_count, data, created_at) VALUES (?,?,?,?,?,?,?)`,
-		id, snap.Description, snap.Version, snap.SchemaVersion, len(snap.MCPServers), string(data), createdAt.Unix(),
-	)
-	if err != nil {
+	// 与 captureWithTransaction 一样，手动快照也应用 retention，
+	// 防止用户反复手动导出导致快照表无上限增长。
+	// 0 = 无限保留（不清理），负数在 SetRetention 已拦截，此处兜底视为 0。
+	m.mu.Lock()
+	retention := m.retention
+	m.mu.Unlock()
+	if err := database.WithTransaction(func(tx *sql.Tx) error {
+		if _, err := tx.Exec(
+			`INSERT INTO export_snapshots (id, name, version, schema_version, mcp_count, data, created_at) VALUES (?,?,?,?,?,?,?)`,
+			id, snap.Description, snap.Version, snap.SchemaVersion, len(snap.MCPServers), string(data), createdAt.Unix(),
+		); err != nil {
+			return err
+		}
+		if retention > 0 {
+			_, err := tx.Exec(`
+				DELETE FROM export_snapshots WHERE id NOT IN (
+					SELECT id FROM export_snapshots ORDER BY created_at DESC, id DESC LIMIT ?
+				)
+			`, retention)
+			if err != nil {
+				return fmt.Errorf("apply retention: %w", err)
+			}
+		}
+		return nil
+	}); err != nil {
 		return "", err
 	}
 	return id, nil
@@ -380,9 +421,20 @@ func (m *Manager) Delete(id string) error {
 }
 
 func (m *Manager) Capture(action, agentID, agentPath, description string) (Summary, error) {
+	// 在锁外读取应用设置回调：cfgProvider 内部会取 app 的 a.mu.RLock，
+	// 若在持 m.mu 时调用，会与 MCP 变更路径（withStoreOp 持 a.mu →
+	// notify → runAsync 取 m.mu）构成 a.mu→m.mu 与 m.mu→a.mu 的反向锁序死锁。
+	m.mu.Lock()
+	provider := m.cfgProvider
+	m.mu.Unlock()
+	var appSettings map[string]any
+	if provider != nil {
+		appSettings = provider()
+	}
+
 	// 在锁内构建快照，锁外执行事务
 	m.mu.Lock()
-	snap, data, retention, err := m.buildSnapshotLocked(action, agentID, agentPath, description)
+	snap, data, retention, err := m.buildSnapshotLocked(action, agentID, agentPath, description, appSettings)
 	m.mu.Unlock()
 	if err != nil {
 		return Summary{}, err
@@ -391,7 +443,7 @@ func (m *Manager) Capture(action, agentID, agentPath, description string) (Summa
 	return m.captureWithTransaction(snap, data, retention)
 }
 
-func (m *Manager) buildSnapshotLocked(action, agentID, agentPath, description string) (Snapshot, []byte, int, error) {
+func (m *Manager) buildSnapshotLocked(action, agentID, agentPath, description string, appSettings map[string]any) (Snapshot, []byte, int, error) {
 	now := time.Now().UTC()
 	snap := Snapshot{
 		Action:        action,
@@ -419,10 +471,8 @@ func (m *Manager) buildSnapshotLocked(action, agentID, agentPath, description st
 		}
 		settings["agentStatus"] = agentStatus
 		// 记录应用设置（主题、备份配置、技能仓库等）
-		if m.cfgProvider != nil {
-			if appSettings := m.cfgProvider(); appSettings != nil {
-				settings["appSettings"] = appSettings
-			}
+		if appSettings != nil {
+			settings["appSettings"] = appSettings
 		}
 		snap.Settings = settings
 	}
@@ -450,7 +500,7 @@ func (m *Manager) captureWithTransaction(snap Snapshot, data []byte, retention i
 		if retention > 0 {
 			_, err := tx.Exec(`
 				DELETE FROM export_snapshots WHERE id NOT IN (
-					SELECT id FROM export_snapshots ORDER BY created_at DESC LIMIT ?
+					SELECT id FROM export_snapshots ORDER BY created_at DESC, id DESC LIMIT ?
 				)
 			`, retention)
 			if err != nil {
@@ -524,13 +574,15 @@ func (m *Manager) ExportToFile(id, dest string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	usedDefaultDest := false
 	if dest == "" {
 		createdAt := parseTime(snap.CreatedAt)
 		if createdAt.IsZero() {
 			createdAt = time.Now().UTC()
 		}
-		stamp := createdAt.UTC().Format("20060102-150405")
+		stamp := createdAt.UTC().Format("20060102-150405.000")
 		dest = filepath.Join(m.baseDir, "backups", fmt.Sprintf("agentpack-%s.json", stamp))
+		usedDefaultDest = true
 	} else {
 		cleanDest := filepath.Clean(dest)
 		if !filepath.IsAbs(cleanDest) {
@@ -549,7 +601,45 @@ func (m *Manager) ExportToFile(id, dest string) (string, error) {
 	if err := iowriter.WriteAtomic(dest, data, 0600); err != nil {
 		return "", err
 	}
+	if usedDefaultDest {
+		// 默认导出目录（baseDir/backups）下的文件按 retention 保留最新 N 个，
+		// 防止每次导出生成新文件后无限累积
+		m.pruneDefaultExports()
+	}
 	return dest, nil
+}
+
+// pruneDefaultExports 删除默认导出目录中超出 retention 的旧导出文件。
+// 文件名形如 agentpack-20060102-150405.json，字典序即时间序。
+func (m *Manager) pruneDefaultExports() {
+	// 锁内快照 retention：ExportToFile 不持锁，与 SetRetention 并发
+	// 修改 m.retention 时避免无锁读的数据竞争
+	m.mu.Lock()
+	retention := m.retention
+	m.mu.Unlock()
+	if retention <= 0 {
+		return
+	}
+	dir := filepath.Join(m.baseDir, "backups")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	var files []string
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasPrefix(e.Name(), "agentpack-") && strings.HasSuffix(e.Name(), ".json") {
+			files = append(files, e.Name())
+		}
+	}
+	if len(files) <= retention {
+		return
+	}
+	sort.Strings(files)
+	for _, f := range files[:len(files)-retention] {
+		if err := os.Remove(filepath.Join(dir, f)); err != nil {
+			log.Printf("backup: prune default export %s: %v", f, err)
+		}
+	}
 }
 
 func (m *Manager) applySnapshotRetentionLocked() error {
@@ -563,7 +653,7 @@ func (m *Manager) applySnapshotRetentionLocked() error {
 	}
 	_, err := db.Exec(`
 		DELETE FROM export_snapshots WHERE id NOT IN (
-			SELECT id FROM export_snapshots ORDER BY created_at DESC LIMIT ?
+			SELECT id FROM export_snapshots ORDER BY created_at DESC, id DESC LIMIT ?
 		)
 	`, retention)
 	return err

@@ -15,6 +15,10 @@ const toast = useToast()
 
 const action = ref<'minimize' | 'exit'>('minimize')
 const dontRemind = ref(false)
+// 防重入：confirm 里要等待 settings.update + 后端动作（quit/hideWindow），
+// 双击或连点会在第一次完成前发起第二次调用（重复保存、并发 quit），
+// 加 busy 守卫使后续点击失效
+const busy = ref(false)
 
 watch(() => props.open, (v) => {
   if (v) {
@@ -24,7 +28,8 @@ watch(() => props.open, (v) => {
 })
 
 async function confirm() {
-  emit('update:open', false)
+  if (busy.value) return
+  busy.value = true
   try {
     if (dontRemind.value) {
       // 保存用户选择到设置（不再提醒 + 默认行为）
@@ -38,8 +43,13 @@ async function confirm() {
     } else {
       await api.system.hideWindow()
     }
+    // 动作执行成功后再关闭对话框：若设置保存或动作失败，
+    // 保持对话框打开并 toast 报错，避免"关闭后动作被静默丢弃"。
+    emit('update:open', false)
   } catch (e) {
     toast.error(toast.fromError(e, t('common.operationFailed')))
+  } finally {
+    busy.value = false
   }
 }
 </script>
@@ -75,7 +85,7 @@ async function confirm() {
         </label>
         <div class="flex gap-2">
           <Button variant="outline" size="sm" @click="emit('update:open', false)">{{ t('common.cancel') }}</Button>
-          <Button size="sm" @click="confirm">{{ t('common.confirm') }}</Button>
+          <Button size="sm" :disabled="busy" @click="confirm">{{ t('common.confirm') }}</Button>
         </div>
       </DialogFooter>
     </DialogContent>

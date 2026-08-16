@@ -20,10 +20,10 @@ const emit = defineEmits<{
 
 const { t } = useI18n()
 
-function resolveTransport(type: string): 'stdio' | 'sse' | 'http' {
+function resolveTransport(type: string): 'stdio' | 'sse' | 'http' | 'streamable-http' {
   if (type === 'local') return 'stdio'
   if (type === 'remote') return 'http'
-  if (type === 'stdio' || type === 'sse' || type === 'http') return type
+  if (type === 'stdio' || type === 'sse' || type === 'http' || type === 'streamable-http') return type
   return 'stdio'
 }
 
@@ -43,6 +43,7 @@ const toast = useToast()
 
 const open = ref(false)
 const formErrors = ref<string[]>([])
+const submitting = ref(false)
 const entryMode = ref<'form' | 'json'>('form')
 const jsonRaw = ref('')
 const form = ref<{
@@ -51,7 +52,7 @@ const form = ref<{
   command: string
   args: string
   env: string
-  transport: 'stdio' | 'sse' | 'http'
+  transport: 'stdio' | 'sse' | 'http' | 'streamable-http'
   url: string
 }>({
   name: '',
@@ -63,21 +64,33 @@ const form = ref<{
   url: '',
 })
 
+function syncFormFromServer(s: McpServer) {
+  form.value = {
+    name: s.name,
+    description: s.description || '',
+    command: s.command,
+    args: formatArgs(s.args || []),
+    env: Object.entries(s.env || {})
+      .map(([k, v]) => `${k}=${v}`)
+      .join('\n'),
+    transport: resolveTransport(s.transport || 'stdio'),
+    url: s.url || '',
+  }
+  // 回到表单模式并清空 JSON 草稿：若上一次编辑停留在 JSON tab 且未保存，
+  // 直接重开会残留旧 jsonRaw 与 entryMode，提交时用旧 JSON 覆盖服务器配置。
+  entryMode.value = 'form'
+  jsonRaw.value = ''
+  formErrors.value = []
+}
+
 watch(
   () => props.server,
   (s) => {
-    if (s) {
-      form.value = {
-        name: s.name,
-        description: s.description || '',
-        command: s.command,
-        args: formatArgs(s.args || []),
-        env: Object.entries(s.env || {})
-          .map(([k, v]) => `${k}=${v}`)
-          .join('\n'),
-        transport: resolveTransport(s.transport || 'stdio'),
-        url: s.url || '',
-      }
+    // 对话框打开期间忽略 server 变化：列表刷新会带来新对象引用，
+    // 此时同步会覆盖用户尚未保存的编辑内容。immediate 首次同步
+    // 保证打开前表单已有初值，打开后的刷新不重置表单。
+    if (s && !open.value) {
+      syncFormFromServer(s)
     }
   },
   { immediate: true },
@@ -85,13 +98,16 @@ watch(
 
 watch(open, (isOpen) => {
   if (isOpen) {
-    if (props.mode === 'edit' && props.server?.boundAgents) {
-      selectedAgentIds.value = new Set(props.server.boundAgents)
+    // 每次打开都重置编辑状态：关闭→重开同一服务器时 props.server 引用
+    // 未变化、watch 不会触发，若不在此初始化会残留上一次编辑的内容
+    // （含未保存的 JSON 草稿与表单改动），提交时可能覆盖服务器当前配置。
+    if (props.mode === 'edit' && props.server) {
+      syncFormFromServer(props.server)
+      const active = new Set(allAgentIds.value)
+      selectedAgentIds.value = new Set((props.server.boundAgents ?? []).filter((id) => active.has(id)))
     } else {
-      selectedAgentIds.value = new Set()
-    }
-    if (props.mode === 'add' && !props.server) {
       reset()
+      selectedAgentIds.value = new Set()
     }
   }
 })
@@ -253,7 +269,7 @@ function switchToForm() {
     command,
     args: formatArgs(args),
     env: envStr,
-    transport: transport as 'stdio' | 'sse' | 'http',
+    transport: transport as 'stdio' | 'sse' | 'http' | 'streamable-http',
     url,
   }
 }
@@ -336,7 +352,18 @@ function parseEnvVars(input: string): Record<string, string> {
 }
 
 async function submit() {
+  // 防重复提交：请求在途时忽略再次点击，避免同一服务器被并发添加/更新两次
+  if (submitting.value) return
+  submitting.value = true
   formErrors.value = []
+  try {
+    await doSubmit()
+  } finally {
+    submitting.value = false
+  }
+}
+
+async function doSubmit() {
   const errors: string[] = []
 
   if (entryMode.value === 'json') {
@@ -351,7 +378,7 @@ async function submit() {
     const { command, args } = normalizeCommandArgs(srv)
 
     if (!command && transport === 'stdio') errors.push(t('mcp.errors.commandRequired'))
-    if ((transport === 'sse' || transport === 'http') && !srv.url) errors.push(t('mcp.errors.urlRequired'))
+    if ((transport === 'sse' || transport === 'http' || transport === 'streamable-http') && !srv.url) errors.push(t('mcp.errors.urlRequired'))
     if (srv.url && transport !== 'stdio') {
       try { new URL(srv.url) } catch { errors.push(t('mcp.errors.urlInvalid')) }
     }
@@ -368,7 +395,12 @@ async function submit() {
     }
 
     const now = new Date().toISOString()
+    // 编辑时透传既有 source/sourceId 及高级字段（cwd/headers/configType/
+    // timeout/enabled）：后端 Update 不兜底 source/sourceId，若硬编码
+    // source='manual' 并丢弃 sourceId，市场"已安装"精确匹配会失效，
+    // 一次普通编辑还清空远程服务器鉴权头；仅覆盖表单涉及的字段。
     const server: McpServer = {
+      ...(props.server ?? {}),
       id: props.server?.id || `manual:${crypto.randomUUID()}`,
       name,
       description: srv.description || '',
@@ -377,8 +409,8 @@ async function submit() {
       env: Object.keys(env).length ? env : undefined,
       transport,
       url: transport === 'stdio' ? undefined : (srv.url || undefined),
-      source: 'manual',
-      boundAgents: [],
+      source: props.server?.source ?? 'manual',
+      boundAgents: props.server?.boundAgents ?? [],
       installedAt: props.server?.installedAt || now,
       updatedAt: now,
     }
@@ -405,7 +437,7 @@ async function submit() {
 
   if (!form.value.name) errors.push(t('mcp.errors.nameRequired'))
   if (!form.value.command && form.value.transport === 'stdio') errors.push(t('mcp.errors.commandRequired'))
-  if ((form.value.transport === 'sse' || form.value.transport === 'http') && !form.value.url) {
+  if ((form.value.transport === 'sse' || form.value.transport === 'http' || form.value.transport === 'streamable-http') && !form.value.url) {
     errors.push(t('mcp.errors.urlRequired'))
   }
   if (form.value.url && form.value.transport !== 'stdio') {
@@ -426,7 +458,10 @@ async function submit() {
   }
 
   const now = new Date().toISOString()
+  // 与 JSON 分支一致：编辑时透传既有 source/sourceId 及高级字段，避免
+  // 覆盖市场来源标识与远程服务器鉴权配置。
   const server: McpServer = {
+    ...(props.server ?? {}),
     id: props.server?.id || `manual:${crypto.randomUUID()}`,
     name: form.value.name,
     description: form.value.description,
@@ -434,9 +469,9 @@ async function submit() {
     args,
     env: Object.keys(env).length ? env : undefined,
     transport: form.value.transport,
-    url: form.value.url || undefined,
-    source: 'manual',
-    boundAgents: [],
+    url: form.value.transport === 'stdio' ? undefined : (form.value.url || undefined),
+    source: props.server?.source ?? 'manual',
+    boundAgents: props.server?.boundAgents ?? [],
     installedAt: props.server?.installedAt || now,
     updatedAt: now,
   }
@@ -505,6 +540,7 @@ async function submit() {
                     <TabsTrigger value="stdio" class="flex-1">STDIO</TabsTrigger>
                     <TabsTrigger value="sse" class="flex-1">SSE</TabsTrigger>
                     <TabsTrigger value="http" class="flex-1">HTTP</TabsTrigger>
+                    <TabsTrigger value="streamable-http" class="flex-1">STREAM</TabsTrigger>
                   </TabsList>
                 </Tabs>
               </div>
@@ -526,7 +562,7 @@ async function submit() {
             </div>
 
             <div v-if="form.transport !== 'stdio'" class="space-y-1.5">
-              <Label for="mcp-url">URL</Label>
+              <Label for="mcp-url">{{ t('mcp.url') }}</Label>
               <Input id="mcp-url" v-model="form.url" name="mcp-url" autocomplete="off" placeholder="https://..." class="font-mono" />
             </div>
 
@@ -628,7 +664,7 @@ async function submit() {
 
         <DialogFooter class="shrink-0">
           <Button type="button" variant="outline" @click="open = false">{{ t('common.cancel') }}</Button>
-          <Button type="submit">
+          <Button type="submit" :disabled="submitting">
             {{ mode === 'add' ? t('common.install') : t('common.save') }}
           </Button>
         </DialogFooter>

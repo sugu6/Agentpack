@@ -904,15 +904,15 @@ func TestSafeRelPath(t *testing.T) {
 	}
 
 	invalid := []string{
-		"",             // 空路径
-		"..",           // 目录穿越
-		"../evil",      // 目录穿越
-		"a/../../evil", // 目录穿越
-		"a\\..\\evil",  // Windows 分隔符穿越
+		"",                                // 空路径
+		"..",                              // 目录穿越
+		"../evil",                         // 目录穿越
+		"a/../../evil",                    // 目录穿越
+		"a\\..\\evil",                     // Windows 分隔符穿越
 		"..\\..\\Windows\\System32\\evil", // Windows 逃逸
-		"C:/evil",      // 盘符
-		"/abs/path",    // 绝对路径
-		"a:",           // 盘符后缀
+		"C:/evil",                         // 盘符
+		"/abs/path",                       // 绝对路径
+		"a:",                              // 盘符后缀
 	}
 	for _, in := range invalid {
 		if got, err := safeRelPath(in); err == nil {

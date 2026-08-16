@@ -133,6 +133,10 @@ func (s *Store) scanFilesystem(reg *agents.Registry) (map[string]Skill, map[stri
 		}
 	}
 
+	// 锁文件只解析一次：循环内逐 skill 调用 ParseAgentsLock 会对同一文件
+	// 重复读取+JSON 解析（N 个 skill = N 次解析），与 List() 的做法对齐。
+	lockData := ParseAgentsLock()
+
 	for _, entry := range entries {
 		dirName := entry.Name()
 		if strings.HasPrefix(dirName, ".") {
@@ -170,8 +174,8 @@ func (s *Store) scanFilesystem(reg *agents.Registry) (map[string]Skill, map[stri
 			log.Printf("warning: skill content hash may be incomplete for %s", skillPath)
 		}
 		skillMdHash, _ := HashSkillMarkdown(skillPath)
-		// 从 ~/.agents/.skill-lock.json 读取仓库来源信息
-		lockSkill := ParseAgentsLock()[dirName]
+		// 从 ~/.agents/.skill-lock.json 读取仓库来源信息（lockData 已在循环外解析一次）
+		lockSkill := lockData[dirName]
 		logger.Debug("scanFilesystem: skill dir", "dir", dirName, "owner", lockSkill.Owner, "repo", lockSkill.Repo, "branch", lockSkill.Branch)
 		sk := Skill{
 			ID:          skillID,
@@ -254,10 +258,46 @@ func (s *Store) Get(id string) (Skill, bool) {
 	defer s.mu.RUnlock()
 	sk, ok := s.skills[id]
 	if !ok {
-		return Skill{}, false
+		return sk, false
 	}
 	sk.BoundAgents = copySlice(boundAgentsFromMap(s.bindings, id))
 	return sk, true
+}
+
+// HasDirectory 检查 store 是否纳管指定目录名的技能。
+// 用于 backfill 等后台流程写回前校验：技能可能在后台任务运行期间被卸载，
+// 校验失败时跳过写回，避免把已卸载技能的来源重新写入锁文件。
+func (s *Store) HasDirectory(dir string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, sk := range s.skills {
+		if sk.Directory == dir {
+			return true
+		}
+	}
+	return false
+}
+
+// SetRepoSource 为技能写入仓库来源（内存），用于回填成功后与 lock 文件
+// 保持一致。仅写 lock 时 List() 的锁注入能让 UI 看到来源，但
+// CheckUpdates/UpdateSkill 直接查内存，来源缺失会跳过更新检测与更新入口。
+// 仅当技能尚无来源时写入（回填只处理无来源技能，已有来源不覆盖）。
+// 返回 false 表示技能已不存在（回填期间被卸载）。
+func (s *Store) SetRepoSource(skillID, owner, repo, branch, fullPath string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cur, ok := s.skills[skillID]
+	if !ok {
+		return false
+	}
+	if cur.RepoOwner == "" && cur.RepoName == "" {
+		cur.RepoOwner = owner
+		cur.RepoName = repo
+		cur.RepoBranch = branch
+		cur.FullPath = fullPath
+		s.skills[skillID] = cur
+	}
+	return true
 }
 
 func (s *Store) Import(path string, agentIDs []string, reg *agents.Registry, repoOwner, repoName string) (Skill, error) {
@@ -342,21 +382,23 @@ func (s *Store) ImportWithDirName(path, dirName string, agentIDs []string, reg *
 	s.mu.RUnlock()
 
 	// Copy to SSOT (filesystem I/O — outside the lock)
+	// 走到这里时保证：目标不存在（正常安装/目录被外部删除后重装），
+	// 或目标存在但未被 store 纳管（残留目录：此前解析失败被跳过、或安装中断残留，
+	// 内存重复检查已确认无同名托管技能）。残留目录不能沿用旧内容
+	//（可能是损坏状态），先移除再用源内容替换。
 	copiedDest := false
-	info, err = os.Stat(dest)
-	if err != nil {
-		if !os.IsNotExist(err) {
-			return Skill{}, fmt.Errorf("stat destination: %w", err)
+	if destExists {
+		if err := RemovePath(dest); err != nil {
+			return Skill{}, fmt.Errorf("remove stale destination: %w", err)
 		}
-		// dest doesn't exist, proceed with copy
-		if err := os.MkdirAll(ssotDir, 0755); err != nil {
-			return Skill{}, fmt.Errorf("create ssot dir: %w", err)
-		}
-		copiedDest = true
-		if err := copyDirRecursive(path, dest); err != nil {
-			_ = RemovePath(dest)
-			return Skill{}, fmt.Errorf("copy to ssot: %w", err)
-		}
+	}
+	if err := os.MkdirAll(ssotDir, 0755); err != nil {
+		return Skill{}, fmt.Errorf("create ssot dir: %w", err)
+	}
+	copiedDest = true
+	if err := copyDirRecursive(path, dest); err != nil {
+		_ = RemovePath(dest)
+		return Skill{}, fmt.Errorf("copy to ssot: %w", err)
 	}
 
 	// Compute hash (filesystem I/O — outside the lock)
@@ -487,6 +529,10 @@ func (s *Store) ImportWithDirName(path, dirName string, agentIDs []string, reg *
 }
 
 func (s *Store) ToggleAgent(skillID, agentID string, enabled bool, reg *agents.Registry) error {
+	// 持 importMu 串行化 SSOT/agent 目录文件 I/O，与 Import/Uninstall 互斥，
+	// 防止并发读取到被半写入的目录；锁序保持 importMu 先于 mu。
+	s.importMu.Lock()
+	defer s.importMu.Unlock()
 	capableIDs := reg.SkillCapableAgentIDs()
 	if err := validateSkillAgentIDs([]string{agentID}, capableIDs); err != nil {
 		return err
@@ -561,6 +607,10 @@ func (s *Store) ToggleAgent(skillID, agentID string, enabled bool, reg *agents.R
 }
 
 func (s *Store) Uninstall(skillID string, reg *agents.Registry) (UninstallResult, error) {
+	// 持 importMu 串行化 SSOT 文件 I/O，与 Import/UpdateSkill 互斥，
+	// 防止删除 SSOT 目录时被并发 Import 写入；锁序保持 importMu 先于 mu。
+	s.importMu.Lock()
+	defer s.importMu.Unlock()
 	var result UninstallResult
 
 	type agentTarget struct {
@@ -595,32 +645,40 @@ func (s *Store) Uninstall(skillID string, reg *agents.Registry) (UninstallResult
 	s.mu.Unlock()
 
 	// Perform filesystem I/O outside the lock
-	// Backup
+	// 汇总全部错误，避免只暴露最后一个；用户看到"ssot 删除失败"时
+	// 也能知道 agent 目录残留情况。
+	var errs []string
+
+	// Backup：备份失败时降级为"警告并继续"，而不是中止卸载——
+	// 备份目录不可写（权限/磁盘满/被占用）时中止会让技能永远无法卸载，
+	// 用户没有任何绕过手段。降级后本地修改会丢失，通过 errs 汇总
+	// 让前端提示"已卸载但备份失败"。
 	backupPath, backupErr := BackupSkillDir(ssotDir, backupDir, dirName)
 	if backupErr != nil {
-		log.Printf("backup skill before uninstall: %v", backupErr)
+		errs = append(errs, fmt.Sprintf("backup skill %s before uninstall: %v", dirName, backupErr))
+	} else if backupPath != "" {
+		result.BackupPath = backupPath
 	}
-	result.BackupPath = backupPath
 
 	// Remove from all agent directories
 	for _, t := range agentTargets {
 		if err := RemovePath(t.target); err != nil {
-			log.Printf("remove skill %s from agent %s: %v", dirName, t.agID, err)
+			errs = append(errs, fmt.Sprintf("remove skill %s from agent %s: %v", dirName, t.agID, err))
 		}
 	}
 
 	// Remove from SSOT
 	if err := RemovePath(ssotPath); err != nil {
-		log.Printf("remove skill from ssot: %v", err)
 		// Verify if SSOT still exists; if so, return error to preserve consistency
 		if _, statErr := os.Stat(ssotPath); statErr == nil {
 			return result, fmt.Errorf("failed to remove skill from ssot: %w", err)
 		}
+		errs = append(errs, fmt.Sprintf("remove skill %s from ssot (path already gone, retry succeeded): %v", dirName, err))
 	}
 	// 清理 ~/.agents/.skill-lock.json 中的旧仓库来源记录，
 	// 避免重装同名技能时被残留的 RepoOwner/RepoName 错误关联。
 	if err := RemoveAgentsLockEntry(dirName); err != nil {
-		log.Printf("remove skill %s from agents lock: %v", dirName, err)
+		errs = append(errs, fmt.Sprintf("remove skill %s from agents lock: %v", dirName, err))
 	}
 
 	// Re-acquire the lock to delete from in-memory state
@@ -630,6 +688,10 @@ func (s *Store) Uninstall(skillID string, reg *agents.Registry) (UninstallResult
 	delete(s.bindings, skillID)
 
 	result.ID = skillID
+	if len(errs) > 0 {
+		return result, fmt.Errorf("skill %s uninstalled, but cleanup incomplete: %s",
+			skillID, strings.Join(errs, "; "))
+	}
 	return result, nil
 }
 
@@ -637,6 +699,10 @@ func (s *Store) Uninstall(skillID string, reg *agents.Registry) (UninstallResult
 // Only fixes missing or broken links — does NOT delete user's unmanaged skills
 // in agent directories. Unmanaged skills are preserved for manual import.
 func (s *Store) Resync(reg *agents.Registry) error {
+	// 持 importMu 串行化 agent 目录文件 I/O，与 Import/Uninstall 互斥，
+	// 防止把半写入的 SSOT 内容同步到 agent；锁序保持 importMu 先于 mu。
+	s.importMu.Lock()
+	defer s.importMu.Unlock()
 	type syncJob struct {
 		ssot   string
 		target string
@@ -904,6 +970,10 @@ func (s *Store) autoAdoptWith(capableIDs []string, dirResolver func(agentID stri
 	}
 
 	// 2. 执行纳管/覆盖（文件 I/O 在锁外）
+	// 整个文件 I/O 阶段持 importMu，与 Import/Uninstall/UpdateSkill 串行化：
+	// 否则并发时可能读到 Import 半写入的 SSOT 目录，或与 Uninstall 的删除互相逆转。
+	s.importMu.Lock()
+	defer s.importMu.Unlock()
 	result := AdoptionResult{}
 	type applied struct {
 		dirName  string
@@ -926,6 +996,12 @@ func (s *Store) autoAdoptWith(capableIDs []string, dirResolver func(agentID stri
 				job.conflict = true
 			} else if err := copyDirRecursive(job.srcPath, dest); err != nil {
 				result.Errors = append(result.Errors, fmt.Sprintf("adopt %s: copy to ssot: %v", job.dirName, err))
+				// 复制失败时清理半写入的 dest：SKILL.md 若已复制成功，
+				// 残留目录会在下次 Load 被当作合法技能纳管（scanFilesystem
+				// 只检查 HasSkillManifest），采纳半写入内容。
+				if rmErr := RemovePath(dest); rmErr != nil {
+					result.Errors = append(result.Errors, fmt.Sprintf("adopt %s: cleanup partial dest: %v", job.dirName, rmErr))
+				}
 				continue
 			}
 		}
@@ -1029,14 +1105,24 @@ func (s *Store) MigrateStorage(targetDir string, reg *agents.Registry) (Migratio
 		return MigrationResult{}, nil
 	}
 
-	migrated, errs := MigrateSSOTDir(oldDir, targetDir)
+	// 迁移是破坏性操作（移动整个 SSOT 目录）。MigrateSSOTDir 执行期间持
+	// importMu 与 Import/Uninstall/UpdateSkill 的目录文件 I/O 互斥，防止
+	// 并发 Import 正往旧目录复制新文件时被 os.Rename 移动后写失数据。
+	// 注意不能在整个函数体持 importMu：后续 Resync 内部同样要取 importMu。
+	migrateLocked := func(src, dst string) (int, []string) {
+		s.importMu.Lock()
+		defer s.importMu.Unlock()
+		return MigrateSSOTDir(src, dst)
+	}
+
+	migrated, errs := migrateLocked(oldDir, targetDir)
 
 	s.mu.Lock()
 	s.ssotDir = targetDir
 	s.mu.Unlock()
 
 	rollbackMigration := func() {
-		if rollbackMigrated, rollbackErrs := MigrateSSOTDir(targetDir, oldDir); rollbackErrs != nil {
+		if rollbackMigrated, rollbackErrs := migrateLocked(targetDir, oldDir); rollbackErrs != nil {
 			errs = append(errs, rollbackErrs...)
 		} else {
 			_ = rollbackMigrated

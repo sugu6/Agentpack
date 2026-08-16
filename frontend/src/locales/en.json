@@ -139,7 +139,8 @@
         "migrateBtn": "Start Migration",
         "cancelBtn": "Cancel",
         "success": "Skills migration complete, {count} items migrated",
-        "error": "Skills migration failed: {error}"
+        "error": "Skills migration failed: {error}",
+        "persistFailed": "Migration succeeded but saving settings failed: {error}. The app will use the new location after restart."
       }
     },
     "agents": {
@@ -170,8 +171,9 @@
       "pauseDownload": "Pause download",
       "pauseFailed": "Pause failed",
       "pausedLabel": "Paused",
-      "installNow": "Install now",
+      "installNow": "Restart & install",
       "installFailed": "Failed to launch installer",
+      "downloadCompleteHint": "Download complete. Clicking the button below will close the app and launch the installer to finish the update.",
       "resumeFailed": "Resume failed: server does not support resuming",
       "resumeDownload": "Resume download",
       "downloading": "Downloading… {percent}%",
@@ -218,6 +220,7 @@
       "foundNewVersion": "New version v{latest} found (current v{current})",
       "canDownloadBelow": "You can download the installer below",
       "checkUpdateFailed": "Update check failed: {error}",
+      "closeBlocked": "Tasks are in progress, close is blocked. Wait for them to finish.",
       "startDownloadFailed": "Failed to start download: {error}",
       "manualBackupLabel": "Manual backup",
       "exportBackupLabel": "Export backup",
@@ -255,6 +258,7 @@
     "name": "Name",
     "command": "Command",
     "args": "Arguments",
+    "url": "URL",
     "env": "Environment variables",
     "transport": "Transport",
     "boundAgents": "Bound agents",
@@ -357,7 +361,7 @@
     "uninstallConfirmMessage": "Are you sure you want to uninstall this skill? It will be removed from the SSOT and all bound agent directories.",
     "uninstallConfirmMessageNamed": "Are you sure you want to uninstall skill \"{name}\"? It will be removed from the SSOT and all bound agent directories.",
     "viewRepo": "View repository {repo}",
-    "marketInstallTargetDesc": "Select which agents to install this skill to. No agent is selected by default.",
+    "marketInstallTargetDesc": "Select which agents to install \"{name}\" to. No agent is selected by default.",
     "updatable": "Updatable",
     "toast": {
       "scanComplete": "Scan complete",
@@ -378,6 +382,7 @@
       "installSuccess": "Installed skill {name}",
       "uninstalled": "Uninstalled skill {name}",
       "uninstallFailed": "Skill uninstall failed: {error}",
+      "refreshFailed": "Skill list refresh failed. Switch pages to see the latest state.",
       "updateSuccess": "Update successful",
       "updateFailed": "Update failed: {error}",
       "updateAllSuccess": "Updated {count} skills",
@@ -431,6 +436,8 @@
     "transportLabel": "Transport",
     "envVarsHint": "Environment variables (fill on install)",
     "installsCount": "{count} installs",
+    "starsCount": "{count} stars",
+    "url": "URL",
     "homepage": "Homepage",
     "docs": "Docs",
     "installTargetDesc": "Select which agents to install {name} to.",
@@ -443,7 +450,8 @@
       "uninstalled": "Uninstalled MCP server {name}",
       "uninstallFailed": "MCP uninstall failed: {error}",
       "installFailed": "Install failed: {error}",
-      "alreadyInstalled": "「{name}」already exists, installation skipped"
+      "alreadyInstalled": "「{name}」already exists, installation skipped",
+      "getServerDetailFailed": "Failed to fetch server details: {error}"
     }
   },
   "update": {

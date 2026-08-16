@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import { api, ApiError } from '@/lib/api'
+import { api, ApiError, type Settings } from '@/lib/api'
 import type { AppSettings } from '@/types'
 import { setLanguage, resolveLanguage } from '@/i18n'
 
@@ -36,6 +36,19 @@ export const useSettingsStore = defineStore('settings', () => {
 
   let mediaQuery: MediaQueryList | null = null
   let mediaHandler: ((e: MediaQueryListEvent) => void) | null = null
+
+  // 保存中计数：每次 update 开始时 +1、结束时 -1。
+  // 后端每次 update 成功都会广播 settings:changed，全局监听随即 fetch()。
+  // 若本地有未落盘的修改（保存进行中/排队中），fetch 的无条件覆盖会冲掉
+  // 用户刚输入的值，且排队的保存重放的也是被覆盖的旧值——输入静默丢失。
+  let pendingWrite = 0
+  // 写版本号：update 成功提交后自增。fetch 在发起时快照版本号，响应返回时
+  // 若版本已变（请求期间有 update 提交）则丢弃陈旧响应——pendingWrite 只
+  // 拦截"发起时"的请求，拦不住"请求在途期间"提交的保存。
+  let writeVersion = 0
+  // 在途的 fetch promise：ensureLoaded 命中 loading 时等待同一请求完成，
+  // 而非立即返回导致调用方基于默认配置初始化。
+  let inflight: Promise<Settings> | null = null
 
   async function applyWailsTheme(theme: string) {
     try {
@@ -96,9 +109,20 @@ export const useSettingsStore = defineStore('settings', () => {
 
   async function fetch() {
     if (loading.value) return
+    // 本地有排队/进行中的保存时跳过覆盖：保存完成后 update() 已把最新
+    // config 写入 store，后端旧快照此时覆盖只会回滚用户尚未确认的修改。
+    if (pendingWrite > 0) return
     loading.value = true
+    const p = api.settings.get()
+    // 记录在途 promise，让并发调用方（ensureLoaded）能等待同一请求完成，
+    // 避免其基于未加载的默认配置提前初始化（如 Market 页按默认源发请求）。
+    inflight = p
+    const requestVersion = writeVersion
     try {
-      const s = await api.settings.get()
+      const s = await p
+      // 请求在途期间有 update 成功提交：响应携带的是旧快照，丢弃避免覆盖
+      // 刚保存的值（finally 仍会清 loading）。
+      if (requestVersion !== writeVersion) return
       // Migrate legacy "auto" sync method to "symlink" before typed assignment.
       const rawSyncMethod = (s.skillSyncMethod as string | undefined) ?? 'symlink'
       const skillSyncMethod: AppSettings['skillSyncMethod'] = rawSyncMethod === 'copy' ? 'copy' : 'symlink'
@@ -120,14 +144,21 @@ export const useSettingsStore = defineStore('settings', () => {
       const apiError = ApiError.from(e)
       error.value = apiError.message
     } finally {
+      inflight = null
       loading.value = false
     }
   }
 
   async function update(next: AppSettings) {
+    pendingWrite++
     try {
       await api.settings.update(next)
-      config.value = next
+      writeVersion++
+      // 合并保留旁路字段：SettingsView 的 refreshSkillRepos 会直接更新
+      // config.skillRepos（跳过本 store 方法），在途 update() 的整体覆盖
+      // （config.value = next）会抹掉这些变更，导致 UI 仓库列表凭空消失。
+      // 以当前 config 中的 skillRepos 为准（它可能比 next 快照更新）。
+      config.value = { ...next, skillRepos: config.value.skillRepos }
       loaded.value = true
       await applyTheme(next.theme)
       // 同步 i18n 语言(立即生效,不等 settings:changed 事件回环)
@@ -136,11 +167,18 @@ export const useSettingsStore = defineStore('settings', () => {
       const apiError = ApiError.from(e)
       error.value = apiError.message
       throw apiError
+    } finally {
+      pendingWrite--
     }
   }
 
   async function ensureLoaded() {
     if (loaded.value) return
+    // fetch 已在途：等待同一请求完成，避免基于默认配置提前返回。
+    if (inflight) {
+      try { await inflight } catch { /* 错误已记录到 error，调用方自行处理 */ }
+      return
+    }
     await fetch()
   }
 

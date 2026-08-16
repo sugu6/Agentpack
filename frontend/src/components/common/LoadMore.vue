@@ -15,16 +15,16 @@ const props = defineProps<{
   total: number
   /** 滚动容器,作为 IntersectionObserver root */
   scrollRoot: HTMLElement | null
+  /** 加载回调（返回 Promise，失败时 useInfiniteScroll 进入退避冷却）。
+   *  不能依赖 emit：Vue 的 emit() 不返回监听器结果，await 会立即 resolve，
+   *  失败永远无法被感知，冷却机制形同虚设 */
+  loadMoreFn: () => Promise<void>
   /** 提前预加载距离,默认 300px */
   rootMargin?: string
   /** 完成态自定义文案(覆盖默认「已显示全部 N 项」) */
   completeText?: string
   /** 等待态自定义文案(覆盖默认「滚动加载更多」) */
   moreText?: string
-}>()
-
-const emit = defineEmits<{
-  (e: 'load-more'): void
 }>()
 
 const { t } = useI18n()
@@ -34,7 +34,7 @@ const { sentinel } = useInfiniteScroll({
   hasMore: toRef(props, 'hasMore'),
   loading: toRef(props, 'loading'),
   rootMargin: props.rootMargin,
-  onLoadMore: () => emit('load-more'),
+  onLoadMore: () => props.loadMoreFn(),
 })
 
 // 是否显示「已加载 X / Y」进度文字

@@ -189,7 +189,7 @@ func TestSkillsShFetcher_SearchPageSizeClamping(t *testing.T) {
 	defer func() { skillsShAPIBase = "https://skills.sh" }()
 
 	f := NewSkillsShFetcher()
-	// pageSize=0 应回退到默认值 30；使用非空查询触发 API
+	// pageSize=0 表示全量拉取，使用大 limit 而非默认 30；使用非空查询触发 API
 	got, err := f.Search(context.Background(), SearchOptions{Query: "all", PageSize: 0})
 	if err != nil {
 		t.Fatal(err)

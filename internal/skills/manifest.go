@@ -38,6 +38,11 @@ func ParseSkillMetadata(content []byte) SkillMetadata {
 	var meta SkillMetadata
 	inDescription := false
 	descriptionLines := []string{}
+	flushDescription := func() {
+		if len(descriptionLines) > 0 {
+			meta.Description = strings.Join(descriptionLines, " ")
+		}
+	}
 	for _, line := range strings.Split(frontmatter, "\n") {
 		trimmed := strings.TrimSpace(line)
 
@@ -46,6 +51,10 @@ func ParseSkillMetadata(content []byte) SkillMetadata {
 				descriptionLines = append(descriptionLines, trimmed)
 				continue
 			}
+			// 多行描述被新顶层字段打断：先保存已收集的描述再退出。
+			// 否则 description 不是 frontmatter 最后一个字段时，收集的内容
+			// 会因循环结束时 inDescription=false 而整体丢弃。
+			flushDescription()
 			inDescription = false
 		}
 
@@ -65,13 +74,15 @@ func ParseSkillMetadata(content []byte) SkillMetadata {
 			meta.Name = strings.Trim(strings.TrimSpace(val), "\"'")
 		case "description":
 			desc := strings.TrimSpace(val)
-			if desc != "" {
-				meta.Description = strings.Trim(desc, "\"'")
-				inDescription = false
-			} else {
-				// 多行描述
+			if desc == "" || desc == "|" || desc == ">" || desc == "|-" || desc == ">-" {
+				// 空值或 YAML 块标量指示符（|/>/|->-）：后续缩进行属于描述正文。
+				// 块标量指示符本身是 "|" 而非空字符串，若按普通值处理会
+				// 被解析为字面量 "|"，描述变成错误的单字符。
 				inDescription = true
 				descriptionLines = nil
+			} else {
+				meta.Description = strings.Trim(desc, "\"'")
+				inDescription = false
 			}
 		default:
 			if val == "" {
@@ -80,8 +91,8 @@ func ParseSkillMetadata(content []byte) SkillMetadata {
 		}
 	}
 
-	if inDescription && len(descriptionLines) > 0 {
-		meta.Description = strings.Join(descriptionLines, " ")
+	if inDescription {
+		flushDescription()
 	}
 
 	return meta

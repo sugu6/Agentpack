@@ -143,3 +143,64 @@ func TestJsonBackend_OpenCodePreservesRemoteTransports(t *testing.T) {
 		})
 	}
 }
+
+func TestJsonBackend_OpenCodePreservesHeadersAndDisabled(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "opencode.json")
+	writeFile(t, path, `{"mcp":{"servers":{"api":{"type":"remote","url":"https://mcp.example.com","headers":{"Authorization":"Bearer tok"},"enabled":false}}}}`)
+
+	backend := NewJsonBackend("opencode")
+	servers, err := backend.Read(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, ok := servers["api"]
+	if !ok {
+		t.Fatal("server not read")
+	}
+	if s.Headers["Authorization"] != "Bearer tok" {
+		t.Fatalf("headers dropped on read: %#v", s.Headers)
+	}
+	if s.Enabled == nil || *s.Enabled {
+		t.Fatalf("enabled=false not preserved on read: %#v", s.Enabled)
+	}
+
+	// 写回后 round-trip 一致：headers 保留，enabled=false 不被撤销
+	if err := backend.Write(path, map[string]Server{"api": s}); err != nil {
+		t.Fatal(err)
+	}
+	servers2, err := backend.Read(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s2 := servers2["api"]
+	if s2.Headers["Authorization"] != "Bearer tok" {
+		t.Fatalf("headers dropped on write: %#v", s2.Headers)
+	}
+	if s2.Enabled == nil || *s2.Enabled {
+		t.Fatalf("enabled=false not preserved on write: %#v", s2.Enabled)
+	}
+}
+
+func TestJsonBackend_StandardPreservesHeaders(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "mcp.json")
+	writeFile(t, path, `{"mcpServers":{"sse":{"type":"sse","url":"https://mcp.example.com","headers":{"X-Auth":"secret"}}}}`)
+
+	backend := NewJsonBackend("claude-code")
+	servers, err := backend.Read(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s := servers["sse"]; s.Headers["X-Auth"] != "secret" {
+		t.Fatalf("headers dropped on read: %#v", s.Headers)
+	}
+	if err := backend.Write(path, servers); err != nil {
+		t.Fatal(err)
+	}
+	servers2, err := backend.Read(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s2 := servers2["sse"]; s2.Headers["X-Auth"] != "secret" {
+		t.Fatalf("headers dropped on write: %#v", s2.Headers)
+	}
+}

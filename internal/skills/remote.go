@@ -92,9 +92,18 @@ func fetchRemoteFileTree(ctx context.Context, owner, repo, branch string) (map[s
 	if err != nil {
 		return nil, fmt.Errorf("fetch jsdelivr file tree: %w", err)
 	}
-	var root jsDelivrFileTree
+	var root struct {
+		jsDelivrFileTree
+		// Truncated 是 jsDelivr data API 的顶层响应字段（>3000 文件时置位）：
+		// 截断树若被当作完整树，CheckUpdates 内容级检测会假阴性"无更新"，
+		// 且空集 TreeHash 会被缓存固化，必须显式拒绝。
+		Truncated bool `json:"truncated"`
+	}
 	if err := json.Unmarshal(data, &root); err != nil {
 		return nil, fmt.Errorf("decode jsdelivr file tree: %w", err)
+	}
+	if root.Truncated {
+		return nil, fmt.Errorf("jsdelivr file tree truncated for %s/%s@%s", owner, repo, branch)
 	}
 	files := make(map[string]string)
 	flattenTree(root.Files, "", files)
@@ -327,6 +336,38 @@ func localTreeHash(hashFn func([]byte) string, localDir string) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
+// normalizeCRLF 将 CRLF 行尾归一化为 LF。git 存储为 LF，jsDelivr SHA-256
+// 与 GitHub blob SHA-1 均基于 git 字节；Windows 上编辑器可能把文件转为
+// CRLF，直接按原始字节比对会永久误报"有更新"。无 \r\n 时原样返回。
+func normalizeCRLF(data []byte) []byte {
+	if !bytes.Contains(data, []byte("\r\n")) {
+		return data
+	}
+	return bytes.ReplaceAll(data, []byte("\r\n"), []byte("\n"))
+}
+
+// fileHashForTree 计算用于聚合树 hash 的文件 hash：含 CRLF 行尾时按 LF
+// 归一化，与远程树 hash（基于 git 字节）对齐，避免本地 CRLF 文件被聚合
+// hash 恒判为差异。二进制文件按原始字节计算（无 \r\n 不受影响）。
+func fileHashForTree(data []byte, hashFn func([]byte) string) string {
+	if bytes.Contains(data, []byte("\r\n")) {
+		return hashFn(normalizeCRLF(data))
+	}
+	return hashFn(data)
+}
+
+// fileHashMatches 判断文件内容是否与远程 hash 一致：优先按原始字节比对，
+// 仅当本地含 CRLF 行尾时再按 LF 归一化尝试（避免误伤含 \r\n 序列的二进制）。
+func fileHashMatches(data []byte, remoteHex string, hashFn func([]byte) string) bool {
+	if hashFn(data) == remoteHex {
+		return true
+	}
+	if bytes.Contains(data, []byte("\r\n")) {
+		return hashFn(normalizeCRLF(data)) == remoteHex
+	}
+	return false
+}
+
 // localDirFileHashes 返回目录下所有文件的相对路径 → 内容 hash（按 hashFn 计算）。
 func localDirFileHashes(dir string, hashFn func([]byte) string) map[string]string {
 	out := make(map[string]string)
@@ -342,7 +383,7 @@ func localDirFileHashes(dir string, hashFn func([]byte) string) map[string]strin
 		if rerr != nil {
 			return nil
 		}
-		out[filepath.ToSlash(rel)] = hashFn(data)
+		out[filepath.ToSlash(rel)] = fileHashForTree(data, hashFn)
 		return nil
 	})
 	return out
@@ -357,7 +398,7 @@ func localHashEqual(path, remoteHex string, hashFn func([]byte) string) bool {
 	if err != nil {
 		return false
 	}
-	return hashFn(data) == remoteHex
+	return fileHashMatches(data, remoteHex, hashFn)
 }
 
 // verifyChangedFiles 下载候选差异文件并与本地字节逐一对比，返回真实差异文件。
@@ -382,7 +423,7 @@ func verifyChangedFiles(ctx context.Context, sk Skill, fullPath, branch, ssotPat
 			return nil, fmt.Errorf("verify %s: %w", rel, err)
 		}
 		local, lerr := os.ReadFile(filepath.Join(ssotPath, filepath.FromSlash(rel)))
-		if lerr != nil || !bytes.Equal(local, data) {
+		if lerr != nil || !bytes.Equal(normalizeCRLF(local), data) {
 			realChanged = append(realChanged, rel)
 		}
 	}
@@ -420,23 +461,29 @@ func VerifySkillSource(ctx context.Context, dir, owner, repo, branch, localDir s
 	}
 
 	// 2) 内容优先：扫描仓库中所有含 SKILL.md 的目录（名字不同但内容一致也匹配）
-	fp, serr := findSkillDirByContent(ctx, tree, owner, repo, branch, localDir)
+	fp, truncated, serr := findSkillDirByContent(ctx, tree, owner, repo, branch, localDir)
 	if serr != nil {
 		return "", false, serr
 	}
 	if fp != "" {
 		return fp, true, nil
 	}
+	if truncated {
+		// 候选被截断：本次无法判定"仓库中确实无此技能"，返回错误让调用方
+		// 跳过该候选，而不是断言"无匹配"（断言会导致来源关联被放弃）。
+		return "", false, fmt.Errorf("skill dir scan truncated (too many candidate directories)")
+	}
 	return "", false, nil
 }
 
 // findSkillDirByContent 在远程树中扫描含 SKILL.md 的目录，下载并与本地
 // SKILL.md 字节对比，返回内容一致的首个目录路径（目录名可与本地不同）。
-// 树中无内容一致的技能时返回空串。
-func findSkillDirByContent(ctx context.Context, tree remoteTree, owner, repo, branch, localDir string) (string, error) {
+// 树中无内容一致的技能时返回空串。truncated 表示候选被限量截断，
+// 空结果可能是截断所致而非真正无匹配，调用方应保守处理。
+func findSkillDirByContent(ctx context.Context, tree remoteTree, owner, repo, branch, localDir string) (string, bool, error) {
 	localSKILL, lerr := os.ReadFile(filepath.Join(localDir, "SKILL.md"))
 	if lerr != nil {
-		return "", lerr
+		return "", false, lerr
 	}
 	scanCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -445,7 +492,8 @@ func findSkillDirByContent(ctx context.Context, tree remoteTree, owner, repo, br
 	var found string
 	var firstErr error
 	var wg sync.WaitGroup
-	for _, fp := range skillDirsInTree(tree.files, 30) {
+	dirs, truncated := skillDirsInTree(tree.files, 30)
+	for _, fp := range dirs {
 		fp := fp
 		wg.Add(1)
 		go func() {
@@ -478,28 +526,42 @@ func findSkillDirByContent(ctx context.Context, tree remoteTree, owner, repo, br
 	}
 	wg.Wait()
 	if found != "" {
-		return found, nil
+		return found, truncated, nil
 	}
 	if firstErr != nil {
-		return "", firstErr
+		return "", truncated, firstErr
 	}
-	return "", nil
+	return "", truncated, nil
 }
 
 // remoteSkillMatches 下载远程技能目录的 SKILL.md 并与本地内容字节对比。
+// 本地文件可能被 Windows 编辑器转为 CRLF，git 存储为 LF，对比前归一化，
+// 避免内容一致却判不匹配（导致回填/定位失败或误删来源关联）。
 func remoteSkillMatches(ctx context.Context, tree remoteTree, owner, repo, branch, fullPath string, local []byte) (bool, error) {
-	data, err := downloadRemoteFile(ctx, owner, repo, branch, fullPath+"/SKILL.md",
+	rel := fullPath
+	if rel != "" {
+		rel += "/"
+	}
+	rel += "SKILL.md"
+	data, err := downloadRemoteFile(ctx, owner, repo, branch, rel,
 		tree.source == treeSourceJsDelivr)
 	if err != nil {
 		return false, err
 	}
-	return bytes.Equal(local, data), nil
+	return bytes.Equal(normalizeCRLF(local), data), nil
 }
 
 // skillDirsInTree 返回树中所有含 SKILL.md 的目录路径（排序、去重、限量）。
-func skillDirsInTree(tree map[string]string, max int) []string {
+// 仓库根级 SKILL.md（repo 本身就是技能）以空串表示，必须作为候选，
+// 否则根级技能在内容扫描中永远匹配不到，被误判"来源无效"并删除关联。
+// truncated 表示候选数超过 max 被截断：内容扫描可能漏检排序靠后的目录，
+// 调用方应对"未找到"做保守处理（跳过而非破坏性删除）。
+func skillDirsInTree(tree map[string]string, max int) ([]string, bool) {
 	seen := make(map[string]bool)
 	var out []string
+	if _, ok := tree["SKILL.md"]; ok {
+		out = append(out, "")
+	}
 	for p := range tree {
 		if strings.HasSuffix(p, "/SKILL.md") {
 			dir := strings.TrimSuffix(p, "/SKILL.md")
@@ -512,8 +574,9 @@ func skillDirsInTree(tree map[string]string, max int) []string {
 	sort.Strings(out)
 	if len(out) > max {
 		out = out[:max]
+		return out, true
 	}
-	return out
+	return out, false
 }
 
 // remoteFileURLs 生成同一文件在多个 jsDelivr CDN 主机上的 URL。
@@ -566,6 +629,10 @@ func remoteRawURLs(owner, repo, branch, relPath string) []string {
 // httpGetBody 顺序尝试多个 URL，首个成功返回响应体。
 func httpGetBody(ctx context.Context, urls []string) ([]byte, error) {
 	var lastErr error
+	// 403/429/网络错误非确定性失败：逐个尝试。全部失败后汇总打印一次，
+	// 避免 jsDelivr→GitHub 多候选 URL 各自打一条（如 jsDelivr/CDN/代理
+	// 全被网络拦截时启动即产生几十行 403 噪音日志）。
+	var failures []string
 	for _, u := range urls {
 		body, err := httpGetBodyOne(ctx, u)
 		if err == nil {
@@ -579,7 +646,10 @@ func httpGetBody(ctx context.Context, urls []string) ([]byte, error) {
 			se.status != http.StatusTooManyRequests && se.status != http.StatusForbidden {
 			return nil, err
 		}
-		log.Printf("http get failed (%s): %v", u, err)
+		failures = append(failures, fmt.Sprintf("%s: %v", u, err))
+	}
+	if len(failures) > 0 {
+		log.Printf("http get failed for %d candidate URL(s): %v", len(failures), strings.Join(failures, " | "))
 	}
 	if lastErr == nil {
 		lastErr = fmt.Errorf("no candidate URLs")

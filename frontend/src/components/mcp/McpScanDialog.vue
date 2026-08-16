@@ -167,14 +167,20 @@ async function handleAdd() {
   if (selectedKeys.value.length === 0) return
   importing.value = true
   try {
-    const results = await Promise.allSettled(
-      selectedKeys.value.map(key => {
-        const agentIDs = [...(importConfig.value.get(key) || [])]
-        const item = itemByKey(key)
-        if (!item || agentIDs.length === 0) return Promise.resolve()
-        return mcp.add({ ...item.server, id: '' }, agentIDs)
-      })
-    )
+    // 只对真正发起的请求收集结果：无条目/未选 agent 的跳过项
+    // 不进入 results，避免被计入 successCount（成功数失真）。
+    // pendingKeys 与 pending 一一对应：循环内的跳过项会使下标错位，
+    // 结果回填必须用发起请求时记录的 key，不能反查 selectedKeys
+    const pending: Promise<unknown>[] = []
+    const pendingKeys: string[] = []
+    for (const key of selectedKeys.value) {
+      const agentIDs = [...(importConfig.value.get(key) || [])]
+      const item = itemByKey(key)
+      if (!item || agentIDs.length === 0) continue
+      pending.push(mcp.add({ ...item.server, id: '' }, agentIDs))
+      pendingKeys.push(key)
+    }
+    const results = await Promise.allSettled(pending)
     const failures = results.filter(r => r.status === 'rejected')
     const successCount = results.length - failures.length
     if (successCount > 0) {
@@ -182,9 +188,27 @@ async function handleAdd() {
     }
     if (failures.length > 0) {
       toast.warning(t('mcp.toast.batchAddFailed', { count: failures.length }))
+      // 从待提交集合中移除已成功项：对话框保持打开供用户重试失败项，
+      // 若不移除，重试会再次提交已成功项（后端按 key 归一化报
+      // "already exists"），被误计为失败且真实失败项被淹没
+      const succeededKeys = new Set<string>()
+      results.forEach((r, i) => {
+        if (r.status === 'fulfilled') {
+          succeededKeys.add(pendingKeys[i])
+        }
+      })
+      if (succeededKeys.size > 0) {
+        const next = new Map(importConfig.value)
+        for (const key of succeededKeys) next.delete(key)
+        importConfig.value = next
+      }
     }
     await mcp.fetch()
-    open.value = false
+    // 有失败时不关闭对话框：失败项需要重试入口，直接关闭后用户只能
+    // 重新扫描才能再次操作失败项
+    if (failures.length === 0) {
+      open.value = false
+    }
   } catch (e: unknown) {
     toast.error(toast.fromError(e, t('mcp.toast.addFailed')))
   } finally {
@@ -248,6 +272,7 @@ async function handleAdd() {
                     :checked="selectedKeys.length === newItems.length"
                     :indeterminate="selectedKeys.length > 0 && selectedKeys.length < newItems.length"
                     @change="onToggleSelectAll"
+                    :disabled="importing"
                     class="h-3.5 w-3.5"
                   />
                   {{ t('common.selectAll') }}
@@ -267,6 +292,7 @@ async function handleAdd() {
                       type="checkbox"
                       :checked="isSelected(itemKey(item))"
                       @change="toggleSelect(itemKey(item))"
+                      :disabled="importing"
                       class="mt-0.5 h-4 w-4 shrink-0"
                     />
                     <div class="min-w-0 flex-1">

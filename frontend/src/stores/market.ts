@@ -2,7 +2,6 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { api, ApiError } from '@/lib/api'
 import type { MarketServer, MarketSkill, SearchResultServers, SearchResultSkills } from '@/lib/api'
-import { useSkillsStore } from './skills'
 
 const EMPTY_SERVERS: SearchResultServers = { items: [], total: 0, page: 1, hasMore: false }
 const EMPTY_SKILLS: SearchResultSkills = { items: [], total: 0, page: 1, hasMore: false }
@@ -18,6 +17,7 @@ export const useMarketStore = defineStore('market', () => {
   const loadingServers = ref(false)
   const loadingSkills = ref(false)
   const error = ref<string | null>(null)
+  // loadMore 分页续传时使用最近一次搜索的来源，避免翻页时来源漂移
   const currentSource = ref<string>('official')
   const currentQuery = ref<string>('')
   // Skills 搜索参数缓存，用于 loadMoreSkills
@@ -92,6 +92,10 @@ export const useMarketStore = defineStore('market', () => {
       if (requestId !== serverRequestId) return
       const apiError = ApiError.from(e)
       error.value = apiError.message
+      // 抛出让 LoadMore 感知失败并进入退避冷却：
+      // 否则 loading 复位后 observer 立即重连、sentinel 仍可见 → 立刻再触发
+      // → 再失败，形成无退避的紧循环打爆后端。
+      throw apiError
     } finally {
       if (requestId === serverRequestId) {
         loadingServers.value = false
@@ -124,8 +128,9 @@ export const useMarketStore = defineStore('market', () => {
       const result = await api.market.searchSkills(query, pageSize, 1, source)
       if (requestId !== skillRequestId) return
       skills.value = result
-      // 等待已安装 skills 列表刷新完成，确保市场卡片正确显示「已安装」状态
-      await useSkillsStore().reload()
+      // 已安装状态由安装/卸载动作后的局部刷新与 skills:changed 事件驱动，
+      // 此处不再强制 reload：每次搜索都额外拉取已安装列表会触发
+      // SkillsView 的 loading 闪烁，且与 loadMoreSkills（不刷新）行为分裂
     } catch (e) {
       if (requestId !== skillRequestId) return
       const apiError = ApiError.from(e)
@@ -164,6 +169,8 @@ export const useMarketStore = defineStore('market', () => {
       if (requestId !== skillRequestId) return
       const apiError = ApiError.from(e)
       error.value = apiError.message
+      // 与 loadMore 一致：抛出以触发 LoadMore 退避冷却，避免失败紧循环
+      throw apiError
     } finally {
       if (requestId === skillRequestId) {
         loadingSkills.value = false
@@ -183,7 +190,13 @@ export const useMarketStore = defineStore('market', () => {
 
   // 清空 Skills 搜索结果（用于切换到 skills.sh 来源时不自动搜索）
   function clearSkills() {
+    // 递增请求 ID，使任何在途的 searchSkills/loadMoreSkills 响应过期，
+    // 否则清空后旧来源的响应会重新填充列表，显示错误来源的结果。
+    skillRequestId++
     skills.value = { ...EMPTY_SKILLS }
+    // 在途请求的 finally 因 requestId 不匹配而不会复位 loading（条件复位），
+    // 必须在此显式复位，否则 loadingSkills 永久为 true，搜索按钮/滚动永久禁用。
+    loadingSkills.value = false
   }
 
   function clearCache() {
@@ -196,6 +209,11 @@ export const useMarketStore = defineStore('market', () => {
   // 返回 true 表示成功恢复,false 表示没有缓存需要重新拉取。
   function restoreBaseServers(): boolean {
     if (baseServers.value.items.length === 0) return false
+    // 递增请求 ID，使任何在途的 search/loadMore 响应过期，
+    // 否则恢复缓存后旧搜索的响应会覆盖恢复的列表。
+    serverRequestId++
+    // 与 clearSkills 同理：在途请求的 finally 不会复位 loading，需显式复位
+    loadingServers.value = false
     // 浅拷贝避免与 baseServers 共享引用,防止后续操作互相影响
     servers.value = { ...baseServers.value, items: [...baseServers.value.items] }
     currentQuery.value = ''
@@ -210,7 +228,6 @@ export const useMarketStore = defineStore('market', () => {
     loadingServers,
     loadingSkills,
     error,
-    currentSource,
     currentQuery,
     hasResults,
     hasSkillResults,

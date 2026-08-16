@@ -65,9 +65,11 @@ const conflictSkill = computed(() => {
 })
 const conflict = computed(() => !!conflictSkill.value)
 
-const repoUrl = computed(() =>
-  `https://github.com/${props.skill.repoOwner}/${props.skill.repoName}`,
-)
+// skills.sh 来源无仓库字段，不渲染仓库链接（避免生成 https://github.com// 无效地址）
+const repoUrl = computed(() => {
+  if (!props.skill.repoOwner || !props.skill.repoName) return ''
+  return `https://github.com/${props.skill.repoOwner}/${props.skill.repoName}`
+})
 
 // 在系统默认浏览器中打开仓库链接
 // Wails WebView2 中 <a target="_blank"> 不会触发系统浏览器，必须用 BrowserOpenURL
@@ -83,7 +85,6 @@ async function confirmInstall() {
   try {
     await market.installSkill(props.skill, ids)
     showDialog.value = false
-    await skillsStore.load()
     toast.success(t('skills.toast.installSuccess', { name: props.skill.name }))
   } catch (e) {
     const apiError = ApiError.from(e)
@@ -91,6 +92,13 @@ async function confirmInstall() {
     toast.error(t('market.toast.installFailed', { error: apiError.message }))
   } finally {
     busy.value = false
+  }
+  // 状态刷新移出 try：安装本身已成功，刷新失败只是卡片「已安装」标记暂时
+  // 陈旧，不应被误报为安装失败（用户看到错误可能重试安装 → 后端报已存在）
+  try {
+    await skillsStore.load()
+  } catch {
+    toast.warning(t('skills.toast.refreshFailed'))
   }
 }
 
@@ -136,15 +144,21 @@ async function replaceWithInstall() {
   try {
     await skillsStore.uninstall(skill.id)
     toast.success(t('skills.toast.uninstalled', { name: skill.name }))
-    // 卸载完成后打开 Agent 选择弹窗
-    await skillsStore.load()
-    openDialog()
   } catch (e) {
     const apiError = ApiError.from(e)
     toast.error(t('skills.toast.uninstallFailed', { error: apiError.message }))
-  } finally {
     replacing.value = false
+    return
   }
+  // 卸载成功后的刷新与弹窗打开移出 try：刷新失败不影响流程，
+  // 不应被误报为卸载失败
+  try {
+    await skillsStore.load()
+  } catch {
+    toast.warning(t('skills.toast.refreshFailed'))
+  }
+  openDialog()
+  replacing.value = false
 }
 </script>
 
@@ -183,6 +197,7 @@ async function replaceWithInstall() {
     <CardContent class="space-y-3">
       <div class="flex items-center gap-1.5 text-[11px] text-muted-foreground">
         <button
+          v-if="repoUrl"
           type="button"
           class="truncate font-mono transition-colors hover:text-foreground hover:underline"
           :title="t('skills.viewRepo', { repo: `${skill.repoOwner}/${skill.repoName}` })"
@@ -190,6 +205,7 @@ async function replaceWithInstall() {
         >
           {{ skill.repoOwner }}/{{ skill.repoName }}
         </button>
+        <span v-else class="truncate font-mono text-muted-foreground">{{ skill.name }}</span>
         <template v-if="skill.installs > 0">
           <span class="text-border">·</span>
           <PhDownloadSimple :size="12" />

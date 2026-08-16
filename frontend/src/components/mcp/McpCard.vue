@@ -26,19 +26,20 @@ const toast = useToast()
 const agentGroups = computed(() => agents.mergedGroups)
 
 async function toggleGroup(group: { ids: string[]; id: string }, enabled: boolean) {
-  try {
-    const uniqueIds = [...new Set(group.ids)]
-    const results = await Promise.allSettled(
-      uniqueIds.map((agentId) => mcp.toggleAgent(props.server.id, agentId, enabled))
-    )
-    const failures = results.filter((r) => r.status === 'rejected')
-    if (failures.length > 0) {
-      const msg = failures.map((r) => (r as PromiseRejectedResult).reason?.message || t('mcp.toast.toggleFailed')).join('; ')
-      toast.warning(t('mcp.toast.toggleBindingPartialFailed', { error: msg }))
+  // 串行提交而非 Promise.all：共享 configPath 的 agent（合并组）在后端
+  // 各自 Update 同一配置文件，并行请求会产生中间态（前一个写完后
+  // 广播 mcp:changed，卡片刷新读到未完成的绑定），串行保持一致性
+  const failures: unknown[] = []
+  for (const agentId of [...new Set(group.ids)]) {
+    try {
+      await mcp.toggleAgent(props.server.id, agentId, enabled)
+    } catch (e) {
+      failures.push(e)
     }
-  } catch (e) {
-    const apiError = ApiError.from(e)
-    toast.error(t('mcp.toast.toggleBindingFailed', { error: apiError.message }))
+  }
+  if (failures.length > 0) {
+    const msg = failures.map((r) => (r as Error)?.message || t('mcp.toast.toggleFailed')).join('; ')
+    toast.warning(t('mcp.toast.toggleBindingPartialFailed', { error: msg }))
   }
 }
 
@@ -73,8 +74,11 @@ async function handleRemove() {
           <p v-if="server.description" class="mt-0.5 text-xs text-muted-foreground">
             {{ server.description }}
           </p>
-          <div class="mt-2 flex items-center gap-1.5">
-            <code class="rounded bg-muted px-1.5 py-0.5 font-mono text-[11px] text-foreground">
+          <div class="mt-2 flex min-w-0 items-center gap-1.5">
+            <code
+              :title="`${server.command} ${(server.args || []).join(' ')}`"
+              class="block max-w-full truncate rounded bg-muted px-1.5 py-0.5 font-mono text-[11px] text-foreground"
+            >
               {{ server.command }} {{ (server.args || []).join(' ') }}
             </code>
           </div>

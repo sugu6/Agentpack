@@ -51,7 +51,10 @@ func BackfillSkillSources(ctx context.Context, directories []string) (map[string
 			defer func() { <-sem }()
 			qctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 			defer cancel()
-			res, err := fetcher.Search(qctx, SearchOptions{Query: dir, PageSize: 20})
+			// 单页 20 条可能漏掉真实来源仓库（skills.sh 按相关性排序，不保证
+			// 目标仓库排在前 20）；API 支持 limit=100（PageSize<=0 表示全量），
+			// 用 100 覆盖绝大多数仓库，之后按下载量取 top maxBackfillCandidates。
+			res, err := fetcher.Search(qctx, SearchOptions{Query: dir, PageSize: 100})
 			if err != nil {
 				log.Printf("skills.sh backfill search for %q: %v", dir, err)
 				return

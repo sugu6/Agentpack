@@ -33,7 +33,7 @@ export function agentLogoInvertClass(id: string): string {
 }
 
 export function statusVariant(status: string): BadgeVariant {
-  if (status === 'enabled') return 'success'
+  if (status === 'enabled' || status === 'detected') return 'success'
   if (status === 'error') return 'destructive'
   return 'secondary'
 }
@@ -41,6 +41,7 @@ export function statusVariant(status: string): BadgeVariant {
 export function statusLabel(status: string): string {
   const map: Record<string, string> = {
     enabled: 'agents.enabled',
+    detected: 'agents.detected',
     disabled: 'agents.disabled',
     not_found: 'agents.notFound',
     error: 'agents.error',

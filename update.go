@@ -3,14 +3,17 @@ package main
 import (
 	"context"
 	_ "embed"
-	"encoding/json"
+	"encoding/xml"
 	"fmt"
+	"html"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -33,6 +36,15 @@ const maxDownloadDuration = 30 * time.Minute
 
 // maxReleaseBodySize 限制 GitHub release API 响应体大小（1MB），防止异常响应撑爆内存。
 const maxReleaseBodySize = 1 << 20
+
+// updateCheckTTL 距上次成功检查后，复用缓存结果而不再请求 GitHub API 的时长。
+// GitHub 未认证 API 限制为 60 次/小时/IP；配合端上"每会话仅启动静默检查一次"，
+// 10 分钟 TTL 将单实例的检查频率压到 ≤6 次/小时，避免触发限流。
+const updateCheckTTL = 10 * time.Minute
+
+// updateCheckRateLimitBackoff 上次检查命中限流(403/429)后的退避时长。
+// 限流状态下继续请求只会继续触发限流，用更长退避让限流窗口过去再重试。
+const updateCheckRateLimitBackoff = 30 * time.Minute
 
 // downloadHTTPClient 用于更新包下载：Transport 设置 ResponseHeaderTimeout，
 // 防止服务器接受连接后不响应头部导致的永久阻塞；总时长由 startDownload 的
@@ -86,34 +98,138 @@ func currentAppVersion() string {
 	return "0.0.0"
 }
 
-type githubRelease struct {
-	TagName     string         `json:"tag_name"`
-	Name        string         `json:"name"`
-	Body        string         `json:"body"`
-	HTMLURL     string         `json:"html_url"`
-	PreRelease  bool           `json:"prerelease"`
-	Draft       bool           `json:"draft"`
-	PublishedAt string         `json:"published_at"`
-	Assets      []releaseAsset `json:"assets"`
+// atomFeed / atomEntry 解析 GitHub releases.atom 订阅源。
+// 该订阅源由 GitHub 静态托管，不受 REST API 的未认证限流（60 次/小时/IP）限制，
+// 是"检查更新"的限流无忧来源。首条 entry 通常为最新发布。
+type atomFeed struct {
+	XMLName xml.Name    `xml:"feed"`
+	Entries []atomEntry `xml:"entry"`
 }
 
-type releaseAsset struct {
-	Name               string `json:"name"`
-	BrowserDownloadURL string `json:"browser_download_url"`
-	ContentType        string `json:"content_type"`
-	Size               int    `json:"size"`
+type atomEntry struct {
+	ID      string      `xml:"id"`
+	Updated string      `xml:"updated"`
+	Links   []atomLink  `xml:"link"`
+	Title   string      `xml:"title"`
+	Content atomContent `xml:"content"`
 }
 
-func (a *App) CheckUpdate() (*UpdateCheckResult, error) {
+type atomLink struct {
+	Rel  string `xml:"rel,attr"`
+	Type string `xml:"type,attr"`
+	Href string `xml:"href,attr"`
+}
+
+type atomContent struct {
+	Type string `xml:"type,attr"`
+	Body string `xml:",innerxml"`
+}
+
+// CheckUpdate 检查是否有新版本。带 singleflight + 时间缓存：
+//   - singleflight：启动静默检查（App.vue onMounted）与 Settings 页手动检查可能
+//     并发触发，重复发起会导致两次 GitHub API 请求和两次 app:update-available
+//     事件；waiter 直接复用首者的结果。
+//   - 时间缓存：距上次检查仍在 TTL/限流退避窗口内时，直接复用缓存结果，不再
+//     请求 GitHub API，避免高频次反复请求触发未认证限流（60 次/小时/IP）。
+func (a *App) CheckUpdate() (res *UpdateCheckResult, err error) {
+	// 先取语言，供缓存命中时按当前语言重生成消息（避免与 a.mu 嵌套加锁）
+	a.mu.RLock()
+	lang := i18n.ResolveLanguage(a.cfg.Settings.Language)
+	a.mu.RUnlock()
+
+	a.checkUpdateMu.Lock()
+	if a.checkUpdateCh != nil {
+		ch := a.checkUpdateCh
+		a.checkUpdateMu.Unlock()
+		res := <-ch
+		return res.result, res.err
+	}
+	// 缓存命中：直接复用上次结果
+	if cached := a.updateCheckCached(lang); cached != nil {
+		a.checkUpdateMu.Unlock()
+		return cached.result, cached.err
+	}
+	ch := make(chan checkUpdateRes, 1)
+	a.checkUpdateCh = ch
+	a.checkUpdateMu.Unlock()
+
+	// panic 兜底：checkUpdateInternal 意外 panic 时 waiter 会永久阻塞
+	// wails 调用线程且 checkUpdateCh 不清零（后续检查全部排队等待）。
+	// 命名返回值 + recover：归还状态并把 panic 作为错误投递给 waiter。
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("check update panic: %v", r)
+			a.checkUpdateMu.Lock()
+			a.checkUpdateCh = nil
+			a.checkUpdateMu.Unlock()
+			ch <- checkUpdateRes{err: err}
+		}
+	}()
+
+	out := a.checkUpdateInternal()
+
+	// 写入缓存供后续检查复用（限流结果使用更长的退避窗口）
+	a.checkUpdateMu.Lock()
+	a.updateCheckAt = time.Now()
+	a.updateCheckRateLtd = out.rateLimited
+	a.updateCheckResult = out.result
+	a.updateCheckMsgKey = out.msgKey
+	a.updateCheckMsgArgs = out.msgArgs
+	a.updateCheckErr = out.err
+	a.checkUpdateCh = nil
+	a.checkUpdateMu.Unlock()
+	ch <- checkUpdateRes{result: out.result, err: out.err}
+	return out.result, out.err
+}
+
+type checkUpdateRes struct {
+	result *UpdateCheckResult
+	err    error
+}
+
+// updateCheckCached 返回缓存的上次检查结果（若仍在有效期内），否则返回 nil。
+// 调用方须持有 checkUpdateMu。命中时用当前语言重生成消息，避免缓存来自
+// 不同语言设置时的文案错位。
+func (a *App) updateCheckCached(lang string) *checkUpdateRes {
+	if a.updateCheckResult == nil && a.updateCheckErr == nil {
+		return nil
+	}
+	ttl := updateCheckTTL
+	if a.updateCheckRateLtd {
+		ttl = updateCheckRateLimitBackoff
+	}
+	if time.Since(a.updateCheckAt) >= ttl {
+		return nil
+	}
+	out := &checkUpdateRes{err: a.updateCheckErr}
+	if a.updateCheckResult != nil {
+		cp := *a.updateCheckResult
+		cp.Message = i18n.T(lang, a.updateCheckMsgKey, a.updateCheckMsgArgs)
+		out.result = &cp
+	}
+	return out
+}
+
+// checkUpdateInternalOut 是 checkUpdateInternal 的返回载体，附带消息 i18n 信息
+// 与是否限流标记，供 CheckUpdate 写入缓存。
+type checkUpdateInternalOut struct {
+	result      *UpdateCheckResult
+	msgKey      string
+	msgArgs     map[string]interface{}
+	rateLimited bool
+	err         error
+}
+
+func (a *App) checkUpdateInternal() checkUpdateInternalOut {
 	current := currentAppVersion()
 	a.mu.RLock()
 	lang := i18n.ResolveLanguage(a.cfg.Settings.Language)
 	a.mu.RUnlock()
 
-	// GitHub API 直连,不走代理:
-	// gh-proxy.com 等公共代理共享 IP 调用 api.github.com 极易触发 403 限流,
-	// 导致永远拿不到 release 数据。文件下载在 StartDownloadUpdate 中单独走代理。
-	url := fmt.Sprintf("https://api.github.com/repos/%s/releases/latest", githubRepo)
+	// 使用 GitHub releases.atom 静态订阅源而非 REST API：
+	// atom 订阅源不受未认证 API 限流影响，可放心频繁检查而不触发"请求过于频繁"。
+	// 直连 github.com（不走代理），与更新包下载解耦；下载仍在 StartDownloadUpdate 走代理。
+	url := fmt.Sprintf("https://github.com/%s/releases.atom", githubRepo)
 
 	var lastErr error
 	for attempt := 0; attempt < 3; attempt++ {
@@ -128,7 +244,7 @@ func (a *App) CheckUpdate() (*UpdateCheckResult, error) {
 			lastErr = err
 			continue
 		}
-		req.Header.Set("Accept", "application/vnd.github+json")
+		req.Header.Set("Accept", "application/atom+xml")
 		req.Header.Set("User-Agent", fmt.Sprintf("AgentPack/%s (%s; %s)", current, runtime.GOOS, runtime.GOARCH))
 
 		resp, err := http.DefaultClient.Do(req)
@@ -138,134 +254,174 @@ func (a *App) CheckUpdate() (*UpdateCheckResult, error) {
 			continue
 		}
 
-		if resp.StatusCode == http.StatusNotFound {
-			cancel()
-			resp.Body.Close()
-			return &UpdateCheckResult{
-				HasUpdate:      false,
-				CurrentVersion: current,
-				LatestVersion:  current,
-				Message:        i18n.T(lang, "update.message.noRelease"),
-			}, nil
-		}
-
-		if resp.StatusCode == 403 || resp.StatusCode == 429 {
-			cancel()
-			resp.Body.Close()
-			return &UpdateCheckResult{
-				HasUpdate:      false,
-				CurrentVersion: current,
-				LatestVersion:  current,
-				Message:        i18n.T(lang, "update.message.rateLimited"),
-			}, nil
-		}
-
-		if resp.StatusCode != http.StatusOK {
-			body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-			cancel()
-			resp.Body.Close()
-			lastErr = fmt.Errorf("GitHub API 返回 %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
-			continue
-		}
-
-		var release githubRelease
 		body, rerr := io.ReadAll(io.LimitReader(resp.Body, maxReleaseBodySize+1))
 		resp.Body.Close()
 		cancel()
+
+		if resp.StatusCode == http.StatusNotFound {
+			return checkUpdateInternalOut{
+				result: &UpdateCheckResult{
+					HasUpdate:      false,
+					CurrentVersion: current,
+					LatestVersion:  current,
+					Message:        i18n.T(lang, "update.message.noRelease"),
+				},
+				msgKey: "update.message.noRelease",
+			}
+		}
+
+		if resp.StatusCode == 403 || resp.StatusCode == 429 {
+			// atom 一般不进限流，但稳妥起见按限流退避处理
+			return checkUpdateInternalOut{
+				result: &UpdateCheckResult{
+					HasUpdate:      false,
+					CurrentVersion: current,
+					LatestVersion:  current,
+					Message:        i18n.T(lang, "update.message.rateLimited"),
+				},
+				msgKey:      "update.message.rateLimited",
+				rateLimited: true,
+			}
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			lastErr = fmt.Errorf("GitHub atom feed 返回 %d", resp.StatusCode)
+			continue
+		}
 		if rerr != nil {
 			lastErr = rerr
 			continue
 		}
 		if len(body) > maxReleaseBodySize {
-			lastErr = fmt.Errorf("release response body exceeds %d bytes", maxReleaseBodySize)
+			lastErr = fmt.Errorf("release feed body exceeds %d bytes", maxReleaseBodySize)
 			continue
 		}
-		if err := json.Unmarshal(body, &release); err != nil {
+
+		var feed atomFeed
+		if err := xml.Unmarshal(body, &feed); err != nil {
 			lastErr = err
 			continue
 		}
 
-		latest := strings.TrimPrefix(release.TagName, "v")
-		hasUpdate := compareVersions(current, latest) < 0
-
-		downloadURL, downloadName := "", ""
-		downloadSize := 0
-		if hasUpdate {
-			if asset := matchPlatformAsset(release.Assets); asset != nil {
-				downloadURL = asset.BrowserDownloadURL
-				downloadSize = asset.Size
-				downloadName = asset.Name
+		// 取最新"正式版"（跳过预发布后缀），与 REST /releases/latest 语义一致
+		var entry *atomEntry
+		for i := range feed.Entries {
+			tag := atomEntryTag(&feed.Entries[i])
+			version := strings.TrimPrefix(tag, "v")
+			if version != "" && preReleaseSuffix(version) == "" {
+				entry = &feed.Entries[i]
+				break
+			}
+		}
+		// 无任何正式版发布视为"无发布"
+		if entry == nil {
+			return checkUpdateInternalOut{
+				result: &UpdateCheckResult{
+					HasUpdate:      false,
+					CurrentVersion: current,
+					LatestVersion:  current,
+					Message:        i18n.T(lang, "update.message.noRelease"),
+				},
+				msgKey: "update.message.noRelease",
 			}
 		}
 
+		tag := atomEntryTag(entry)
+		latest := strings.TrimPrefix(tag, "v")
+		hasUpdate := compareVersions(current, latest) < 0
+
+		// atom 不携带资产下载链接，按 CI 命名规则确定性构造；体积未知(0)，由下载进度回填
+		downloadURL, downloadName := "", ""
+		if hasUpdate {
+			downloadURL, downloadName = buildDownloadAsset(latest)
+		}
+
+		msgKey := "update.message.latest"
+		msgArgs := map[string]interface{}{"version": current}
 		message := i18n.T(lang, "update.message.latest", map[string]interface{}{"version": current})
 		if hasUpdate {
+			msgKey = "update.message.hasUpdate"
+			msgArgs = map[string]interface{}{"version": latest}
 			message = i18n.T(lang, "update.message.hasUpdate", map[string]interface{}{"version": latest})
 		}
 
-		return &UpdateCheckResult{
-			HasUpdate:      hasUpdate,
-			CurrentVersion: current,
-			LatestVersion:  latest,
-			Message:        message,
-			Changelog:      release.Body,
-			ReleaseURL:     release.HTMLURL,
-			DownloadURL:    downloadURL,
-			DownloadSize:   downloadSize,
-			DownloadName:   downloadName,
-		}, nil
+		return checkUpdateInternalOut{
+			result: &UpdateCheckResult{
+				HasUpdate:      hasUpdate,
+				CurrentVersion: current,
+				LatestVersion:  latest,
+				Message:        message,
+				Changelog:      html.UnescapeString(entry.Content.Body),
+				ReleaseURL:     atomEntryReleaseURL(entry),
+				DownloadURL:    downloadURL,
+				DownloadSize:   0,
+				DownloadName:   downloadName,
+			},
+			msgKey:  msgKey,
+			msgArgs: msgArgs,
+		}
 	}
 
-	return &UpdateCheckResult{
-		HasUpdate:      false,
-		CurrentVersion: current,
-		LatestVersion:  current,
-		Message:        i18n.T(lang, "update.message.networkFailed", map[string]interface{}{"error": lastErr.Error()}),
-	}, nil
+	return checkUpdateInternalOut{
+		result: &UpdateCheckResult{
+			HasUpdate:      false,
+			CurrentVersion: current,
+			LatestVersion:  current,
+			Message:        i18n.T(lang, "update.message.networkFailed", map[string]interface{}{"error": lastErr.Error()}),
+		},
+		msgKey:  "update.message.networkFailed",
+		msgArgs: map[string]interface{}{"error": lastErr.Error()},
+	}
 }
 
-func matchPlatformAsset(assets []releaseAsset) *releaseAsset {
-	goos := runtime.GOOS
-	goarch := runtime.GOARCH
-	platform := fmt.Sprintf("%s-%s", goos, goarch)
-	// 精确匹配 goos-goarch（如 "windows-amd64"、"linux-arm64"）
-	for i := range assets {
-		if strings.Contains(assets[i].Name, platform) {
-			return &assets[i]
+// atomEntryTag 从 atom entry 提取发布 tag（如 "v1.2.3"）。优先取 alternate 链接
+// /releases/tag/ 后的部分；取不到则回退到 id 的最后一段。
+func atomEntryTag(e *atomEntry) string {
+	for _, l := range e.Links {
+		if l.Rel == "alternate" {
+			if i := strings.LastIndex(l.Href, "/releases/tag/"); i >= 0 {
+				return l.Href[i+len("/releases/tag/"):]
+			}
 		}
 	}
-	// OS 别名匹配（如 darwin → macos-universal）
-	alias := goos
+	if i := strings.LastIndex(e.ID, "/"); i >= 0 {
+		return e.ID[i+1:]
+	}
+	return ""
+}
+
+// atomEntryReleaseURL 返回发布的 HTML 页面 URL。
+func atomEntryReleaseURL(e *atomEntry) string {
+	for _, l := range e.Links {
+		if l.Rel == "alternate" && l.Href != "" {
+			return l.Href
+		}
+	}
+	return ""
+}
+
+// buildDownloadAsset 按 CI 命名规则确定性构造安装包下载 URL 与文件名，
+// 与 .github/workflows/build.yml 的产物命名保持一致，无需依赖 API 资产列表。
+func buildDownloadAsset(version string) (url, name string) {
+	return buildDownloadAssetFor(version, runtime.GOOS, runtime.GOARCH)
+}
+
+// buildDownloadAssetFor 是 buildDownloadAsset 的平台参数化版本，便于测试覆盖各端。
+func buildDownloadAssetFor(version, goos, goarch string) (url, name string) {
+	v := version
+	var asset string
 	switch goos {
+	case "windows":
+		asset = fmt.Sprintf("AgentPack-%s-windows-%s-installer.exe", v, goarch)
 	case "darwin":
-		alias = "macos"
+		asset = fmt.Sprintf("AgentPack-%s-macos-universal.dmg", v)
+	case "linux":
+		asset = fmt.Sprintf("AgentPack-%s-linux-%s.tar.gz", v, goarch)
+	default:
+		return "", ""
 	}
-	aliasPlatform := fmt.Sprintf("%s-%s", alias, goarch)
-	for i := range assets {
-		if strings.Contains(assets[i].Name, aliasPlatform) {
-			return &assets[i]
-		}
-	}
-	// OS-only 匹配（用于 universal 构建等场景）
-	osPrefix := goos + "-"
-	for i := range assets {
-		if strings.Contains(assets[i].Name, osPrefix) && !strings.Contains(assets[i].Name, "Source code") {
-			return &assets[i]
-		}
-	}
-	aliasPrefix := alias + "-"
-	for i := range assets {
-		if strings.Contains(assets[i].Name, aliasPrefix) && !strings.Contains(assets[i].Name, "Source code") {
-			return &assets[i]
-		}
-	}
-	// 最终兜底：第一个非 Source code 的 asset
-	for i := range assets {
-		if !strings.Contains(assets[i].Name, "Source code") {
-			return &assets[i]
-		}
-	}
-	return nil
+	base := fmt.Sprintf("https://github.com/%s/releases/download/v%s/%s", githubRepo, v, asset)
+	return base, asset
 }
 
 func compareVersions(a, b string) int {
@@ -290,7 +446,79 @@ func compareVersions(a, b string) int {
 			return 1
 		}
 	}
+	// 数字部分相同：预发布版本（含 "-" 后缀，如 1.2.3-beta）排在正式版之后。
+	// parseVersionParts 会把 "1.2.3-beta" 与 "1.2.3" 解析成相同的 [1,2,3]，
+	// 若不在此区分，正式版发布时会被误判为"无更新"。
+	aPre := preReleaseSuffix(a)
+	bPre := preReleaseSuffix(b)
+	switch {
+	case aPre == "" && bPre != "":
+		return 1
+	case aPre != "" && bPre == "":
+		return -1
+	case aPre != "" && bPre != "":
+		if c := comparePreRelease(aPre, bPre); c != 0 {
+			return c
+		}
+	}
 	return 0
+}
+
+// comparePreRelease 按 semver 规则比较两个预发布后缀：
+// 以 "." 分段；数字段按数值比较（beta.10 > beta.2）；字母段按 ASCII；
+// 数字标识符 < 字母标识符；短后缀 < 长后缀（同一前缀时）。
+
+// preReleaseSuffix 返回版本字符串的预发布后缀（"-" 之后的部分），无后缀返回 ""。
+func preReleaseSuffix(v string) string {
+	if idx := strings.Index(v, "-"); idx >= 0 {
+		return v[idx+1:]
+	}
+	return ""
+}
+
+func comparePreRelease(a, b string) int {
+	as := strings.Split(a, ".")
+	bs := strings.Split(b, ".")
+	for i := 0; ; i++ {
+		if i >= len(as) && i >= len(bs) {
+			return 0
+		}
+		var av, bv string
+		if i < len(as) {
+			av = as[i]
+		}
+		if i < len(bs) {
+			bv = bs[i]
+		}
+		if av == bv {
+			continue
+		}
+		if av == "" {
+			return -1
+		}
+		if bv == "" {
+			return 1
+		}
+		an, aErr := strconv.Atoi(av)
+		bn, bErr := strconv.Atoi(bv)
+		aIsNum, bIsNum := aErr == nil, bErr == nil
+		switch {
+		case aIsNum && bIsNum:
+			if an < bn {
+				return -1
+			}
+			return 1
+		case aIsNum:
+			return -1
+		case bIsNum:
+			return 1
+		default:
+			if av < bv {
+				return -1
+			}
+			return 1
+		}
+	}
 }
 
 func (a *App) GetAppVersion() string {
@@ -372,10 +600,16 @@ func (a *App) startDownload(url string, offset int64, resume bool) error {
 		// 在持锁状态下读取保存的续传参数并完成状态转换
 		url = a.downloadURL
 		offset = a.downloadOffset
-		if url == "" || offset <= 0 {
+		if url == "" {
 			a.mu.Unlock()
 			cancel()
 			return fmt.Errorf("no saved download position")
+		}
+		// 暂停发生在 0 字节（请求尚未返回就点了暂停）时保存的 offset==0：
+		// 若在此拒绝，状态停留在 Paused 且 URL 不清空，用户再点恢复必然再次
+		// 失败，永久卡死；退化为从头下载（os.Create 覆盖同一临时文件）保持续传语义。
+		if offset < 0 {
+			offset = 0
 		}
 		a.downloadPausedFile = ""
 	}
@@ -386,23 +620,30 @@ func (a *App) startDownload(url string, offset int64, resume bool) error {
 	}
 	a.downloadCtx = ctx
 	a.downloadCancel = cancel
-	a.mu.Unlock()
-
-	if err := a.beginInFlight(); err != nil {
-		// 应用已进入关闭流程：复位状态，避免残留 Downloading 状态
+	a.downloadDone = make(chan struct{})
+	done := a.downloadDone
+	// in-flight 登记必须在同一临界区内完成：若在解锁后登记，此窗口内
+	// CancelDownload 可并发取消 ctx 并把状态复位为 Idle，随后 goroutine
+	// 仍带着已取消的 ctx 启动，用户取消后仍会收到下载失败事件。
+	if err := a.beginInFlightLocked(); err != nil {
+		a.mu.Unlock()
 		cancel()
+		close(done)
 		a.mu.Lock()
 		a.downloadState = DownloadStateIdle
 		a.downloadOffset = 0
 		a.downloadURL = ""
 		a.downloadCancel = nil
+		a.downloadDone = nil
 		a.mu.Unlock()
 		return err
 	}
+	a.mu.Unlock()
 
 	go func() {
 		defer a.endInFlight()
 		defer cancel()
+		defer close(done)
 		a.mu.RLock()
 		lang := i18n.ResolveLanguage(a.cfg.Settings.Language)
 		a.mu.RUnlock()
@@ -414,8 +655,20 @@ func (a *App) startDownload(url string, offset int64, resume bool) error {
 			a.emit("update:download:error", map[string]string{"message": i18n.T(lang, msgKey, args)})
 		}
 
+		// 在发起请求前确定临时文件路径：resume 时暂停文件（dlPath + ".downloading"）
+		// 已存在，若请求构造/网络/状态码等后续分支失败仅 emitError 而不清理，
+		// 且 downloadPausedFile 已被清空、状态已置 Error，该文件将永久残留
+		// 在 Downloads 目录（下次同 URL 下载靠 os.Create 覆盖才能回收）。
+		// 剥离 query：代理改写后的 URL 可能带 ?xxx 参数，filepath.Base 不会
+		// 去掉它，Windows 上 os.Create 对含 ? 的文件名直接失败
+		dlName := strings.Split(filepath.Base(url), "?")[0]
+		dlPath := filepath.Join(downloadDir(), dlName)
+		dlTmpPath := dlPath + ".downloading"
+		removeTmp := func() { os.Remove(dlTmpPath) }
+
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 		if err != nil {
+			removeTmp()
 			emitError("update.download.failed", map[string]interface{}{"error": err.Error()})
 			return
 		}
@@ -426,12 +679,14 @@ func (a *App) startDownload(url string, offset int64, resume bool) error {
 
 		resp, err := downloadHTTPClient.Do(req)
 		if err != nil {
+			removeTmp()
 			emitError("update.download.failed", map[string]interface{}{"error": err.Error()})
 			return
 		}
 		defer resp.Body.Close()
 
 		if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
+			removeTmp()
 			emitError("update.download.serverError", map[string]interface{}{"code": resp.StatusCode})
 			return
 		}
@@ -443,18 +698,17 @@ func (a *App) startDownload(url string, offset int64, resume bool) error {
 				totalExpected += offset
 			}
 			if totalExpected > maxUpdateDownloadSize {
+				removeTmp()
 				emitError("update.download.failed", map[string]interface{}{"error": fmt.Sprintf("file too large: %d bytes (max %d)", totalExpected, maxUpdateDownloadSize)})
 				return
 			}
 		}
 
-		fileName := filepath.Base(url)
-		if fileName == "." || fileName == ".." {
+		if dlName == "." || dlName == ".." {
+			removeTmp()
 			emitError("update.download.failed", map[string]interface{}{"error": "invalid download filename"})
 			return
 		}
-		dlPath := filepath.Join(downloadDir(), fileName)
-		dlTmpPath := dlPath + ".downloading"
 
 		// 服务器忽略 Range（返回 200）时无法续传，退化为从头下载
 		resumed := offset > 0 && resp.StatusCode == http.StatusPartialContent
@@ -463,10 +717,24 @@ func (a *App) startDownload(url string, offset int64, resume bool) error {
 		if resumed {
 			f, err = os.OpenFile(dlTmpPath, os.O_APPEND|os.O_WRONLY, 0600)
 			if err == nil {
-				downloaded = offset
+				// 校验临时文件实际大小与记录的偏移一致，防止暂停期间文件被
+				// 外部截断/覆盖后以错误偏移追加（产生重叠或空洞的损坏文件）。
+				if fi, statErr := f.Stat(); statErr != nil || fi.Size() != offset {
+					f.Close()
+					f = nil
+				} else {
+					downloaded = offset
+				}
 			}
 		}
 		if f == nil {
+			// 续传目标文件缺失或尺寸不符：无法安全消费 206 流（该流从 offset 起），
+			// 必须从头重新请求。当前响应直接作废。
+			if resumed {
+				os.Remove(dlTmpPath)
+				emitError("update.download.failed", map[string]interface{}{"error": "cannot resume: temp file missing or size mismatch"})
+				return
+			}
 			os.Remove(dlTmpPath)
 			f, err = os.Create(dlTmpPath)
 			if err != nil {
@@ -489,8 +757,11 @@ func (a *App) startDownload(url string, offset int64, resume bool) error {
 
 		lastTime := time.Now()
 		lastBytes := downloaded
-		removeTmp := func() { os.Remove(dlTmpPath) }
-		buf := make([]byte, 32*1024)
+		// 读缓冲越大越能摊薄 syscall / 循环开销。在高速链路上 32KB 会明显
+		// 跑不满带宽（尤其经 gh-proxy.com 这类远端拉取再回传的代理连接），
+		// 256KB 是吞吐与内存占用间的合理折衷；暂停/取消仍在每次 Read 之间检查，
+		// 256KB 填充耗时在慢速链路上最多数百毫秒，可接受。
+		buf := make([]byte, 256*1024)
 
 		for {
 			// 暂停：保留临时文件与偏移量，等待 ResumeDownload
@@ -498,6 +769,14 @@ func (a *App) startDownload(url string, offset int64, resume bool) error {
 				atomic.StoreInt32(&a.paused, 0)
 				f.Close()
 				f = nil // 置 nil，避免 defer 对同一句柄二次 Close
+				// 取消竞态：暂停请求与 CancelDownload 并发时，若取消已经触发
+				// （ctx 已 done），禁止把状态"复活"回 Paused——否则 downloadURL 已被
+				// CancelDownload 清空，ResumeDownload 报 "no saved download position"，
+				// 用户永远无法再恢复。
+				if ctx.Err() != nil {
+					removeTmp()
+					return
+				}
 				a.mu.Lock()
 				a.downloadPausedFile = dlTmpPath
 				a.downloadOffset = downloaded
@@ -511,13 +790,24 @@ func (a *App) startDownload(url string, offset int64, resume bool) error {
 					"downloaded": downloaded,
 					"total":      totalSize,
 					"percent":    percent,
-					"fileName":   fileName,
+					"fileName":   dlName,
 				})
 				return
 			}
 			select {
 			case <-ctx.Done():
 				removeTmp()
+				// 区分主动取消与超时：主动取消由 CancelDownload 复位状态并清理，
+				// 超时（30min 上限）则必须复位状态并通知前端，否则状态残留
+				// Downloading 导致 UI 永久卡死且后续下载被并发守卫拒绝。
+				if ctx.Err() == context.DeadlineExceeded {
+					a.mu.Lock()
+					a.downloadState = DownloadStateError
+					a.downloadURL = ""
+					a.downloadOffset = 0
+					a.mu.Unlock()
+					emitError("update.download.failed", map[string]interface{}{"error": fmt.Sprintf("download timed out after %s", maxDownloadDuration)})
+				}
 				return
 			default:
 			}
@@ -552,11 +842,36 @@ func (a *App) startDownload(url string, offset int64, resume bool) error {
 				}
 			}
 			if readErr == io.EOF {
+				// 完整性校验：已知总大小时必须校验下载字节数，防止服务器提前断开
+				// 或 CDN 截断导致的残缺文件被当作完成安装包。
+				if totalSize > 0 && downloaded != totalSize {
+					removeTmp()
+					emitError("update.download.failed", map[string]interface{}{"error": fmt.Sprintf("incomplete download: got %d bytes, expected %d", downloaded, totalSize)})
+					return
+				}
+				// 分块传输（无 Content-Length，totalSize <= 0）时无法获知预期大小，
+				// 但至少拒绝 0 字节的"空完成"（安装包不可能为空；续传场景
+				// downloaded=offset>0 天然通过）。
+				if totalSize <= 0 && downloaded == 0 {
+					removeTmp()
+					emitError("update.download.failed", map[string]interface{}{"error": "empty download: server sent no data"})
+					return
+				}
 				break
 			}
 			if readErr != nil {
 				// 用户主动取消（CancelDownload）时静默退出，不再把状态改写为 Error，
 				// 避免取消后 UI 仍收到"下载失败"的错误事件。
+				if ctx.Err() == context.DeadlineExceeded {
+					removeTmp()
+					a.mu.Lock()
+					a.downloadState = DownloadStateError
+					a.downloadURL = ""
+					a.downloadOffset = 0
+					a.mu.Unlock()
+					emitError("update.download.failed", map[string]interface{}{"error": fmt.Sprintf("download timed out after %s", maxDownloadDuration)})
+					return
+				}
 				if ctx.Err() != nil {
 					removeTmp()
 					return
@@ -587,7 +902,7 @@ func (a *App) startDownload(url string, offset int64, resume bool) error {
 		// 不自动启动安装程序与退出：由前端提示用户确认后调用 InstallUpdate
 		a.emit("update:download:complete", map[string]interface{}{
 			"filePath": dlPath,
-			"fileName": fileName,
+			"fileName": dlName,
 		})
 	}()
 
@@ -629,17 +944,25 @@ func (a *App) InstallUpdate() error {
 
 	go func() {
 		time.Sleep(1 * time.Second)
-		a.Quit()
+		// 安装程序启动后必须退出主程序（Windows 安装器需覆盖正在运行的 exe）。
+		// 不走 a.Quit()：其 inFlight 门控会拦截退出——安装/备份等后台任务在途时
+		// 应用永远不退出，安装器覆盖失败。此处直接放行（跳过 inFlight 检查），
+		// ServiceShutdown 内部仍有 5s 在途任务等待 + 2s 下载清理兜底。
+		a.mu.Lock()
+		a.allowClose = true
+		a.mu.Unlock()
+		a.wailsApp.Quit()
 	}()
 	return nil
 }
 
 func (a *App) CancelDownload() error {
 	a.mu.Lock()
-	defer a.mu.Unlock()
+	var done chan struct{}
 	if a.downloadCancel != nil {
 		a.downloadCancel()
 		a.downloadCancel = nil
+		done = a.downloadDone
 	}
 	// 暂停状态下取消：主动删除保留的临时文件
 	if a.downloadPausedFile != "" {
@@ -650,6 +973,19 @@ func (a *App) CancelDownload() error {
 	a.downloadOffset = 0
 	a.downloadURL = ""
 	atomic.StoreInt32(&a.paused, 0)
+	a.mu.Unlock()
+
+	// 等待旧下载 goroutine 完全退出后再返回，确保其 removeTmp/defer 清理
+	// 不会与紧接着的 StartDownloadUpdate 竞争同一临时文件。
+	// 下载 goroutine 的 ctx 有 30 分钟上限但取消后应秒退；3 秒兜底防止
+	// 极端卡死（网络读不返回）时此调用无限阻塞应用退出流程。
+	if done != nil {
+		select {
+		case <-done:
+		case <-time.After(3 * time.Second):
+			log.Printf("CancelDownload: download goroutine did not exit within 3s, tmp cleanup may race next download")
+		}
+	}
 	return nil
 }
 

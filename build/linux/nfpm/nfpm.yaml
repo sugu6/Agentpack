@@ -6,7 +6,7 @@
 name: "AgentPack"
 arch: ${GOARCH}
 platform: "linux"
-version: "0.2.3"
+version: "0.2.4"
 section: "default"
 priority: "extra"
 maintainer: "sugu6 <sugu6@users.noreply.github.com>"

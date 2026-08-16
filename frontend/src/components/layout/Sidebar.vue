@@ -17,9 +17,9 @@ const settings = useSettingsStore()
 const skills = useSkillsStore()
 
 const nav = computed(() => [
-  { to: '/', label: 'Agents', icon: PhRobot, badge: agents.detected.length },
-  { to: '/mcp', label: 'MCP', icon: PhPlugs, badge: mcp.total },
-  { to: '/skills', label: 'Skills', icon: PhSparkle, badge: skills.skills.length },
+  { to: '/', label: t('nav.agents'), icon: PhRobot, badge: agents.detected.length },
+  { to: '/mcp', label: t('nav.mcp'), icon: PhPlugs, badge: mcp.total },
+  { to: '/skills', label: t('nav.skills'), icon: PhSparkle, badge: skills.skills.length },
   { to: '/market', label: t('nav.market'), icon: PhStorefront },
   { to: '/settings', label: t('nav.settings'), icon: PhGearSix },
 ])

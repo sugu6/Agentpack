@@ -331,3 +331,22 @@ func TestDetectedAgentIDs(t *testing.T) {
 		}
 	}
 }
+
+func TestSkillDirCache_EmptyHomeDisablesAll(t *testing.T) {
+	// 模拟主目录解析失败（Windows 优先 USERPROFILE，再 HOMEDRIVE+HOMEPATH）
+	t.Setenv("USERPROFILE", "")
+	t.Setenv("HOMEDRIVE", "")
+	t.Setenv("HOMEPATH", "")
+	t.Setenv("HOME", "")
+	ResetSkillDirCacheForTesting()
+	defer ResetSkillDirCacheForTesting()
+
+	if homeDir() != "" {
+		t.Skip("home dir still resolvable in this environment")
+	}
+	for id, dir := range skillDirCache {
+		if dir != "" {
+			t.Fatalf("agent %s: expected empty skills dir when home is unavailable, got %q", id, dir)
+		}
+	}
+}

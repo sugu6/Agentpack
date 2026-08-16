@@ -7,6 +7,38 @@
 
 ## [Unreleased]
 
+## [0.2.4] - 2026-08-16
+
+### 特性
+
+- **更新下载支持暂停/恢复/取消**：下载中可暂停并保留临时文件，继续下载通过 HTTP `Range` 断点续传；取消下载实时清理临时文件，不再误报失败
+- **重启并安装**：下载完成后按钮改为「重启并安装」，点击后关闭应用并启动安装程序完成更新
+- **关闭保护**：有任务（下载/更新检查等）进行时阻止窗口关闭，并提示「有任务正在进行」
+- **NSIS 记住上次安装位置**：升级/重装时恢复上次安装目录，卸载时清理注册表残留
+- **设置失败回滚**：保存设置失败时回滚内存配置并同步恢复自动备份 hook，避免「前端已失败但设置/备份静默失效」的不一致
+
+### 变更
+
+- GitHub 技能仓库列举重构：优先走 jsDelivr data API（flat tree），失败自动回退 GitHub API；默认分支兜底（存储分支 ∪ main/master），避免 CDN 限流或分支名不一致导致技能数量锐减
+- 更新检查增加 singleflight + 结果缓存：避免高频请求 GitHub API（未认证 60 次/小时/IP）触发限流
+- 备份：默认导出目录与快照表均按 retention 清理旧文件/旧快照，防止无限累积；批量导入/恢复期间挂起自动备份 hook（Suppress），避免逐条也快照把历史手动快照挤出配额
+- MCP 受管基线：配置文件单条解析失败时保留基线中该受管条目，等配置修复后下一次正常 Load 再清理，避免管理状态与绑定静默丢失
+- GitHub 技能安装分支兜底：逐个候选分支尝试，每个候选独立 90 秒子预算，实际命中分支落库
+- CI：Windows 签名顺序修复（build → sign exe → package:signed → sign installer），新增 `windows:package:signed` 任务不对已签名 exe 重建
+- 市场请求增加请求 ID（requestId）防竞态：切换搜索/加载更多时丢弃过期响应
+
+### 修复
+
+- MCP 表单编辑时丢弃 `sourceId` / 硬编码 `source:manual`，编辑已纳管服务器会丢失来源
+- 设置页保存拆分发起的写入竞态（`ensureLoaded` / 待写队列），避免旧快照回滚并发新增数据
+- Market / Skill 市场卡片 URL 与 stars 提示未走 i18n
+- Skills 视图遗留死变量导致刷新逻辑判断异常
+- 技能来源回填：skill 标识缺少 `skill:` 前缀导致仓库来源映射失败
+- 备份回滚（rollbackUpdate）误删保留 Agent 的配置文件
+- tar/zip 技能解压未应用权限掩码（`&^ 0022`），可能继承过宽的包内权限
+- 应用退出时下载 goroutine 未取消导致 `Downloads` 目录残留 `.downloading` 临时文件
+- `.gitignore` 忽略路径错误（`build/bin` → 根目录 `bin/`）
+
 ## [0.2.3] - 2026-08-13
 
 ### 特性
@@ -247,7 +279,8 @@ AgentPack 的初始版本，一款面向 AI 编码工具的统一 MCP / Skills /
 [0.1.2]: https://github.com/sugu6/Agentpack/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/sugu6/Agentpack/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/sugu6/Agentpack/releases/tag/v0.1.0
-[Unreleased]: https://github.com/sugu6/Agentpack/compare/v0.2.3...HEAD
+[Unreleased]: https://github.com/sugu6/Agentpack/compare/v0.2.4...HEAD
+[0.2.4]: https://github.com/sugu6/Agentpack/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/sugu6/Agentpack/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/sugu6/Agentpack/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/sugu6/Agentpack/compare/v0.2.0...v0.2.1

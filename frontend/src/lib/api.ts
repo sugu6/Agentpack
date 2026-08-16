@@ -159,6 +159,8 @@ export interface McpServer {
   transport: string
   configType?: string
   url?: string
+  headers?: Record<string, string>
+  enabled?: boolean
   timeout?: number
   source: string
   sourceId?: string
@@ -435,7 +437,9 @@ export const api = {
     openUrl: (url: string) => {
       // 仅允许 http/https，防止恶意 scheme（如 file://、javascript:）被交给系统打开器执行。
       if (!/^https?:\/\//i.test(url)) return
-      safeCall(() => OpenURL(url))
+      // safeCall 只转换错误类型不吞错：未处理的 rejection 会产生 unhandledrejection
+      // 告警，且用户点击无任何反馈；显式 catch 静默（打开浏览器失败非关键路径）
+      safeCall(() => OpenURL(url)).catch(() => {})
     },
     quit: () => safeCall(() => Quit()),
     hideWindow: () => safeCall(() => HideWindow()),

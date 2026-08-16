@@ -98,29 +98,30 @@ wails3 dev
 ### 4. 构建生产版本
 
 ```bash
-# Windows 构建
+# Windows 构建（生成 bin/AgentPack.exe）
 wails3 task windows:build
 
-# macOS 构建
+# macOS 构建（生成 bin/AgentPack）
 wails3 task darwin:build
 
-# Linux 构建
+# macOS Universal 构建（Intel + Apple Silicon 合并）
+wails3 task darwin:build:universal
+
+# Linux 构建（生成 bin/AgentPack）
 wails3 task linux:build
 
-# 生成 Windows NSIS 安装包
+# Windows 打包 NSIS 安装包（依赖 windows:build）
 wails3 task windows:package
 
-# macOS 打包（需在 macOS 上执行）
-wails3 task darwin:package        # 生成 .app 应用包
-wails3 task darwin:package:dmg    # 生成带背景/图标样式的 .dmg 安装包
+# macOS 打包（需在 macOS 上执行；依赖 darwin:build）
+wails3 task darwin:package          # 生成 .app 应用包
+wails3 task darwin:package:universal  # 用 Universal 二进制打包 .app
+
+# Linux 打包（生成 AppImage / deb / rpm / Arch 包）
+wails3 task linux:package
 ```
 
-DMG 外观可通过任务变量定制（`DMG_BACKGROUND` 背景图、`DMG_VOLUME_ICON` 卷图标、
-`DMG_FILE_ICON` 文件图标、`DMG_WINDOW_WIDTH/HEIGHT` Finder 窗口尺寸、
-`DMG_FILES` 附加文件），例如：
-`wails3 task darwin:package:dmg -- --DMG_BACKGROUND ./my-background.png`
-
-构建产物位于 `build/bin/` 目录下。
+构建产物位于 `bin/` 目录下。
 
 ## 项目结构
 

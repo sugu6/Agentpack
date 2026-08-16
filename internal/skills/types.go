@@ -1,11 +1,11 @@
 package skills
 
 type Skill struct {
-	ID          string   `json:"id"`
-	Name        string   `json:"name"`
-	Description string   `json:"description,omitempty"`
-	Directory   string   `json:"directory"`
-	ContentHash string   `json:"contentHash,omitempty"`
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	Directory   string `json:"directory"`
+	ContentHash string `json:"contentHash,omitempty"`
 	// SkillMdHash 是 SKILL.md 单文件的内容哈希（算法与市场侧一致），
 	// 供市场页做内容级已安装匹配；ContentHash 是全目录哈希，两侧无法比较。
 	SkillMdHash string   `json:"skillMdHash,omitempty"`

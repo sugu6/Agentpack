@@ -2,6 +2,7 @@ package agents
 
 import (
 	"path/filepath"
+	"runtime"
 )
 
 type TraeAdapter struct{}
@@ -41,6 +42,8 @@ func (a *TraeAdapter) Detect() *DetectInfo {
 	return BuildDetectInfo(hasIDE, false, false, hasConfig, VariantIDE, configPath)
 }
 
+// findConfigPath 返回存在的候选配置路径；全部不存在时按平台返回 Trae
+// 真实读取的默认路径。
 func (a *TraeAdapter) findConfigPath(h string) string {
 	candidates := []string{
 		filepath.Join(h, "AppData", "Roaming", "Trae", "User", "mcp.json"),
@@ -55,7 +58,15 @@ func (a *TraeAdapter) findConfigPath(h string) string {
 	if found := FirstExistingFile(candidates); found != "" {
 		return found
 	}
-	// 没有任何候选文件存在时，返回第一个候选路径作为默认配置路径，
-	// 确保 MCP Store 知道写入位置。AgentPack 会在首次写入时创建此文件。
-	return candidates[len(candidates)-1]
+	// 没有任何候选文件存在时，按平台返回 Trae 实际读取的真实配置路径：
+	// ~/.trae/mcp.json 是 AgentPack 自造路径，Trae 不会加载——新装
+	// （从未运行过、无配置目录）的用户在此写入 MCP 配置后 Trae 完全
+	// 感知不到，功能静默失效。
+	if runtime.GOOS == "darwin" {
+		return candidates[1]
+	}
+	if runtime.GOOS == "linux" {
+		return candidates[2]
+	}
+	return candidates[0]
 }

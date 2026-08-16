@@ -2,7 +2,7 @@
 </script>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onActivated, onDeactivated } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useSettingsStore } from '@/stores/settings'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription, Switch, Button, Separator, Input, Label, Tabs, TabsList, TabsTrigger, Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter, Checkbox, RadioGroup, RadioGroupItem } from '@/components/ui'
 
@@ -23,6 +23,10 @@ const backupLoading = ref<'create' | 'export' | 'import' | null>(null)
 const updateChecking = ref(false)
 const updateResult = ref<UpdateCheckResult | null>(null)
 let saveDirty = false
+// 数字输入防抖定时器（backupRetention / liteAutoDelay）：组件卸载时
+// 清除，避免离开设置页后仍在保存。
+const retentionTimer = ref<ReturnType<typeof setTimeout> | null>(null)
+const liteDelayTimer = ref<ReturnType<typeof setTimeout> | null>(null)
 
 // 版本号（从后端 API 获取）
 const appVersion = ref('')
@@ -36,26 +40,19 @@ const importDialog = ref({
   applySettings: false,
 })
 
-// 监听 settings:changed 事件，导入设置后刷新前端状态
-let offSettingsChanged: (() => void) | null = null
+// settings:changed 已由 App.vue 全局监听驱动 settings.fetch()，
+// 此处不再重复订阅（双订阅会产生两倍并发请求与无序覆盖窗口）。
 onMounted(() => {
   // 主动拉取一次设置，防止 store 在其他页面操作后陈旧
   void settings.fetch()
   // 从后端获取版本号
   api.system.getAppVersion().then(v => { appVersion.value = v }).catch(() => {})
 })
-// KeepAlive 下用 onActivated/onDeactivated 管理事件订阅，避免缓存视图与 App.vue 双重处理
-onActivated(() => {
-  offSettingsChanged = events.on('settings:changed', () => {
-    void settings.fetch()
-  })
-})
-onDeactivated(() => {
-  if (offSettingsChanged) offSettingsChanged()
-})
 
-const MIN_RETENTION = 1
-const MAX_RETENTION = 100
+// 0 是合法值：后端 backupRetention=0 表示无限保留。MIN 取 0 而不是 1，
+  // 否则 UI 会把用户手写/迁移的 0 静默 clamp 成 1，无限保留策略被破坏。
+  const MIN_RETENTION = 0
+  const MAX_RETENTION = 100
 const MIN_LITE_DELAY = 1
 const MAX_LITE_DELAY = 120
 
@@ -83,7 +80,10 @@ async function autoSave(previous?: ReturnType<typeof cloneConfig>) {
   try {
     await settings.update(cloneConfig())
   } catch (e: unknown) {
-    if (previous) {
+    // 仅在无排队变更时回滚到本次变更前：saveDirty 意味着保存期间又产生了
+    // 新变更（它们已 mutate 到 config），此时回滚 previous 会把那些排队变更
+    // 一并抹掉，且后续 saveDirty 重放保存的是回滚后的旧值，用户输入彻底丢失。
+    if (previous && !saveDirty) {
       settings.setConfig(previous)
       settings.applyTheme(previous.theme)
     }
@@ -129,11 +129,18 @@ function setLiteAutoEnabled(v: boolean) {
 }
 
 function setLiteAutoDelay(v: string | number) {
+  // 数字输入防抖（见 setBackupRetention）：逐字符保存会清空市场缓存、
+  // 触发全局 fetch，300ms 合并为一次保存。
+  if (v === '' || v === null || v === undefined) return
   const parsed = Number(v)
   const value = Number.isFinite(parsed)
     ? Math.min(Math.max(Math.trunc(parsed), MIN_LITE_DELAY), MAX_LITE_DELAY)
     : MIN_LITE_DELAY
-  withAutoSave(cfg => { cfg.liteAutoDelay = value })
+  if (liteDelayTimer.value) clearTimeout(liteDelayTimer.value)
+  liteDelayTimer.value = setTimeout(() => {
+    liteDelayTimer.value = null
+    withAutoSave(cfg => { cfg.liteAutoDelay = value })
+  }, 300)
 }
 
 function setMarketSource(key: string, v: boolean) {
@@ -172,14 +179,41 @@ async function confirmMigrate() {
     const count = result?.migrated ?? 0
     const next = cloneConfig()
     next.skillStorage = target as 'agentpack' | 'unified'
-    await settings.update(next)
-    toast.success(t('settings.skills.migrateDialog.success', { count }))
+    try {
+      await settings.update(next)
+      toast.success(t('settings.skills.migrateDialog.success', { count }))
+    } catch (e) {
+      // 迁移已执行但配置保存失败：不能假设磁盘在哪个目录。
+      // 后端 applySettingsLocked 在 config.Save 失败时会把目录迁移一并
+      // 回滚（磁盘=旧目录=配置，一致）；但若失败发生在网络层（请求未到
+      // 后端），文件已在新目录而配置仍指向旧目录，重启后技能列表"凭空
+      // 消失"。先 fetch 真实配置，若配置仍指向旧目录则主动把文件迁回，
+      // 保证磁盘与配置一致。
+      try {
+        await settings.fetch()
+      } catch { /* 后端不可达时保持现状 */ }
+      const actual = settings.config.skillStorage
+      if (actual && actual !== target) {
+        try {
+          const back = await api.skills.migrateStorage(actual)
+          if (back?.errors?.length) {
+            throw new Error(back.errors.join('; '))
+          }
+        } catch (mErr) {
+          // 迁回失败：磁盘与配置不一致，重启后技能列表可能消失，必须警告
+          toast.error(t('settings.skills.migrateDialog.persistFailed', {
+            error: `${String(e)}；目录回滚失败：${String(mErr)}`,
+          }))
+          return
+        }
+      }
+      // 不显示 success toast——warning 已说明迁移执行情况，
+      // 再弹 success 会稀释失败警告。
+      toast.warning(t('settings.skills.migrateDialog.persistFailed', { error: String(e) }))
+    }
   } catch (e) {
+    // 迁移本身失败：后端 MigrateStorage 已回滚目录与指针，界面保持原样
     toast.error(t('settings.skills.migrateDialog.error', { error: String(e) }))
-    const revert = migrateDialog.value.from === '~/.agentpack/skills/' ? 'agentpack' : 'unified'
-    const rollback = cloneConfig()
-    rollback.skillStorage = revert as 'agentpack' | 'unified'
-    settings.setConfig(rollback)
   } finally {
     migrateDialog.value.migrating = false
     migrateDialog.value.open = false
@@ -192,12 +226,22 @@ function setSkillSyncMethod(v: string) {
 }
 
 function setBackupRetention(v: string | number) {
+  // 输入框清空（''）不保存：Number('')=0 会被 clamp 成合法的 0（无限保留），
+  // 用户在编辑途中清空字段会意外改变保留策略。
+  if (v === '' || v === null || v === undefined) return
   const parsed = Number(v)
   const value = Number.isFinite(parsed) ? Math.min(Math.max(Math.trunc(parsed), MIN_RETENTION), MAX_RETENTION) : MIN_RETENTION
-  withAutoSave(cfg => {
-    cfg.backupRetention = value
-    cfg.backupCount = value
-  })
+  // 数字输入防抖：逐字符触发完整保存 = 后端 config.Save + 市场缓存清理 +
+  // settings:changed 全局 fetch，输入 "500" 会保存三次并反复清缓存。
+  // 300ms 合并为一次保存（clamp 值在保存时生效）。
+  if (retentionTimer.value) clearTimeout(retentionTimer.value)
+  retentionTimer.value = setTimeout(() => {
+    retentionTimer.value = null
+    withAutoSave(cfg => {
+      cfg.backupRetention = value
+      cfg.backupCount = value
+    })
+  }, 300)
 }
 
 
@@ -283,9 +327,14 @@ async function openConfigFolder() {
   }
 }
 
+// checkUpdateMinMs 保证"检查更新"按钮的 checking 状态至少展示该时长。
+// 后端命中缓存时检查几乎瞬时返回，若不加最低时长，按钮旋转动画会一闪而过、几乎看不见。
+const checkUpdateMinMs = 600
+
 async function checkUpdate() {
   updateChecking.value = true
   updateResult.value = null
+  const startedAt = Date.now()
   try {
     const result = await api.system.checkUpdate()
     updateResult.value = result
@@ -303,6 +352,9 @@ async function checkUpdate() {
     const apiError = ApiError.from(e)
     toast.error(t('settings.toast.checkUpdateFailed', { error: apiError.message }), { duration: 5000 })
   } finally {
+    // 补足最低展示时长，避免缓存命中时按钮旋转动画一闪而过
+    const remain = checkUpdateMinMs - (Date.now() - startedAt)
+    if (remain > 0) await new Promise((r) => setTimeout(r, remain))
     updateChecking.value = false
   }
 }
@@ -355,15 +407,22 @@ function parseRepoUrl(url: string): { owner: string; name: string; branch: strin
 }
 
 async function refreshSkillRepos() {
-  const fresh = await api.settings.get()
-  settings.config.skillRepos = fresh.skillRepos ?? []
-  // 标记仓库列表变更，让 Market 页面挂载时检测并刷新
-  settings.markSkillReposChanged()
-  // 通知市场页面重新搜索 skills（后端已清理缓存）
-  events.emit('skills:repos-changed')
+  // 独立 try/catch：这里是"添加/删除成功后的界面刷新"，读取失败不应
+  // 让外层 catch 把已成功的操作报告为失败（用户重试会收到"已存在"）。
+  try {
+    const fresh = await api.settings.get()
+    settings.config.skillRepos = fresh.skillRepos ?? []
+    // 标记仓库列表变更，让 Market 页面挂载时检测并刷新
+    settings.markSkillReposChanged()
+    // 通知市场页面重新搜索 skills（后端已清理缓存）
+    events.emit('skills:repos-changed')
+  } catch (e) {
+    console.warn('refresh skill repos after mutation failed:', e)
+  }
 }
 
 async function addSkillRepo() {
+  if (repoBusy.value) return
   const parsed = parseRepoUrl(newRepo.value.url)
   if (!parsed) {
     repoError.value = t('settings.skills.invalidRepoUrl')
@@ -385,6 +444,7 @@ async function addSkillRepo() {
 }
 
 async function removeSkillRepo(repo: SkillRepo) {
+  if (repoBusy.value) return
   repoBusy.value = true
   repoError.value = null
   try {
@@ -413,6 +473,7 @@ function cancelEditRepo() {
 }
 
 async function saveEditRepo() {
+  if (repoBusy.value) return
   if (!editingRepo.value) return
   const parsed = parseRepoUrl(editForm.value.url)
   if (!parsed) {
@@ -436,6 +497,13 @@ async function saveEditRepo() {
     repoBusy.value = false
   }
 }
+
+onUnmounted(() => {
+  // 清除防抖定时器：离开设置页后不再触发保存（挂起的修改保持未保存状态，
+  // 下次进入页面时重新加载显示）
+  if (retentionTimer.value) clearTimeout(retentionTimer.value)
+  if (liteDelayTimer.value) clearTimeout(liteDelayTimer.value)
+})
 
 // 市场来源的展示元数据：分为 MCP 和 Skills 两类
 const marketSourceTabs = computed(() => ({
@@ -789,9 +857,10 @@ const marketSourceList = computed(() => {
         <div class="flex items-center justify-between">
           <Label>{{ t('settings.backup.retention') }}</Label>
           <Input
-            :model-value="String(settings.config.backupRetention || settings.config.backupCount)"
+            :model-value="String(settings.config.backupRetention)"
             type="number"
             class="w-20"
+            :min="0"
             @update:model-value="setBackupRetention"
           />
         </div>
@@ -845,7 +914,7 @@ const marketSourceList = computed(() => {
               <span>{{ t('settings.update.changelog') }}</span>
             </Button>
             <Button variant="outline" size="sm" :disabled="updateChecking" @click="checkUpdate">
-              <PhArrowsClockwise :size="14" :class="{ 'animate-spin': updateChecking }" />
+              <PhArrowsClockwise :size="14" :class="{ 'animate-spin [animation-duration:1.2s]': updateChecking }" />
               <span>{{ updateChecking ? t('settings.update.checking') : t('settings.update.checkUpdate') }}</span>
             </Button>
           </div>

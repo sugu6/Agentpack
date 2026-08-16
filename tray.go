@@ -2,6 +2,7 @@ package main
 
 import (
 	_ "embed"
+	"log"
 
 	"agentpack/internal/i18n"
 
@@ -44,7 +45,11 @@ func setupTray(wailsApp *application.App, app *App) *application.SystemTray {
 	menu.AddSeparator()
 	trayQuitItem = menu.Add(i18n.T(lang, "tray.quit"))
 	trayQuitItem.OnClick(func(ctx *application.Context) {
-		app.Quit()
+		// 有任务在途时 Quit 拒绝退出（返回错误），此时仅记录日志；
+		// 前端若打开则已收到 app:close-blocked 事件提示用户等待
+		if err := app.Quit(); err != nil {
+			log.Printf("tray quit blocked: %v", err)
+		}
 	})
 
 	// 后端自动进入/退出轻量模式时，回写复选框状态
@@ -64,11 +69,14 @@ func syncTrayLiteState(on bool) {
 	if trayLiteItem == nil {
 		return
 	}
-	if trayLiteItem.Checked() == on {
-		return
-	}
+	// Checked() 读取与 SetChecked 写入都必须在 UI 线程串行化：
+	// wails v3 的 MenuItem.checked 是无锁裸字段，而本函数可能被
+	// time.AfterFunc 计时器 goroutine（lite.go 空闲切换）或托盘点击回调
+	// （独立 goroutine 分发）调用，与 UI 线程读写同一字段构成数据竞争。
 	application.InvokeAsync(func() {
-		trayLiteItem.SetChecked(on)
+		if trayLiteItem.Checked() != on {
+			trayLiteItem.SetChecked(on)
+		}
 	})
 }
 

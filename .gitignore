@@ -1,4 +1,4 @@
-build/bin
+bin/
 node_modules
 frontend/dist
 frontend/wailsjs
@@ -26,5 +26,3 @@ docs/
 .worktrees/
 .superpowers/.git-commit-msg.txt
 *.syso
-diff_all.txt
-diff_frontend.txt

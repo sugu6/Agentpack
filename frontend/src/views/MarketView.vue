@@ -42,7 +42,7 @@ const total = computed(() => market.servers.total)
 const skillTotal = computed(() => market.skills.total)
 
 // 固定展示所有已知 transport 类型,避免因首页分页未加载到某类型(如 streamable-http)而隐藏筛选选项
-const transportOptions = ['stdio', 'sse', 'streamable-http']
+const transportOptions = ['stdio', 'sse', 'http', 'streamable-http']
 
 // transport 筛选在前端做(从已加载的 items 累积过滤)。
 // registry API 不支持 transport 筛选参数,后端只做 API cursor 分页,
@@ -83,6 +83,12 @@ onActivated(() => {
   unsubscribeMcpChanged = events.on('mcp:changed', onMcpChanged)
   // 若首次初始化在异步等待中被 deactivate 打断，这里补跑，避免列表一直为空
   ensureInit()
+  // 已初始化后再次激活也要检查版本号：在 Settings 页改仓库期间发出的
+  // skills:repos-changed 事件因无监听者而丢失，仅靠事件订阅会停留在陈旧列表。
+  // isSkillReposChanged() 每次调用消费版本号，只有变化时才触发刷新。
+  if (initialized.value && settings.isSkillReposChanged()) {
+    onReposChanged()
+  }
 })
 
 onDeactivated(() => {
@@ -106,11 +112,14 @@ function ensureInit(): Promise<void> {
 async function initView(): Promise<void> {
   await settings.ensureLoaded()
   if (!mounted.value) return
-  if (settings.isSkillReposChanged()) {
-    await onReposChanged()
-  }
+  // 先修正源、再检查仓库变化：onReposChanged 会以 skillSource 发起搜索，
+  // 若 github 禁用、skills-sh 启用，默认 'github' 会请求已禁用源，
+  // 且该请求发起于源修正之前不会被丢弃（守卫只看 skillSource 与开关）
   if (!githubEnabled.value && skillsShEnabled.value) {
     skillSource.value = 'skills-sh'
+  }
+  if (settings.isSkillReposChanged()) {
+    await onReposChanged()
   }
   // 初始加载 MCP 服务器列表(API cursor 分页,transport 筛选由前端 computed 过滤)
   if (mcpSourceAvailable.value) {
@@ -127,6 +136,10 @@ async function onSearch() {
   if (!mcpSourceAvailable.value) return
   if (searching.value) return
   query.value = query.value.trim()
+  // 搜索语义变化时清掉 transport 筛选：筛选是针对搜索前结果集的本地
+  // 状态，保留会与搜索结果混用——API 有数据但 computed 筛空，显示空
+  // 网格 + LoadMore 仍在渲染，用户误以为加载有问题。
+  transportFilter.value = ''
   searching.value = true
   try {
     // 最小加载显示 300ms，确保 spinner 可见，避免搜索太快无反馈
@@ -145,6 +158,8 @@ async function onSearch() {
 function restoreServersIfEmpty() {
   if (!mcpSourceAvailable.value) return
   if (market.currentQuery === '') return
+  // 恢复全部列表同时清掉 transport 筛选（见 onSearch 注释）
+  transportFilter.value = ''
   if (!market.restoreBaseServers()) {
     market.search('registry', '', '', PAGE_SIZE)
   }
@@ -160,7 +175,9 @@ watch(query, (val) => {
 // 注意:hasMore 基于 API 的 hasMore(不是筛选后的),所以即使筛选后结果很少,LoadMore 仍会继续加载。
 
 async function searchGithubSkills() {
-  if (skillSource.value !== 'github' || !skillsSourceEnabled.value) return
+  // 源守卫必须精确：github 源被禁用时不得发起搜索（skillsSourceEnabled
+  // 是 OR 合并，仅 skills-sh 启用时它仍为 true，会让守卫误放行）
+  if (skillSource.value !== 'github' || !githubEnabled.value) return
   skillsSearched.value = true
   await market.searchSkills('', PAGE_SIZE, skillSource.value)
 }
@@ -176,6 +193,11 @@ function onMcpChanged() {
 watch(mode, (newMode) => {
   if (newMode === 'skills') {
     searchGithubSkills()
+  } else {
+    // 切回 servers tab 时清掉 transport 筛选：筛选是上一轮结果集的
+    // 本地状态（见 onSearch 注释），跨 tab 保留会与重新进入后的
+    // 结果集混用——API 有数据但 computed 筛空，显示空网格 + LoadMore
+    transportFilter.value = ''
   }
 })
 
@@ -231,7 +253,7 @@ async function onSkillSearch() {
             </TabsTrigger>
             <TabsTrigger value="skills" :disabled="!skillsSourceEnabled">
               <PhSparkle :size="13" class="mr-1.5" />
-              Skills
+              {{ t('nav.skills') }}
               <span v-if="skillTotal > 0" class="ml-1.5 text-[10px] text-muted-foreground">{{ skillTotal }}</span>
             </TabsTrigger>
           </TabsList>
@@ -301,7 +323,7 @@ async function onSkillSearch() {
                 </EmptyHeader>
               </Empty>
 
-              <div v-else class="grid grid-cols-1 gap-4 lg:grid-cols-2 transition-opacity duration-200" :class="{ 'opacity-60 pointer-events-none': market.loadingServers && !hasResults }">
+              <div v-else class="grid grid-cols-1 gap-4 transition-opacity duration-200 lg:grid-cols-2">
                 <MarketCard
                   v-for="server in filteredServers"
                   :key="server.sourceId"
@@ -360,7 +382,10 @@ async function onSkillSearch() {
                 </Button>
               </form>
 
-              <p v-if="skillQuery.trim().length > 0 && skillQuery.trim().length < 2" class="text-xs text-muted-foreground">
+              <p
+                v-if="skillSource === 'skills-sh' && skillQuery.trim().length > 0 && skillQuery.trim().length < 2"
+                class="text-xs text-muted-foreground"
+              >
                 {{ t('market.skillsShMinLength') }}
               </p>
 
@@ -409,7 +434,7 @@ async function onSkillSearch() {
           :loaded="serversLoaded"
           :total="transportFilter ? 0 : market.servers.total"
           :scroll-root="scrollContainer"
-          @load-more="market.loadMore()"
+          :load-more-fn="() => market.loadMore()"
         />
         <LoadMore
           v-if="mode === 'skills' && hasSkillResults"
@@ -418,7 +443,7 @@ async function onSkillSearch() {
           :loaded="skillsLoaded"
           :total="market.skills.total"
           :scroll-root="scrollContainer"
-          @load-more="market.loadMoreSkills()"
+          :load-more-fn="() => market.loadMoreSkills()"
         />
 
         <p v-if="market.error" class="mt-4 text-xs text-destructive">

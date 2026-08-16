@@ -93,50 +93,65 @@ func extractZip(zipPath, dest string) error {
 		if f.UncompressedSize64 > maxZipEntrySize {
 			return fmt.Errorf("zip entry %s too large: %d bytes (max %d)", f.Name, f.UncompressedSize64, maxZipEntrySize)
 		}
-		totalSize += f.UncompressedSize64
+		if totalSize+f.UncompressedSize64 > maxZipTotalSize {
+			return fmt.Errorf("zip total uncompressed size exceeds limit: %d bytes (max %d)", totalSize+f.UncompressedSize64, maxZipTotalSize)
+		}
+		written, err := extractZipEntry(f, dest, destAbs)
+		if err != nil {
+			return err
+		}
+		// 累计实际写入字节：声明值 UncompressedSize64 可被篡改，以实际为准。
+		// 必须用实际值再查一次总量——预检只按声明值拦截，恶意 zip 可虚报声明
+		// 值让预检通过，实际解压总量超过 maxZipTotalSize（zip bomb 防护缺口）。
+		totalSize += uint64(written)
 		if totalSize > maxZipTotalSize {
 			return fmt.Errorf("zip total uncompressed size exceeds limit: %d bytes (max %d)", totalSize, maxZipTotalSize)
-		}
-		if err := extractZipEntry(f, dest, destAbs); err != nil {
-			return err
 		}
 	}
 	return nil
 }
 
-func extractZipEntry(f *zip.File, dest, destAbs string) error {
-	// 清理路径并验证不包含 ..（防止 Zip Slip）
+// extractZipEntry 安全解压单个 zip 条目，防止 Zip Slip（路径穿越）。
+// 返回实际写入的字节数（目录条目返回 0），供调用方累计真实解压总量。
+func extractZipEntry(f *zip.File, dest, destAbs string) (int64, error) {
+	// 清理路径并逐段验证，拒绝 ".." 段（防 Zip Slip）。
+	// 不用 Contains 子串判断，避免误拒 "foo..bar" 这类合法文件名。
 	name := filepath.FromSlash(f.Name)
-	if strings.Contains(name, "..") {
-		return fmt.Errorf("zip entry contains path traversal: %s", f.Name)
+	for _, seg := range strings.Split(name, string(filepath.Separator)) {
+		if seg == ".." {
+			return 0, fmt.Errorf("zip entry contains path traversal: %s", f.Name)
+		}
 	}
 
 	target := filepath.Join(dest, name)
 	targetAbs, err := filepath.Abs(target)
 	if err != nil {
-		return fmt.Errorf("resolve target abs: %w", err)
+		return 0, fmt.Errorf("resolve target abs: %w", err)
 	}
 	if !isWithinDir(targetAbs, destAbs) {
-		return fmt.Errorf("zip entry escapes dest dir: %s", f.Name)
+		return 0, fmt.Errorf("zip entry escapes dest dir: %s", f.Name)
 	}
 
 	if f.FileInfo().IsDir() {
-		return os.MkdirAll(target, 0755)
+		return 0, os.MkdirAll(target, 0755)
 	}
 
 	if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
-		return fmt.Errorf("create parent dir: %w", err)
+		return 0, fmt.Errorf("create parent dir: %w", err)
 	}
 
 	rc, err := f.Open()
 	if err != nil {
-		return fmt.Errorf("open zip entry %s: %w", f.Name, err)
+		return 0, fmt.Errorf("open zip entry %s: %w", f.Name, err)
 	}
 	defer rc.Close()
 
-	w, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	// 权限收敛：与 tarball 解压一致，去除 group/other 写位（&^ 0022），
+	// 防止恶意 zip 声明 0777 传播到 SSOT/agent 技能目录。
+	perm := f.FileInfo().Mode().Perm() &^ 0022
+	w, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, perm)
 	if err != nil {
-		return fmt.Errorf("create file %s: %w", target, err)
+		return 0, fmt.Errorf("create file %s: %w", target, err)
 	}
 	defer w.Close()
 
@@ -144,12 +159,12 @@ func extractZipEntry(f *zip.File, dest, destAbs string) error {
 	// 写入量超过上限时必须报错，不能静默截断后安装一个损坏的 skill。
 	written, err := io.Copy(w, io.LimitReader(rc, maxZipEntrySize+1))
 	if err != nil {
-		return fmt.Errorf("write file %s: %w", target, err)
+		return 0, fmt.Errorf("write file %s: %w", target, err)
 	}
 	if written > maxZipEntrySize {
-		return fmt.Errorf("zip entry %s exceeds size limit: more than %d bytes", f.Name, maxZipEntrySize)
+		return 0, fmt.Errorf("zip entry %s exceeds size limit: more than %d bytes", f.Name, maxZipEntrySize)
 	}
-	return nil
+	return written, nil
 }
 
 // isWithinDir 检查 target 是否在 base 目录内（含 base 本身）。

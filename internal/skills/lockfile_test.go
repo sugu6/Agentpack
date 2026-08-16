@@ -348,3 +348,56 @@ func TestRemoveAgentsLockEntry_NotFoundIsIdempotent(t *testing.T) {
 		}
 	})
 }
+
+func TestParseSkillMetadata_BlockScalarDescription(t *testing.T) {
+	content := `---
+name: my-skill
+description: |
+  First line of the description.
+  Second line.
+tags: extra
+---
+# Body
+`
+	meta := ParseSkillMetadata([]byte(content))
+	if meta.Name != "my-skill" {
+		t.Fatalf("name = %q", meta.Name)
+	}
+	want := "First line of the description. Second line."
+	if meta.Description != want {
+		t.Fatalf("description = %q, want %q", meta.Description, want)
+	}
+}
+
+func TestParseSkillMetadata_BlockScalarNotLiteral(t *testing.T) {
+	content := `---
+description: |
+  Real content.
+---
+`
+	meta := ParseSkillMetadata([]byte(content))
+	if meta.Description == "|" {
+		t.Fatal("block scalar indicator was parsed as literal value")
+	}
+	if meta.Description == "" {
+		t.Fatal("multi-line description was dropped")
+	}
+}
+
+func TestParseSkillMetadata_DescriptionBeforeOtherFields(t *testing.T) {
+	// 多行描述不是 frontmatter 最后一个字段：中途遇到新字段时应保留已收集的行
+	content := `---
+description: |
+  Multi line
+  description.
+name: skill-a
+---
+`
+	meta := ParseSkillMetadata([]byte(content))
+	if meta.Description != "Multi line description." {
+		t.Fatalf("description = %q", meta.Description)
+	}
+	if meta.Name != "skill-a" {
+		t.Fatalf("name = %q", meta.Name)
+	}
+}

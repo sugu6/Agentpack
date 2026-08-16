@@ -32,8 +32,13 @@ func (a *App) SetLiteMode(on bool) {
 
 	if on {
 		a.HideWindow()
-		debug.FreeOSMemory()
-		TrimWorkingSet()
+		// FreeOSMemory 会同步触发 StopTheWorld 式全局停顿，经托盘回调
+		// 直接调用会造成短暂 UI 冻结；移入 goroutine 异步执行，
+		// 由 Go 运行时自行调度，界面不感知停顿。
+		go func() {
+			debug.FreeOSMemory()
+			TrimWorkingSet()
+		}()
 	} else {
 		a.showWindowRaw()
 	}
@@ -79,9 +84,34 @@ func (a *App) restartLiteTimer() {
 	if !enabled || a.liteMode {
 		return
 	}
-	a.liteTimer = time.AfterFunc(delay, func() {
-		a.SetLiteMode(true)
+	// 先用 var 声明再赋值：`:=` 声明的变量作用域从语句结束后才开始，
+	// 闭包内引用同一语句声明的变量会报 undefined
+	var timer *time.Timer
+	timer = time.AfterFunc(delay, func() {
+		// 竞态防护：timer 到点后回调 goroutine 可能因等待 liteMu 延迟执行。
+		// 判定与状态置位必须在同一临界区内完成——若先解锁再调 SetLiteMode(true)，
+		// 窗口期用户点击托盘 ShowWindow（锁内把 liteMode 置 false、清空计时器）
+		// 后，回调仍会执行 SetLiteMode(true) → 窗口刚显示又被隐藏。
+		// 锁内完成置位后，无论谁先拿到锁，结果都收敛于"最后一次用户操作获胜"：
+		//  ShowWindow 先 → 计时器已清空，回调直接丢弃；
+		//  回调先 → liteMode 已置 true，ShowWindow 再置 false 并显示窗口。
+		a.liteMu.Lock()
+		if a.liteTimer != timer {
+			a.liteMu.Unlock()
+			return
+		}
+		a.liteTimer = nil
+		a.liteMode = true
+		a.liteMu.Unlock()
+
+		a.HideWindow()
+		debug.FreeOSMemory()
+		TrimWorkingSet()
+		if onLiteModeChanged != nil {
+			onLiteModeChanged(true)
+		}
 	})
+	a.liteTimer = timer
 }
 
 // stopLiteTimer 停止并清空计时器

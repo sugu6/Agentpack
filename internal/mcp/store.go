@@ -113,7 +113,7 @@ func (s *Store) Load(reg *agents.Registry) error {
 	// 配置文件里存在但基线中不存在的服务器保持"未管理"状态：
 	// 不会自动进入列表（扫描后需用户显式加入），避免其他 agent 的
 	// MCP 配置在应用重启后被静默纳入管理。
-	baseline, err := s.loadManagedBaseline()
+	baseline, err := s.loadManagedBaseline(reg)
 	if err != nil {
 		return fmt.Errorf("load managed baseline: %w", err)
 	}
@@ -125,14 +125,30 @@ func (s *Store) Load(reg *agents.Registry) error {
 	// 按ConfigPath 分组 agent，共享路径的 agent 只读一次文件
 	pathGroups := make(map[string][]string) // configPath -> []agentID
 	for _, ag := range reg.All() {
-		if ag.ConfigPath == "" || ag.Status == agents.StatusNotFound {
+		// 只排除无 ConfigPath 的 agent。not_found（检测失败）但 ConfigPath
+		// 非空的 agent 仍应读其配置：CLI 卸载/路径临时失效时配置文件往往
+		// 还在，跳过会让其全部受管服务器从 servers 消失，syncDB 全量删除
+		// 管理状态与绑定——用户重装后只能重新纳管。读路径安全：文件缺失
+		// 时 backend.Read 返回空集；写路径 validateAgentIDs 已拒绝 not_found。
+		if ag.ConfigPath == "" {
 			continue
 		}
 		pathGroups[ag.ConfigPath] = append(pathGroups[ag.ConfigPath], ag.ID)
 	}
 
 	var loadErrs []string
-	for configPath, agentIDs := range pathGroups {
+	partialRead := false
+	// pathGroups 是 map，直接遍历无序：两个 ConfigPath 各有一个同 key（同命令）
+	// 服务器时，后迭代者的内容会无条件覆盖 servers[managedID]，导致展示的
+	// env/headers 每次重启间随机变化。与 Scan 的 sort.Strings(configPaths)
+	// 一致，先排序保证确定性；同 key 重复时保留首次加载的内容。
+	paths := make([]string, 0, len(pathGroups))
+	for p := range pathGroups {
+		paths = append(paths, p)
+	}
+	sort.Strings(paths)
+	for _, configPath := range paths {
+		agentIDs := pathGroups[configPath]
 		// 用第一一agent 确定 backend 类型
 		firstAgent := reg.Get(agentIDs[0])
 		if firstAgent == nil {
@@ -145,12 +161,19 @@ func (s *Store) Load(reg *agents.Registry) error {
 			errMsg := fmt.Sprintf("read config %s: %v", configPath, err)
 			log.Printf("load: %s", errMsg)
 			loadErrs = append(loadErrs, errMsg)
+			// 整文件解析失败（JSON 语法错误/容器字段异常）与 partial read
+			// 同理：该配置的受管条目不进入 servers，直接 syncDB 会被
+			// DELETE，管理状态与绑定静默丢失，用户修好文件后只能重新
+			// 扫描纳管。置 partialRead 保留基线中未被匹配的受管条目，
+			// 配置文件修复后下一次正常 Load 时再由 syncDB 清理。
+			partialRead = true
 			continue
 		}
 		if errors.Is(err, ErrPartialRead) {
 			// 部分条目无法解析：保留可解析条目（只读路径）。写路径会在
 			// writeToAgentLocked/removeFromAgentLocked 拒绝，避免重写丢数据。
 			log.Printf("load: config %s partially readable (unparsable entries skipped)", configPath)
+			partialRead = true
 		}
 		// 统计该配置实际检测到的服务器数（按归一化 key 去重，未纳入管理的
 		// 条目也计入），供 Agent 页面显示"配置里有多少 MCP"。与 Scan 使用
@@ -168,7 +191,7 @@ func (s *Store) Load(reg *agents.Registry) error {
 		}
 		for _, srv := range loaded {
 			id := ensureGlobalID(srv.ID)
-			managedID, ok := matchManagedID(baseline, id, srv)
+			managedID, ok := matchManagedID(baseline, id, srv, configPath)
 			if !ok {
 				// 未纳入管理的服务器：保留在配置文件中（写路径从磁盘合并），
 				// 但不进入列表，等待用户通过扫描对话框显式加入。
@@ -176,7 +199,9 @@ func (s *Store) Load(reg *agents.Registry) error {
 			}
 			now := time.Now().UTC().Format(time.RFC3339Nano)
 			if existing, ok := servers[managedID]; ok {
-				srv.InstalledAt = existing.InstalledAt
+				// 同 key 服务器已在其它配置加载过：保留首次加载的内容与
+				// 安装时间（确定性，避免随机覆盖），绑定仍需记录。
+				srv = existing
 			} else if base, ok := baseline.byID[managedID]; ok && base.InstalledAt != "" {
 				// 沿用上会话记录的安装时间，保持跨重启稳定
 				srv.InstalledAt = base.InstalledAt
@@ -196,6 +221,51 @@ func (s *Store) Load(reg *agents.Registry) error {
 	var loadErr error
 	if len(loadErrs) > 0 {
 		loadErr = fmt.Errorf("load: %d config(s) failed: %s", len(loadErrs), strings.Join(loadErrs, "; "))
+	}
+	// partial read 时，配置文件中无法解析的条目不会进入 servers；若直接
+	// syncDBFromSnapshot，基线中对应的受管条目会被 DELETE，管理状态与绑定
+	// 静默丢失（用户修好配置后只能重新扫描纳管）。保守保留基线中未被本次
+	// 解析匹配的受管条目（连同其 DB 绑定），等配置文件修复后下一次正常
+	// Load（全部条目可解析）时再由 syncDB 清理。
+	if partialRead {
+		kept := make(map[string]Server)
+		for id := range baseline.byID {
+			if _, ok := servers[id]; !ok {
+				kept[id] = baseline.byID[id]
+			}
+		}
+		if len(kept) > 0 {
+			db := database.GetDB()
+			if db != nil {
+				rows, qerr := db.Query(`SELECT mcp_id, agent_id FROM mcp_agent_bindings`)
+				if qerr == nil {
+					// defer 关闭：Scan 循环内发生 panic 时 rows 也能释放，
+					// 与本函数其他 rows 用法一致
+					defer rows.Close()
+					for rows.Next() {
+						var mid, aid string
+						if rows.Scan(&mid, &aid) == nil {
+							if _, ok := kept[mid]; ok {
+								recordBinding(bindings, mid, aid)
+							}
+						}
+					}
+					// rows.Err() 检查：Scan 循环结束后还有迭代错误（查询中途
+					// 断开/驱动错误）不会在 Next() 暴露，不检查会静默丢失
+					// kept 服务器的绑定，随后 syncDB 全量重建把残留绑定行
+					// 一并删掉（绑定数据损失）。
+					if rerr := rows.Err(); rerr != nil {
+						log.Printf("load: iterate kept bindings: %v", rerr)
+					}
+				} else {
+					log.Printf("load: query kept bindings: %v", qerr)
+				}
+			}
+			for id, srv := range kept {
+				servers[id] = srv
+			}
+			log.Printf("load: preserved %d managed server(s) due to partial read", len(kept))
+		}
 	}
 	s.mu.Lock()
 	oldServers := s.servers
@@ -230,33 +300,37 @@ func (s *Store) Load(reg *agents.Registry) error {
 // Load 以此为准：配置文件里存在但基线未匹配的服务器保持"未管理"，
 // 只有用户通过扫描对话框显式加入（Add）后才会进入基线。
 type managedBaseline struct {
-	byID  map[string]Server // id → 服务器（含确定性 ID 与安装时间）
-	byKey map[string]string // 归一化去重 key → id
+	byID        map[string]Server          // id → 服务器（含确定性 ID 与安装时间）
+	byKey       map[string]string          // 归一化去重 key → id
+	byIDConfigs map[string]map[string]bool // id → 绑定 agent 的 ConfigPath 集合
 }
 
 // loadManagedBaseline 从数据库读取受管服务器作为 Load 的基线。
 // 返回错误时由调用方按 Load 失败处理。
-func (s *Store) loadManagedBaseline() (managedBaseline, error) {
+func (s *Store) loadManagedBaseline(reg *agents.Registry) (managedBaseline, error) {
 	bl := managedBaseline{
-		byID:  make(map[string]Server),
-		byKey: make(map[string]string),
+		byID:        make(map[string]Server),
+		byKey:       make(map[string]string),
+		byIDConfigs: make(map[string]map[string]bool),
 	}
 	db := database.GetDB()
 	if db == nil {
 		return bl, fmt.Errorf("database not initialized")
 	}
-	rows, err := db.Query(`SELECT id, name, command, args, transport, url, installed_at FROM mcp_servers`)
+	rows, err := db.Query(`SELECT id, name, description, command, args, env, transport, config_type, url, timeout, source, source_id, installed_at, updated_at FROM mcp_servers`)
 	if err != nil {
 		return bl, fmt.Errorf("query managed servers: %w", err)
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var (
-			id, name, command, transport, url string
-			argsJSON                           sql.NullString
-			installedAt                        int64
+			id, name, command, transport, url         string
+			description, configType, source, sourceID string
+			argsJSON, envJSON                         sql.NullString
+			timeout                                   int64
+			installedAt, updatedAt                    int64
 		)
-		if err := rows.Scan(&id, &name, &command, &argsJSON, &transport, &url, &installedAt); err != nil {
+		if err := rows.Scan(&id, &name, &description, &command, &argsJSON, &envJSON, &transport, &configType, &url, &timeout, &source, &sourceID, &installedAt, &updatedAt); err != nil {
 			return bl, fmt.Errorf("scan managed server row: %w", err)
 		}
 		var args []string
@@ -266,30 +340,82 @@ func (s *Store) loadManagedBaseline() (managedBaseline, error) {
 				continue
 			}
 		}
+		// partialRead 保留路径会把基线服务器原样带回内存并整表写回：
+		// env 必须以明文回填，否则 DB 中的加密 env 会被当作文本再加密
+		// 或清空（见 kept 保留注释）。解密失败（密钥轮换/数据损坏）时
+		// 保留服务器但放弃 env，与旧行为一致。
+		var env map[string]string
+		if envJSON.Valid && envJSON.String != "" {
+			var encrypted map[string]string
+			if err := json.Unmarshal([]byte(envJSON.String), &encrypted); err != nil {
+				log.Printf("load: malformed env json for %q, dropping env", id)
+			} else if decrypted, derr := crypto.DecryptEnv(encrypted); derr != nil {
+				log.Printf("load: decrypt env for %q: %v", id, derr)
+			} else {
+				env = decrypted
+			}
+		}
 		srv := Server{
 			ID:          id,
 			Name:        name,
+			Description: description,
 			Command:     command,
 			Args:        args,
+			Env:         env,
 			Transport:   Transport(transport),
+			ConfigType:  configType,
 			URL:         url,
+			Timeout:     int(timeout),
+			Source:      source,
+			SourceID:    sourceID,
 			InstalledAt: time.Unix(installedAt, 0).UTC().Format(time.RFC3339Nano),
+			UpdatedAt:   time.Unix(updatedAt, 0).UTC().Format(time.RFC3339Nano),
 		}
 		bl.byID[id] = srv
 		if _, dup := bl.byKey[scanDedupKey(srv)]; !dup {
 			bl.byKey[scanDedupKey(srv)] = id
 		}
 	}
-	return bl, rows.Err()
+	if err := rows.Err(); err != nil {
+		return bl, err
+	}
+	// 查询绑定关系，建立 id → ConfigPath 集合：同名兜底匹配必须限定在
+	// 同一 agent 配置内（见 matchManagedID），否则跨 agent 同名服务器会
+	// 被错误匹配（agent A 的 filesystem 与 agent B 的 filesystem 命令不同，
+	// 单一条目被管理时 B 被静默标记"已管理"，Remove/Toggle 误删 B 的配置）。
+	brows, err := db.Query(`SELECT mcp_id, agent_id FROM mcp_agent_bindings`)
+	if err != nil {
+		return bl, fmt.Errorf("query bindings: %w", err)
+	}
+	defer brows.Close()
+	for brows.Next() {
+		var mid, agentID string
+		if err := brows.Scan(&mid, &agentID); err != nil {
+			continue
+		}
+		if reg != nil {
+			if ag := reg.Get(agentID); ag != nil && ag.ConfigPath != "" {
+				if bl.byIDConfigs[mid] == nil {
+					bl.byIDConfigs[mid] = make(map[string]bool)
+				}
+				bl.byIDConfigs[mid][ag.ConfigPath] = true
+			}
+		}
+	}
+	return bl, brows.Err()
 }
 
 // matchManagedID 判断配置文件中的服务器是否已被纳入管理，返回保持的 ID。
+// configPath 是当前服务器所在的 agent 配置文件路径。
 // 匹配顺序：
 //  1. ID 相等（确定性 name@path ID，或上一会话保留的 UUID）；
 //  2. 归一化去重 key 相等（命令/参数或 URL 一致）；
 //  3. 同名唯一兜底——覆盖 AgentPack UI 修改命令导致 key 变化的重启场景；
-//     同名的基线条目不唯一时不猜测，保持未管理。
-func matchManagedID(bl managedBaseline, configID string, srv Server) (string, bool) {
+//     兜底限定在"绑定过同一 ConfigPath 的基线条目"内匹配：两个 agent 各有
+//     同名但命令不同的服务器时，agent B 的条目不会被 agent A 的管理状态
+//     误匹配（否则会被静默标记已管理、内容被 A 覆盖、Remove/Toggle 误删 B）。
+//     同名的候选基线条目不唯一时不猜测，保持未管理。
+func matchManagedID(bl managedBaseline, configID string, srv Server, configPath string) (string, bool) {
 	if _, ok := bl.byID[configID]; ok {
 		return configID, true
 	}
@@ -301,12 +427,19 @@ func matchManagedID(bl managedBaseline, configID string, srv Server) (string, bo
 	}
 	var picked string
 	for id, b := range bl.byID {
-		if strings.EqualFold(b.Name, srv.Name) {
-			if picked != "" {
-				return "", false
-			}
-			picked = id
+		if !strings.EqualFold(b.Name, srv.Name) {
+			continue
 		}
+		if cfg, ok := bl.byIDConfigs[id]; !ok || !cfg[configPath] {
+			// 基线条目未绑定过当前配置路径（或绑定记录缺失，
+			// 如用户手动写入配置文件、从未经 UI 绑定）：
+			// 跨 agent 同名，不参与兜底
+			continue
+		}
+		if picked != "" {
+			return "", false
+		}
+		picked = id
 	}
 	if picked != "" {
 		return picked, true
@@ -473,6 +606,16 @@ func (s *Store) syncDBFromSnapshot(snap syncSnapshot) error {
 			); err != nil {
 				return err
 			}
+		}
+
+		// 绑定表全量重建：仅按 mcp_id 差集清理（DELETE WHERE mcp_id NOT IN）
+		// 无法清除同 mcp_id 内已收缩的 agent 绑定行——Update 减少绑定集、
+		// ToggleAgent unbind 后残留行永久留在 DB，重启 Load 时
+		// loadManagedBaseline 会读到已解绑 agent 的 ConfigPath，matchManagedID
+		// 的同名兜底可能把其他 agent 的同名服务器误判为已管理。
+		// 内存 bindings 快照是权威状态，全量重写语义精确且原子（同事务）。
+		if _, err := tx.Exec(`DELETE FROM mcp_agent_bindings`); err != nil {
+			return err
 		}
 
 		for _, pair := range bindingPairs {
@@ -823,6 +966,7 @@ func (s *Store) Update(id string, server Server, agentIDs []string, reg *agents.
 	var snap syncSnapshot
 	var rollbackOld Server
 	var rollbackOldAgentIDs []string
+	var rollbackReplaceableIDs []string
 	var rollbackAgentIDs []string
 	err := func() error {
 		s.mu.Lock()
@@ -846,18 +990,35 @@ func (s *Store) Update(id string, server Server, agentIDs []string, reg *agents.
 		}
 		rollbackOldAgentIDs = append([]string{}, oldAgentIDs...)
 
-		oldConfigs := make(map[string]string)
-		if len(oldAgentIDs) > 0 {
-			oc, err := s.removeFromAgentsLocked(old, oldAgentIDs, reg)
-			if err != nil {
-				if restoreErr := restoreConfigContents(oc); restoreErr != nil {
-					return fmt.Errorf("%w; restore old configs: %v", err, restoreErr)
-				}
-				return err
+		// 保留不可操作 agent 的既有绑定：已绑定但当前非 enabled/detected 的
+		// agent（被禁用/已卸载）无法通过 validateAgentIDs，前端选择器也不展示，
+		// 它们不参与整体替换——其配置文件不触碰、内存绑定原样保留。若按
+		// "未勾选"处理，一次普通编辑（如仅改描述）会把这类绑定静默解绑，
+		// 重新启用 agent 后绑定已丢失且无任何提示。
+		preservedAgentIDs := make([]string, 0)
+		replaceableOldIDs := make([]string, 0, len(oldAgentIDs))
+		for _, agID := range oldAgentIDs {
+			ag := reg.Get(agID)
+			if ag == nil || (ag.Status != agents.StatusEnabled && ag.Status != agents.StatusDetected) {
+				preservedAgentIDs = append(preservedAgentIDs, agID)
+			} else {
+				replaceableOldIDs = append(replaceableOldIDs, agID)
 			}
-			for k, v := range oc {
-				oldConfigs[k] = v
+		}
+		rollbackReplaceableIDs = append([]string{}, replaceableOldIDs...)
+
+		// 一次性原子替换：每个配置文件只读一次、写一次（删除旧条目+写入新
+		// 条目合并）。原实现 removeFromAgentsLocked → writeToAgentsLocked 两步
+		// 之间存在崩溃窗口：进程在删旧后、写新前被杀，旧条目已从磁盘删除而
+		// 新条目未写入，该服务器从 agent 配置中永久丢失（.bak 无人自动恢复）。
+		// 传 replaceableOldIDs（而非 oldAgentIDs）：preserved agent 的配置文件
+		// 完全不参与本次读写。
+		oldConfigs, err := s.replaceServerInConfigsLocked(old, &server, replaceableOldIDs, agentIDs, reg)
+		if err != nil {
+			if restoreErr := restoreConfigContents(oldConfigs); restoreErr != nil {
+				return fmt.Errorf("%w; restore old configs: %v", err, restoreErr)
 			}
+			return err
 		}
 		// 只有在成功从 agents 移除后才删除内存绑定，避免配置文件与内存状态不一致）
 		delete(s.bindings, id)
@@ -866,28 +1027,47 @@ func (s *Store) Update(id string, server Server, agentIDs []string, reg *agents.
 		server.InstalledAt = old.InstalledAt
 		server.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
 
-		moreOld, err := s.writeToAgentsLocked(server, agentIDs, reg)
-		if err != nil {
-			if restoreErr := restoreConfigContents(oldConfigs); restoreErr != nil {
-				err = fmt.Errorf("%w; restore old configs: %v", err, restoreErr)
-			}
-			// 写入新配置失败：尝试恢复旧绑定到内存和磁盘
-			for _, agID := range oldAgentIDs {
-				s.recordBindingLocked(id, agID)
-			}
-			return err
+		// 透传字段兜底：前端编辑表单不提供 headers/enabled 输入，
+		// 请求体未携带时沿用旧值，避免一次普通编辑让远程服务器的
+		// 鉴权 headers 或 opencode 禁用状态被静默清空。
+		// 用 nil（字段未提供）而非 len==0 判定：JSON 反序列化时
+		// "headers": [] 是显式清空请求，非 nil 空切片必须生效，
+		// 否则用户清除鉴权头后重启仍被旧值兜底带回。
+		if server.Headers == nil {
+			server.Headers = old.Headers
 		}
-		for k, v := range moreOld {
-			oldConfigs[k] = v
+		// Cwd/Timeout/ConfigType 同理：前端表单无对应输入，请求体未携带时
+		// 沿用旧值。备份恢复（export.go 导入）构造的 Server 不携带这三个
+		// 字段，若无兜底，对已有服务器 Update 后其 cwd/timeout/config_type
+		// 被清空（"type" 被清后 opencode 远程服务器重启按 stdio 解析）。
+		// 与 headers 一致的精神：string/int 无法区分"未提供"与"显式空"，
+		// 前端也无清空入口，保守沿用旧值。
+		if server.Cwd == "" {
+			server.Cwd = old.Cwd
 		}
+		if server.Timeout == 0 {
+			server.Timeout = old.Timeout
+		}
+		if server.ConfigType == "" {
+			server.ConfigType = old.ConfigType
+		}
+		if server.Enabled == nil {
+			server.Enabled = old.Enabled
+		}
+
 		s.servers[id] = server
 		for _, agID := range agentIDs {
 			s.recordBindingLocked(id, agID)
 		}
+		// preserved agent 的绑定在 delete(s.bindings, id) 后重新记录
+		for _, agID := range preservedAgentIDs {
+			s.recordBindingLocked(id, agID)
+		}
+		finalAgentIDs := append(append([]string{}, agentIDs...), preservedAgentIDs...)
 		notify = MutationDetail{
 			ServerID:   id,
 			ServerName: server.Name,
-			Agents:     append([]string{}, agentIDs...),
+			Agents:     finalAgentIDs,
 			OldServer:  &old,
 			OldConfigs: oldConfigs,
 		}
@@ -899,7 +1079,7 @@ func (s *Store) Update(id string, server Server, agentIDs []string, reg *agents.
 		return err
 	}
 	if dbErr := s.syncDBFromSnapshot(snap); dbErr != nil {
-		if rollbackErr := s.rollbackUpdate(id, rollbackOld, rollbackOldAgentIDs, rollbackAgentIDs, notify.OldConfigs, reg); rollbackErr != nil {
+		if rollbackErr := s.rollbackUpdate(id, rollbackOld, rollbackOldAgentIDs, rollbackReplaceableIDs, rollbackAgentIDs, notify.OldConfigs, reg); rollbackErr != nil {
 			return fmt.Errorf("sync database after update: %w; rollback: %v", dbErr, rollbackErr)
 		}
 		return fmt.Errorf("sync database after update: %w", dbErr)
@@ -1044,7 +1224,7 @@ func (s *Store) rollbackAdd(serverID string, agentIDs []string, oldConfigs map[s
 	return restoreOrRemoveAgentConfigs(agentIDs, oldConfigs, reg)
 }
 
-func (s *Store) rollbackUpdate(id string, old Server, oldAgentIDs, newAgentIDs []string, oldConfigs map[string]string, reg *agents.Registry) error {
+func (s *Store) rollbackUpdate(id string, old Server, oldAgentIDs, replaceableIDs, newAgentIDs []string, oldConfigs map[string]string, reg *agents.Registry) error {
 	s.mu.Lock()
 	s.servers[id] = old
 	delete(s.bindings, id)
@@ -1052,7 +1232,12 @@ func (s *Store) rollbackUpdate(id string, old Server, oldAgentIDs, newAgentIDs [
 		s.recordBindingLocked(id, agID)
 	}
 	s.mu.Unlock()
-	return restoreOrRemoveAgentConfigs(unionStrings(oldAgentIDs, newAgentIDs), oldConfigs, reg)
+	// 文件恢复只针对实际被写入的 agent（replaceable + new）：oldConfigs 仅备份了
+	// 这些路径，preserved agent 的配置文件从未被触碰、也不在 oldConfigs 中。
+	// 若把它纳入 union，restoreOrRemoveAgentConfigs 会因找不到备份而 os.Remove
+	// 整个配置文件，永久丢失该 agent 配置。preserved 的内存绑定已由上面
+	// oldAgentIDs 循环恢复，其磁盘文件无需（也不应）改动。
+	return restoreOrRemoveAgentConfigs(unionStrings(replaceableIDs, newAgentIDs), oldConfigs, reg)
 }
 
 func (s *Store) rollbackRemove(id string, srv Server, agentIDs []string, oldConfigs map[string]string, reg *agents.Registry) error {
@@ -1340,6 +1525,18 @@ func (s *Store) writeToAgentLocked(server Server, agentID string, reg *agents.Re
 			return nil
 		}
 	}
+	// 同 key（命令/URL 归一化）不同名条目检查：配置中已存在同 key 但名字
+	// 不同的条目时，直接 current[server.Name] = server 会双写（同一命令出现
+	// 两份），重启 Load 的 mergeDuplicatesLocked 按 InstalledAt 保留最早者，
+	// 用户新加/改名的服务器名被静默回退。拒绝并提示，避免无声丢配置。
+	for name, existing := range current {
+		if name == server.Name {
+			continue
+		}
+		if scanDedupKey(server) == scanDedupKey(existing) {
+			return fmt.Errorf("server with same command/url already exists as %q in agent %s", name, agentID)
+		}
+	}
 	current[server.Name] = server
 	if err := backend.Write(ag.ConfigPath, current); err != nil {
 		return fmt.Errorf("write: %w", err)
@@ -1372,6 +1569,89 @@ func (s *Store) removeFromAgentLocked(server Server, agentID string, reg *agents
 		return fmt.Errorf("write: %w", err)
 	}
 	return nil
+}
+
+// replaceServerInConfigsLocked 对旧/新绑定 agent 集执行"删除旧条目 + 写入新
+// 条目"的合并读-改-写：每个配置文件只读一次、写一次（newServer 为 nil 时仅
+// 删除旧条目，即"只在旧绑定"的 agent）。相比 Update 原先的 removeFromAgentsLocked
+// 加 writeToAgentsLocked 两步，消除了"删旧后未写新"的崩溃窗口。
+// 返回每个被写路径的修改前序列化内容，调用方在部分失败时用于恢复。
+// 语义与单步函数保持一致：旧条目 key 不匹配（用户改写）时纯删除场景静默跳过、
+// 替换场景报错；新条目与现存同名不同 key 时拒绝覆盖。
+func (s *Store) replaceServerInConfigsLocked(oldServer Server, newServer *Server, oldAgentIDs, newAgentIDs []string, reg *agents.Registry) (map[string]string, error) {
+	prev := make(map[string]string)
+	// 同一 ConfigPath 的 agent 只处理一次（共享路径重复读改写会互相覆盖）
+	byPath := make(map[string]*agents.Agent)
+	added := make(map[string]bool)
+	// 新条目仅写入新绑定集 agent 的配置文件；old-only（本次被解绑）的文件
+	// 只删除旧条目。若不区分，解绑后条目会留在被解绑 agent 的配置文件中，
+	// 内存已解绑而磁盘未删，重启 Load 扫描后绑定"复活"。
+	newBoundPath := make(map[string]bool)
+	for _, agentID := range newAgentIDs {
+		if ag := reg.Get(agentID); ag != nil && ag.ConfigPath != "" {
+			newBoundPath[ag.ConfigPath] = true
+		}
+	}
+	for _, agentID := range append(append([]string{}, oldAgentIDs...), newAgentIDs...) {
+		if added[agentID] {
+			continue
+		}
+		added[agentID] = true
+		ag := reg.Get(agentID)
+		if ag == nil || ag.ConfigPath == "" {
+			continue
+		}
+		byPath[ag.ConfigPath] = ag
+	}
+	for path, ag := range byPath {
+		if !isSafeAgentConfigPath(path) {
+			return prev, fmt.Errorf("invalid write path: %s is outside the user profile", path)
+		}
+		// 先保存文件原文（恢复用）：与 backupAgentsLocked 一致，必须逐字节
+		// 保存而非序列化解析结果（序列化会丢容器字段、键顺序与注释）。
+		raw, rerr := os.ReadFile(path)
+		if rerr != nil {
+			if os.IsNotExist(rerr) {
+				continue
+			}
+			return prev, fmt.Errorf("read %s: %w", path, rerr)
+		}
+		prev[path] = string(raw)
+		backend := NewBackend(string(ag.Type))
+		current, err := backend.Read(path)
+		if err != nil {
+			return prev, fmt.Errorf("read %s: %w", path, err)
+		}
+		changed := false
+		// 删除旧条目：key 不匹配视为用户改写。纯删除场景（该 agent 不在新
+		// 绑定集）静默跳过，与 removeFromAgentLocked 一致；替换场景（新旧
+		// 都绑定）报错，与 writeToAgentLocked 的拒绝覆盖语义一致。
+		if existing, has := current[oldServer.Name]; has {
+			if scanDedupKey(oldServer) != scanDedupKey(existing) {
+				if newServer != nil {
+					return prev, fmt.Errorf("server name %q in %s was modified outside the app", oldServer.Name, path)
+				}
+			} else {
+				delete(current, oldServer.Name)
+				changed = true
+			}
+		}
+		if newServer != nil && newBoundPath[path] {
+			if existing, has := current[newServer.Name]; has {
+				if scanDedupKey(*newServer) != scanDedupKey(existing) {
+					return prev, fmt.Errorf("server name %q already exists in %s", newServer.Name, path)
+				}
+			}
+			current[newServer.Name] = *newServer
+			changed = true
+		}
+		if changed {
+			if err := backend.Write(path, current); err != nil {
+				return prev, fmt.Errorf("write %s: %w", path, err)
+			}
+		}
+	}
+	return prev, nil
 }
 
 func ensureGlobalID(id string) string {
@@ -1476,10 +1756,17 @@ func resolvePathForWrite(path string) string {
 }
 
 // validateAgentIDs checks that all agent IDs exist in the registry and are enabled/detected.
+// ConfigPath 为空（CLI 已安装但配置文件尚未创建）的 agent 也视为无效：
+// writeToAgentsLocked 对空 ConfigPath 会静默跳过，Add 若接受会产生
+// "已绑定但磁盘配置未写入"的幽灵绑定，Remove/Toggle 时同样被跳过，
+// 与 ToggleAgent 显式报错的行为不一致。
 func validateAgentIDs(agentIDs []string, reg *agents.Registry) error {
 	var invalid []string
 	for _, agID := range agentIDs {
-		if ag := reg.Get(agID); ag == nil || (ag.Status != agents.StatusEnabled && ag.Status != agents.StatusDetected) {
+		ag := reg.Get(agID)
+		if ag == nil ||
+			(ag.Status != agents.StatusEnabled && ag.Status != agents.StatusDetected) ||
+			ag.ConfigPath == "" {
 			invalid = append(invalid, agID)
 		}
 	}
