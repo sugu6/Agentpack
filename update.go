@@ -929,13 +929,13 @@ func (a *App) InstallUpdate() error {
 	}
 
 	// 完全脱离父进程启动安装程序
-	// 注意：Windows 下直接使用 CreateProcess（exec.Command(dlPath)）启动，
-	// 不经 cmd.exe，避免文件名中的 & 等 cmd.exe 元字符导致命令注入。
+	// 注意：Windows 下用 ShellExecuteW（"runas"）启动，可触发 UAC 提权以运行
+	// machine 级安装器；不经 cmd.exe，避免文件名中的 & 等 cmd.exe 元字符导致命令注入。
 	switch runtime.GOOS {
 	case "windows":
-		cmd := exec.Command(dlPath)
-		hideConsoleWindow(cmd)
-		if err := cmd.Start(); err != nil {
+		// 用 ShellExecuteW("runas") 提权启动：安装器是 machine 级、请求管理员权限，
+		// exec.Command(CreateProcess) 无法提权会失败。非 Windows 平台用 open/xdg-open。
+		if err := launchInstallerWindows(dlPath); err != nil {
 			return err
 		}
 	case "darwin":
