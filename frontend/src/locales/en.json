@@ -172,7 +172,7 @@
       "pauseFailed": "Pause failed",
       "pausedLabel": "Paused",
       "installNow": "Restart & install",
-      "installFailed": "Failed to launch installer",
+      "installFailed": "Failed to launch installer: {error}",
       "downloadCompleteHint": "Download complete. Clicking the button below will close the app and launch the installer to finish the update.",
       "resumeFailed": "Resume failed: server does not support resuming",
       "resumeDownload": "Resume download",

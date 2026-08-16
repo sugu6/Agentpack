@@ -209,7 +209,10 @@ async function installUpdate() {
   try {
     await api.system.installUpdate()
   } catch (e) {
-    toast.error(t('settings.update.installFailed'))
+    // 展示具体原因（如"下载文件不是可执行的安装程序"），而非笼统的失败提示
+    const err = e as { message?: unknown } | null
+    const detail = err?.message ? String(err.message) : String(e)
+    toast.error(t('settings.update.installFailed', { error: detail }))
   }
 }
 

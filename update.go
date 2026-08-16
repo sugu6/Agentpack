@@ -922,6 +922,12 @@ func (a *App) InstallUpdate() error {
 		return fmt.Errorf("installer not found: %w", err)
 	}
 
+	// 防御性校验：确认下载到的是可执行的安装程序，避免下载到 zip/HTML 错误页后
+	// exec 启动失败、用户只看到笼统的"启动安装程序失败"。
+	if err := validateUpdateInstaller(dlPath); err != nil {
+		return err
+	}
+
 	// 完全脱离父进程启动安装程序
 	// 注意：Windows 下直接使用 CreateProcess（exec.Command(dlPath)）启动，
 	// 不经 cmd.exe，避免文件名中的 & 等 cmd.exe 元字符导致命令注入。
@@ -953,6 +959,19 @@ func (a *App) InstallUpdate() error {
 		a.mu.Unlock()
 		a.wailsApp.Quit()
 	}()
+	return nil
+}
+
+// validateUpdateInstaller 校验下载的更新文件确实是可执行的安装程序。
+// Windows 上安装包为 .exe/.msi；非 Windows 平台由 open/xdg-open 处理任意文件，跳过校验。
+func validateUpdateInstaller(path string) error {
+	if runtime.GOOS != "windows" {
+		return nil
+	}
+	ext := strings.ToLower(filepath.Ext(path))
+	if ext != ".exe" && ext != ".msi" {
+		return fmt.Errorf("下载的更新文件不是可执行的安装程序: %s", filepath.Base(path))
+	}
 	return nil
 }
 

@@ -172,7 +172,7 @@
       "pauseFailed": "暂停失败",
       "pausedLabel": "已暂停",
       "installNow": "重启并安装",
-      "installFailed": "启动安装程序失败",
+      "installFailed": "启动安装程序失败：{error}",
       "downloadCompleteHint": "下载完成。点击下方按钮将关闭应用并启动安装程序，即可完成更新。",
       "resumeFailed": "续传失败：服务器不支持续传",
       "resumeDownload": "继续下载",

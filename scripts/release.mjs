@@ -139,6 +139,11 @@ function updatePlatformVersionFiles() {
 
   // Linux nfpm.yaml (3-part, top-level version)
   patch('build/linux/nfpm/nfpm.yaml', /^(version:\s*")[^"]*(")/m, `$1${version}$2`, 'version')
+
+  // Windows NSIS 安装器版本 (wails_tools.nsh 的 INFO_PRODUCTVERSION)
+  // 该文件记录安装包的文件版本（VIProductVersion/VIFileVersion），
+  // 若不同步会导致安装包文件版本停留在上一版本。
+  patch('build/windows/nsis/wails_tools.nsh', /(!define INFO_PRODUCTVERSION ")[^"]*(")/, `$1${version}$2`, 'INFO_PRODUCTVERSION')
 }
 
 // --- 4. 处理 CHANGELOG ---
