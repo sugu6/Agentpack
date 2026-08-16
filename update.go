@@ -761,11 +761,11 @@ func (a *App) startDownload(url string, offset int64, resume bool) error {
 
 		lastTime := time.Now()
 		lastBytes := downloaded
-		// 读缓冲越大越能摊薄 syscall / 循环开销。在高速链路 / 高频代理
-		// （gh-proxy.com 远端拉取再回传）下，越小越跑不满带宽。1MB 对下载
-		// 安装包这类大文件显著提速，内存开销（1MB）可忽略；暂停/取消仍在
-		// 每次 Read 之间检查，单次填充耗时在慢速链路上仅毫秒级。
-		buf := make([]byte, 1024*1024)
+		// 读缓冲不是限速，而是每次 Read 系统调用可取的最大字节数；值越大越能
+		// 摊薄 syscall 开销、跑满带宽。预分配 4MB 大缓冲，对单连接下载已是
+		// 满速级别（内存占用 4MB 可忽略）。暂停/取消仍在每次 Read 之间检查，
+		// 单次填充耗时在慢速链路上仅数毫秒，不影响响应。
+		buf := make([]byte, 4*1024*1024)
 
 		for {
 			// 暂停：保留临时文件与偏移量，等待 ResumeDownload
