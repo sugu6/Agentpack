@@ -274,13 +274,24 @@ jobs:
           fi
 
       # 删除同名已存在的 release：重新打 tag（如修正后重推）时，GitHub 上同名
-      # release 已存在会导致 action-gh-release 创建失败，新增的 changelog/release
-      # notes 无法覆盖旧内容。先删后建，确保每次 tag 都生成最新 release notes。
+      # release 已存在会导致 action-gh-release 无法把新的 changelog/release notes
+      # 覆盖到旧 body 上。用 REST API 先删后建，确保每次 tag 都生成最新 release notes。
+      # 不用 gh CLI：容器内 gh 可能因认证/作用域静默失败，被 `|| true` 掩盖导致旧 release 残留。
       - name: Delete existing release (if any)
         run: |
-          gh release delete "${{ github.ref_name }}" --yes 2>/dev/null || true
+          release_id="$(curl -s -H "Authorization: token ${GITHUB_TOKEN}" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/tags/${GITHUB_REF_NAME}" | jq -r '.id // empty')"
+          if [ -n "$release_id" ]; then
+            curl -s -X DELETE -H "Authorization: token ${GITHUB_TOKEN}" \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/${release_id}"
+            echo "Deleted existing release id=${release_id}"
+          else
+            echo "No existing release for ${GITHUB_REF_NAME}"
+          fi
         env:
-          GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
 
       - name: Create GitHub release (with changelog)
         if: steps.check_changelog.outputs.has_changelog == 'true'
