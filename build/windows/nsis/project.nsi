@@ -6,7 +6,7 @@ Unicode true
 ## If the keyword is not defined, "wails_tools.nsh" will populate them.
 ## If they are defined here, "wails_tools.nsh" will not touch them. This allows you to use this project.nsi manually
 ## from outside of Wails for debugging and development of the installer.
-## 
+##
 ## For development first make a wails nsis build to populate the "wails_tools.nsh":
 ## > wails build --target windows/amd64 --nsis
 ## Then you can call makensis on this file with specifying the path to your binary:
@@ -29,7 +29,12 @@ Unicode true
 ## !define UNINST_KEY_NAME     "UninstKeyInRegistry"  # Default "${INFO_COMPANYNAME}${INFO_PRODUCTNAME}"
 ####
 ## !define REQUEST_EXECUTION_LEVEL "admin"            # Default "admin"  see also https://nsis.sourceforge.io/Docs/Chapter4.html
+## !define REQUEST_EXECUTION_LEVEL "user"             # Per-user install: no UAC prompt
+##
+## Per-user install (WAILS_INSTALL_SCOPE=user, no UAC prompt, installs to $LOCALAPPDATA)
 ####
+!define WAILS_INSTALL_SCOPE "user"
+##
 ## Include the wails tools
 ####
 !include "wails_tools.nsh"
@@ -66,8 +71,11 @@ ManifestDPIAware true
 
 !insertmacro MUI_LANGUAGE "English" # Set the Language of the installer
 
-# Remember the last install directory in the registry so upgrades/reinstalls
-# restore it and the user does not have to re-pick a location every time.
+# Remember the last install directory (HKCU, per-user) so upgrades/reinstalls
+# restore it and the user does not have to manually re-pick a location.
+# Per-user installer writes and reads HKCU, so no elevation is required.
+# Machine (Program Files) dirs are intentionally NOT restored here: a per-user
+# installer cannot write there and would fail with access denied.
 !define AGENTPACK_INSTALL_DIR_KEY "Software\${INFO_COMPANYNAME}\${INFO_PRODUCTNAME}"
 !define AGENTPACK_INSTALL_DIR_VALUE "InstallDir"
 
@@ -91,17 +99,10 @@ ShowInstDetails show # This will always show the installation details.
 Function .onInit
    !insertmacro wails.checkArchitecture
 
-   # Restore the previously saved install directory (overrides InstallDir), so
-   # upgrades do not force the user to manually re-pick a location.
-   # Check HKLM first (machine-scope installs) then fall back to HKCU
-   # (per-user installs) to support both.
-   ReadRegStr $0 HKLM "${AGENTPACK_INSTALL_DIR_KEY}" "${AGENTPACK_INSTALL_DIR_VALUE}"
-   StrCmp $0 "" try_hkcu
-   Goto restore_dir
-   try_hkcu:
+   # Restore the previously saved per-user install directory (overrides InstallDir).
+   # If none is saved, keep the default ($LOCALAPPDATA\Programs\AgentPack).
    ReadRegStr $0 HKCU "${AGENTPACK_INSTALL_DIR_KEY}" "${AGENTPACK_INSTALL_DIR_VALUE}"
    StrCmp $0 "" skip_restore_dir
-   restore_dir:
    StrCpy $INSTDIR $0
    skip_restore_dir:
 FunctionEnd
@@ -112,7 +113,7 @@ Section
     !insertmacro wails.webview2runtime
 
     SetOutPath $INSTDIR
-    
+
     !insertmacro wails.files
 
     CreateShortcut "$SMPROGRAMS\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${PRODUCT_EXECUTABLE}"
@@ -120,13 +121,13 @@ Section
 
     !insertmacro wails.associateFiles
     !insertmacro wails.associateCustomProtocols
-    
+
     !insertmacro wails.writeUninstaller
     # Save the install directory for the next upgrade/reinstall
-    WriteRegStr HKLM "${AGENTPACK_INSTALL_DIR_KEY}" "${AGENTPACK_INSTALL_DIR_VALUE}" "$INSTDIR"
+    WriteRegStr HKCU "${AGENTPACK_INSTALL_DIR_KEY}" "${AGENTPACK_INSTALL_DIR_VALUE}" "$INSTDIR"
 SectionEnd
 
-Section "uninstall" 
+Section "uninstall"
     !insertmacro wails.setShellContext
 
     RMDir /r "$AppData\${PRODUCT_EXECUTABLE}" # Remove the WebView2 DataPath
@@ -142,5 +143,5 @@ Section "uninstall"
     !insertmacro wails.deleteUninstaller
 
     # Clean up the remembered install directory on uninstall
-    DeleteRegKey HKLM "${AGENTPACK_INSTALL_DIR_KEY}"
+    DeleteRegKey HKCU "${AGENTPACK_INSTALL_DIR_KEY}"
 SectionEnd
