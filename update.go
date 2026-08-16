@@ -938,8 +938,11 @@ func (a *App) InstallUpdate() error {
 	// & 等 cmd.exe 元字符导致命令注入。非 Windows 平台用 open/xdg-open。
 	switch runtime.GOOS {
 	case "windows":
+		// 安装器是 GUI 子系统程序，必须用默认 STARTUPINFO 启动，让它的首个
+		// 窗口正常弹出。不能用 hideConsoleWindow（等价于 STARTF_USESHOWWINDOW +
+		// SW_HIDE），否则安装器首个窗口会按 wShowWindow=SW_HIDE 被隐藏，表现为
+		// "点击重启并安装后没有任何安装窗口出现"。
 		cmd := exec.Command(dlPath)
-		hideConsoleWindow(cmd)
 		if err := cmd.Start(); err != nil {
 			return err
 		}

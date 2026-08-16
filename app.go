@@ -1218,8 +1218,9 @@ func (a *App) UpdateSkills(skillIDs []string) (skills.UpdateSkillsResult, error)
 func openSystem(path string) error {
 	switch runtime.GOOS {
 	case "windows":
+		// explorer.exe 是 GUI 程序，用默认 STARTUPINFO 启动即可，否则传给它的
+		// SW_HIDE 会把打开的文件夹窗口一并隐藏（与安装器窗口被隐藏同理）。
 		cmd := exec.Command("explorer.exe", path)
-		hideConsoleWindow(cmd)
 		return cmd.Start()
 	case "darwin":
 		return exec.Command("open", path).Start()
