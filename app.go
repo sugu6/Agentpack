@@ -74,14 +74,14 @@ type App struct {
 	liteUnit           time.Duration // 计时单位，生产为 time.Minute，测试可覆盖
 	// CheckUpdate 的 singleflight + 结果缓存状态（checkUpdateMu 保护）。
 	// 缓存用于避免高频次反复请求 GitHub API（未认证 60 次/小时/IP）触发限流。
-	checkUpdateMu        sync.Mutex
-	checkUpdateCh        chan checkUpdateRes
-	updateCheckAt        time.Time                 // 上次检查时间
-	updateCheckRateLtd   bool                      // 上次结果是否命中限流(决定退避时长)
-	updateCheckResult    *UpdateCheckResult        // 缓存的结果
-	updateCheckMsgKey    string                    // 结果消息的 i18n key（cache 命中时按当前语言重生成）
-	updateCheckMsgArgs   map[string]interface{}    // 消息参数
-	updateCheckErr       error                     // 缓存的结果错误
+	checkUpdateMu      sync.Mutex
+	checkUpdateCh      chan checkUpdateRes
+	updateCheckAt      time.Time              // 上次检查时间
+	updateCheckRateLtd bool                   // 上次结果是否命中限流(决定退避时长)
+	updateCheckResult  *UpdateCheckResult     // 缓存的结果
+	updateCheckMsgKey  string                 // 结果消息的 i18n key（cache 命中时按当前语言重生成）
+	updateCheckMsgArgs map[string]interface{} // 消息参数
+	updateCheckErr     error                  // 缓存的结果错误
 }
 
 // DownloadState 下载状态
@@ -1218,9 +1218,8 @@ func (a *App) UpdateSkills(skillIDs []string) (skills.UpdateSkillsResult, error)
 func openSystem(path string) error {
 	switch runtime.GOOS {
 	case "windows":
-		// explorer.exe 是 GUI 程序，用默认 STARTUPINFO 启动即可，否则传给它的
-		// SW_HIDE 会把打开的文件夹窗口一并隐藏（与安装器窗口被隐藏同理）。
 		cmd := exec.Command("explorer.exe", path)
+		hideConsoleWindow(cmd)
 		return cmd.Start()
 	case "darwin":
 		return exec.Command("open", path).Start()
@@ -1672,7 +1671,6 @@ func (a *App) RestoreBackup(id string, opts backup.ImportOptions) (backup.Import
 			return res, fmt.Errorf("restore: save agent status: %w", err)
 		}
 	}
-
 
 	a.mu.Lock()
 	defer a.mu.Unlock()

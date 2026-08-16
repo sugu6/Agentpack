@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -931,13 +932,26 @@ func (a *App) InstallUpdate() error {
 		return err
 	}
 
-	// 完全脱离父进程启动安装程序。
-	// Windows 上走 launchInstaller（ShellExecuteW "open"）：交给系统 shell 启动，
-	// 安装器窗口必然以 SW_SHOWNORMAL 正常弹出，且与父进程(本应用)生命周期解耦，
-	// 父进程退出不影响安装器。避免 CreateProcess 子进程受父进程 STARTUPINFO 影响
-	// 导致窗口被隐藏（表现为"退出后安装程序在后台"）。非 Windows 用 open/xdg-open。
-	if err := launchInstaller(dlPath); err != nil {
-		return err
+	// 完全脱离父进程启动安装程序
+	// 注意：Windows 下直接使用 CreateProcess（exec.Command(dlPath)）启动。
+	// 安装器为 machine 级，launch 时会触发提权、以全新 STARTUPINFO 重新拉起，
+	// 故 hideConsoleWindow 不会压住安装器窗口。不经 cmd.exe，避免文件名中的
+	// & 等 cmd.exe 元字符导致命令注入。非 Windows 平台用 open/xdg-open。
+	switch runtime.GOOS {
+	case "windows":
+		cmd := exec.Command(dlPath)
+		hideConsoleWindow(cmd)
+		if err := cmd.Start(); err != nil {
+			return err
+		}
+	case "darwin":
+		if err := exec.Command("open", dlPath).Start(); err != nil {
+			return err
+		}
+	default:
+		if err := exec.Command("xdg-open", dlPath).Start(); err != nil {
+			return err
+		}
 	}
 
 	go func() {
