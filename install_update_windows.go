@@ -13,17 +13,17 @@ var (
 	procShellExecuteW = shell32.NewProc("ShellExecuteW")
 )
 
-// launchInstaller 在 Windows 上用 ShellExecuteW("open") 启动安装程序。
-// 之所以不直接用 exec.Command（CreateProcess）：
-//   - 安装器是 GUI 子系统程序，CreateProcess 作为父进程子进程启动，父进程（本应用）
-//     退出时两者的 STARTUPINFO 关联可能让安装器首窗口被隐藏，表现为"退出后安装程序
-//     在后台、没有窗口"；
-//   - ShellExecute 交给系统 shell 启动，子进程完全脱离父进程生命周期，且用默认
-//     SW_SHOWNORMAL 显示窗口，窗口必然正常弹出；
-//   - 走 "open" 动词而不是 cmd.exe，避免文件名中的 & 等元字符导致命令注入；
-//   - 本安装器为 user 级（无需 UAC 提权），"open" 以当前用户权限运行即可。
+// launchInstaller 在 Windows 上用 ShellExecuteW 启动安装程序。
+// 安装器为 machine 级（RequestExecutionLevel=admin），关键点：
+//   - 用 "runas" 动词显式触发提权：应用已是管理员则直接运行（无弹窗）；
+//     应用为普通用户则弹出 UAC，且因传了有效父窗口 HWND，UAC consent 框会
+//     正确锚定在应用窗口之上，不会像 hwnd=0 那样挂到后台/隐藏桌面，造成
+//     "安装程序进程在后台跑、没有窗口也没有 UAC" 的假象。
+//   - nShowCmd=SW_SHOWNORMAL 保证安装器首窗口以正常方式显示。
+//   - 不走 cmd.exe，避免文件名中的 & 等元字符导致命令注入；非 Windows 平台
+//     由 install_update_unix.go 的 launchInstaller 处理（open/xdg-open）。
 func launchInstaller(exePath string) error {
-	verb, err := syscall.UTF16PtrFromString("open")
+	verb, err := syscall.UTF16PtrFromString("runas")
 	if err != nil {
 		return err
 	}
@@ -31,21 +31,23 @@ func launchInstaller(exePath string) error {
 	if err != nil {
 		return err
 	}
-	// ShellExecuteW 返回值大于 32 表示成功。
-	// nShowCmd = SW_SHOWNORMAL(1)，确保安装器窗口以正常方式显示。
-	ret, _, callErr := procShellExecuteW.Call(
-		0, // hwnd
+	// 以主窗口为父窗口运行，锚定 UAC 提权框与安装器窗口，避免后台悬挂。
+	ret, _, _ := procShellExecuteW.Call(
+		getMainWindowHWND(), // hwnd: 主窗口句柄（可为 0，但传有效值更稳）
 		uintptr(unsafe.Pointer(verb)),
 		uintptr(unsafe.Pointer(file)),
 		0, // lpParameters
 		0, // lpDirectory
 		1, // SW_SHOWNORMAL
 	)
-	if uintptr(ret) <= 32 {
-		if callErr != syscall.Errno(0) {
-			return fmt.Errorf("ShellExecuteW failed: %w", callErr)
-		}
-		return fmt.Errorf("ShellExecuteW failed with status %d", uintptr(ret))
+	switch {
+	case uintptr(ret) == 5:
+		return fmt.Errorf("被拒绝启动安装程序（可能是访问被拒）")
+	case uintptr(ret) == 1223:
+		return fmt.Errorf("已取消提权，安装程序未启动")
+	case uintptr(ret) > 32:
+		return nil
+	default:
+		return fmt.Errorf("ShellExecuteW 启动安装程序失败，状态码 %d", uintptr(ret))
 	}
-	return nil
 }
