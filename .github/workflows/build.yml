@@ -276,17 +276,19 @@ jobs:
       # 删除同名已存在的 release：重新打 tag（如修正后重推）时，GitHub 上同名
       # release 已存在会导致 action-gh-release 无法把新的 changelog/release notes
       # 覆盖到旧 body 上。用 REST API 先删后建，确保每次 tag 都生成最新 release notes。
-      # 不用 gh CLI：容器内 gh 可能因认证/作用域静默失败，被 `|| true` 掩盖导致旧 release 残留。
+      # 输出 GET/DELETE 状态码，便于排查删除为何失败（如 403 权限）。
       - name: Delete existing release (if any)
         run: |
-          release_id="$(curl -s -H "Authorization: token ${GITHUB_TOKEN}" \
-            "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/tags/${GITHUB_REF_NAME}" | jq -r '.id // empty')"
-          if [ -n "$release_id" ]; then
-            curl -s -X DELETE -H "Authorization: token ${GITHUB_TOKEN}" \
-              "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/${release_id}"
-            echo "Deleted existing release id=${release_id}"
+          http_code="$(curl -s -o /tmp/release.json -w '%{http_code}' -H "Authorization: token ${GITHUB_TOKEN}" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/tags/${GITHUB_REF_NAME}")"
+          echo "GET release status=${http_code}"
+          if [ "${http_code}" = "200" ]; then
+            release_id="$(jq -r '.id // empty' /tmp/release.json)"
+            del_code="$(curl -s -o /tmp/del.json -w '%{http_code}' -X DELETE -H "Authorization: token ${GITHUB_TOKEN}" \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/${release_id}")"
+            echo "DELETE release id=${release_id} status=${del_code}"
           else
-            echo "No existing release for ${GITHUB_REF_NAME}"
+            echo "No existing release for ${GITHUB_REF_NAME} (status=${http_code})"
           fi
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -300,6 +302,8 @@ jobs:
           body_path: artifacts/CHANGELOG.txt
           files: |
             artifacts/AgentPack-*
+          update_release_body: true
+          update_release_assets: true
 
       - name: Create GitHub release (auto-generated notes)
         if: steps.check_changelog.outputs.has_changelog != 'true'
@@ -308,3 +312,5 @@ jobs:
           generate_release_notes: true
           files: |
             artifacts/AgentPack-*
+          update_release_body: true
+          update_release_assets: true
