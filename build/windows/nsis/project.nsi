@@ -98,16 +98,43 @@ ShowInstDetails show # This will always show the installation details.
 Function .onInit
    !insertmacro wails.checkArchitecture
 
+   # Use the 64-bit registry view to match the write side: wails.writeUninstaller
+   # calls SetRegView 64 before this installer writes AGENTPACK_INSTALL_DIR_KEY.
+   # Without this a 32-bit installer reads WOW6432Node while the value lives in
+   # the native view, so the remembered directory would never be found.
+   SetRegView 64
+
    # Restore the previously saved install directory (overrides InstallDir), so
-   # upgrades do not force the user to manually re-pick a location.
-   # Check HKLM first (machine-scope installs) then fall back to HKCU
-   # (per-user installs) to support both.
+   # upgrades do not force the user to manually re-pick a location. Order:
+   #  1) InstallDir value written by this installer since 0.2.4 (HKLM, then HKCU
+   #     for the short-lived per-user builds)
+   #  2) Pre-0.2.4 installs never wrote InstallDir; derive the directory from
+   #     the uninstall entry (UninstallString = "$INSTDIR\uninstall.exe")
    ReadRegStr $0 HKLM "${AGENTPACK_INSTALL_DIR_KEY}" "${AGENTPACK_INSTALL_DIR_VALUE}"
-   StrCmp $0 "" try_hkcu
-   Goto restore_dir
-   try_hkcu:
+   StrCmp $0 "" try_hklm_uninst restore_dir
+
+   try_hklm_uninst:
+   ReadRegStr $0 HKLM "${UNINST_KEY}" "UninstallString"
+   StrCmp $0 "" try_hkcu_uninst strip_uninst
+
+   try_hkcu_uninst:
+   ReadRegStr $0 HKCU "${UNINST_KEY}" "UninstallString"
+   StrCmp $0 "" try_hkcu_dir strip_uninst
+
+   try_hkcu_dir:
    ReadRegStr $0 HKCU "${AGENTPACK_INSTALL_DIR_KEY}" "${AGENTPACK_INSTALL_DIR_VALUE}"
-   StrCmp $0 "" skip_restore_dir
+   StrCmp $0 "" skip_restore_dir restore_dir
+
+   strip_uninst:
+   # UninstallString is "$INSTDIR\uninstall.exe" (quoted); strip the quotes and
+   # the trailing "\uninstall.exe" (13 chars) to recover $INSTDIR.
+   StrCpy $1 $0 1
+   StrCmp $1 `"` 0 +3
+     StrCpy $0 $0 "" 1
+     StrCpy $0 $0 -1
+   StrCpy $0 $0 -13
+   StrCmp $0 "" skip_restore_dir restore_dir
+
    restore_dir:
    StrCpy $INSTDIR $0
    skip_restore_dir:
@@ -137,7 +164,10 @@ Section
     !insertmacro wails.associateCustomProtocols
     
     !insertmacro wails.writeUninstaller
-    # Save the install directory for the next upgrade/reinstall
+    # Save the install directory for the next upgrade/reinstall. SetRegView 64
+    # matches the read in .onInit (also set by writeUninstaller above; restated
+    # so this write stays correct if the macro order ever changes).
+    SetRegView 64
     WriteRegStr HKLM "${AGENTPACK_INSTALL_DIR_KEY}" "${AGENTPACK_INSTALL_DIR_VALUE}" "$INSTDIR"
 SectionEnd
 
@@ -156,6 +186,9 @@ Section "uninstall"
 
     !insertmacro wails.deleteUninstaller
 
-    # Clean up the remembered install directory on uninstall
+    # Clean up the remembered install directory on uninstall (same 64-bit view
+    # used by the installer's write).
+    SetRegView 64
     DeleteRegKey HKLM "${AGENTPACK_INSTALL_DIR_KEY}"
+    DeleteRegKey HKCU "${AGENTPACK_INSTALL_DIR_KEY}"
 SectionEnd
