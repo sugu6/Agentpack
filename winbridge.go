@@ -26,6 +26,7 @@ var (
 	procDeleteObject     = gdi32Proc.NewProc("DeleteObject")
 	procSetWindowPos     = user32Proc.NewProc("SetWindowPos")
 	procDwmSetWindowAttr = dwmapiProc.NewProc("DwmSetWindowAttribute")
+	procDefWindowProc    = user32Proc.NewProc("DefWindowProcW")
 )
 
 // EmptyWorkingSet 位于 psapi.dll，GetCurrentProcess 位于 kernel32.dll
@@ -39,6 +40,12 @@ var (
 const (
 	// GCLP_HBRBACKGROUND = -10 用二进制补码表示
 	gclpHbrBackground         = ^uintptr(10)
+	// WM_NCACTIVATE：窗口标题栏/非客户区激活状态变化。DWM 据其决定系统背景材质
+	// （Mica/Acrylic）使用"活跃"还是"不活跃"色调——失焦时回退为去饱和中性色
+	//（即用户观察到的"长时间不操作后主题泛白"）。
+	wmNcActivate              = 0x0086
+	// WM_NCACTIVATE 中传给 DefWindowProc 的 lParam=-1 表示抑制非客户区重绘
+	ncActivateSuppressRepaint = ^uintptr(0)
 	hollowBrush               = 5 // GetStockObject: HOLLOW_BRUSH（NULL_BRUSH 别名）
 	swpFrameChanged           = 0x0020
 	swpNoMove                 = 0x0002
@@ -104,6 +111,17 @@ func WndProcHook(hwnd uintptr, msg uint32, wParam, lParam uintptr) (uintptr, boo
 		}
 		// 系统主题切换（WM_SETTINGCHANGE/ImmersiveColorSet）由 wails 内置的
 		// events.Windows.SystemThemeChanged 事件处理，见 registerSystemThemeHook。
+	case wmNcActivate:
+		// Windows 11 Mica/Acrylic 在窗口失焦时由 DWM 自动降级为去饱和中性色
+		//（表现为主题泛白），且无系统级开关可关闭。这里在窗口失焦（wParam==FALSE）
+		// 时向 DefWindowProc 转发 wParam=TRUE（lParam=-1 抑制重绘），欺骗 DWM
+		// 使其持续保留"活跃"的 Mica 色调。真实焦点（WM_SETFOCUS/KILLFOCUS）不受影响，
+		// 仅拦截失焦这一种情况。此做法与 wezterm / Windows Terminal 保持背景材质的
+		// 成熟方案一致。
+		if wParam == 0 {
+			res, _, _ := procDefWindowProc.Call(hwnd, uintptr(msg), 1, ncActivateSuppressRepaint)
+			return res, true
+		}
 	}
 	return 0, false
 }
