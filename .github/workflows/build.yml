@@ -142,21 +142,24 @@ jobs:
           fi
           wails3 task windows:sign
 
-      - name: Package Windows NSIS installer (from signed exe)
+      - name: Package Windows NSIS installer (releases)
         if: runner.os == 'Windows' && startsWith(github.ref, 'refs/tags/v')
         shell: bash
         env:
           WINDOWS_CERT_PFX: ${{ secrets.WINDOWS_CERT_PFX }}
           WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
         run: |
-          if [ -z "$WINDOWS_CERT_PFX" ]; then
-            exit 0
+          if [ -n "$WINDOWS_CERT_PFX" ]; then
+            # 有签名证书：用已签名的 bin/AgentPack.exe 打包 NSIS（不重新构建，避免覆盖签名），
+            # 再签名安装包本身（sign:installer 依赖 create:nsis:installer 会重建，会覆盖 exe 签名，故不采用）。
+            wails3 task windows:package:signed
+            wails3 tool sign --input "build/windows/nsis/AgentPack-installer.exe" --certificate "$WINDOWS_CERT_PFX" --password "$WINDOWS_CERT_PASSWORD"
+          else
+            # 无签名证书：仍必须构建未签名安装器，否则 release 只有 zip、没有 exe 安装包，
+            # 应用内更新会退化为下载 zip（无法自动安装）。
+            echo "WINDOWS_CERT_PFX secret not set; building unsigned installer."
+            wails3 task windows:create:nsis:installer
           fi
-          # package:signed 用已签名的 bin/AgentPack.exe 打包（不重新构建，避免覆盖签名）。
-          # 随后直接签名安装包本身（sign:installer 依赖 create:nsis:installer 会重建，
-          # 会覆盖 exe 签名，故不采用）。
-          wails3 task windows:package:signed
-          wails3 tool sign --input "build/windows/nsis/AgentPack-installer.exe" --certificate "$WINDOWS_CERT_PFX" --password "$WINDOWS_CERT_PASSWORD"
 
       - name: Package Windows NSIS installer (unsigned)
         if: runner.os == 'Windows' && !startsWith(github.ref, 'refs/tags/v')
