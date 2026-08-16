@@ -50,7 +50,9 @@ if (!repoUrl) {
   process.exit(1)
 }
 
-const today = new Date().toISOString().slice(0, 10)
+// 用本地时区（Asia/Shanghai 等）计算发版日期，避免 toISOString() 返回 UTC 导致日期比本地提前一天
+const now = new Date()
+const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
 
 // 脚本实际修改过的文件（用于 commit + tag）
 const changedFiles = []
