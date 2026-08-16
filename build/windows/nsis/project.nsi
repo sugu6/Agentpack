@@ -23,15 +23,12 @@ Unicode true
 ## !define INFO_COMPANYNAME    "My Company" # Default "My Company"
 ## !define INFO_PRODUCTNAME    "My Product Name" # Default "My Product"
 ## !define INFO_PRODUCTVERSION "1.0.0"     # Default "0.1.0"
-## !define INFO_COPYRIGHT      "(c) Now, My Company" # Default "© 2026, My Company"
+## !define INFO_COPYRIGHT      "(c) Now, My Company" # Default "Copyright (c) Now, My Company"
 ###
 ## !define PRODUCT_EXECUTABLE  "Application.exe"      # Default "${INFO_PROJECTNAME}.exe"
 ## !define UNINST_KEY_NAME     "UninstKeyInRegistry"  # Default "${INFO_COMPANYNAME}${INFO_PRODUCTNAME}"
 ####
 ## !define REQUEST_EXECUTION_LEVEL "admin"            # Default "admin"  see also https://nsis.sourceforge.io/Docs/Chapter4.html
-!ifndef WAILS_INSTALL_SCOPE
-    !define WAILS_INSTALL_SCOPE "user"   # per-user install ($LOCALAPPDATA) without UAC prompt
-!endif
 ####
 ## Include the wails tools
 ####
@@ -69,10 +66,8 @@ ManifestDPIAware true
 
 !insertmacro MUI_LANGUAGE "English" # Set the Language of the installer
 
-## 记住上次安装位置（Windows 注册表键与值名）
-## 升级/重装时读取该键作为默认安装目录，安装完成后写回，卸载时删除。
-## 本安装器为 user 级（WAILS_INSTALL_SCOPE=user），普通权限运行，读写 HKCU
-## 即当前用户自己的注册表，读写一致，无需管理员权限即可记住安装位置。
+# Remember the last install directory in the registry so upgrades/reinstalls
+# restore it and the user does not have to re-pick a location every time.
 !define AGENTPACK_INSTALL_DIR_KEY "Software\${INFO_COMPANYNAME}\${INFO_PRODUCTNAME}"
 !define AGENTPACK_INSTALL_DIR_VALUE "InstallDir"
 
@@ -96,10 +91,17 @@ ShowInstDetails show # This will always show the installation details.
 Function .onInit
    !insertmacro wails.checkArchitecture
 
-   # 记住上次安装位置：若能读到注册表中保存的目录，则作为本次默认安装目录
-   # （覆盖 InstallDir 初值）。读不到/为空则沿用默认，不覆盖 wails 的架构判断。
+   # Restore the previously saved install directory (overrides InstallDir), so
+   # upgrades do not force the user to manually re-pick a location.
+   # Check HKLM first (machine-scope installs) then fall back to HKCU
+   # (per-user installs) to support both.
+   ReadRegStr $0 HKLM "${AGENTPACK_INSTALL_DIR_KEY}" "${AGENTPACK_INSTALL_DIR_VALUE}"
+   StrCmp $0 "" try_hkcu
+   Goto restore_dir
+   try_hkcu:
    ReadRegStr $0 HKCU "${AGENTPACK_INSTALL_DIR_KEY}" "${AGENTPACK_INSTALL_DIR_VALUE}"
    StrCmp $0 "" skip_restore_dir
+   restore_dir:
    StrCpy $INSTDIR $0
    skip_restore_dir:
 FunctionEnd
@@ -120,8 +122,8 @@ Section
     !insertmacro wails.associateCustomProtocols
     
     !insertmacro wails.writeUninstaller
-    # 记住安装位置，供下次升级/重装时还原目录
-    WriteRegStr HKCU "${AGENTPACK_INSTALL_DIR_KEY}" "${AGENTPACK_INSTALL_DIR_VALUE}" "$INSTDIR"
+    # Save the install directory for the next upgrade/reinstall
+    WriteRegStr HKLM "${AGENTPACK_INSTALL_DIR_KEY}" "${AGENTPACK_INSTALL_DIR_VALUE}" "$INSTDIR"
 SectionEnd
 
 Section "uninstall" 
@@ -139,6 +141,6 @@ Section "uninstall"
 
     !insertmacro wails.deleteUninstaller
 
-    # 清理记住的安装位置，卸载后不留残留
-    DeleteRegKey HKCU "${AGENTPACK_INSTALL_DIR_KEY}"
+    # Clean up the remembered install directory on uninstall
+    DeleteRegKey HKLM "${AGENTPACK_INSTALL_DIR_KEY}"
 SectionEnd

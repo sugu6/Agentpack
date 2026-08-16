@@ -10,7 +10,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -932,28 +931,13 @@ func (a *App) InstallUpdate() error {
 		return err
 	}
 
-	// 完全脱离父进程启动安装程序
-	// Windows 安装器为 user 级（RequestExecutionLevel=user，无需 UAC 提权），
-	// 用 CreateProcess（exec.Command）即可直接启动；不经 cmd.exe，避免文件名中的
-	// & 等 cmd.exe 元字符导致命令注入。非 Windows 平台用 open/xdg-open。
-	switch runtime.GOOS {
-	case "windows":
-		// 安装器是 GUI 子系统程序，必须用默认 STARTUPINFO 启动，让它的首个
-		// 窗口正常弹出。不能用 hideConsoleWindow（等价于 STARTF_USESHOWWINDOW +
-		// SW_HIDE），否则安装器首个窗口会按 wShowWindow=SW_HIDE 被隐藏，表现为
-		// "点击重启并安装后没有任何安装窗口出现"。
-		cmd := exec.Command(dlPath)
-		if err := cmd.Start(); err != nil {
-			return err
-		}
-	case "darwin":
-		if err := exec.Command("open", dlPath).Start(); err != nil {
-			return err
-		}
-	default:
-		if err := exec.Command("xdg-open", dlPath).Start(); err != nil {
-			return err
-		}
+	// 完全脱离父进程启动安装程序。
+	// Windows 上走 launchInstaller（ShellExecuteW "open"）：交给系统 shell 启动，
+	// 安装器窗口必然以 SW_SHOWNORMAL 正常弹出，且与父进程(本应用)生命周期解耦，
+	// 父进程退出不影响安装器。避免 CreateProcess 子进程受父进程 STARTUPINFO 影响
+	// 导致窗口被隐藏（表现为"退出后安装程序在后台"）。非 Windows 用 open/xdg-open。
+	if err := launchInstaller(dlPath); err != nil {
+		return err
 	}
 
 	go func() {
