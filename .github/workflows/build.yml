@@ -273,6 +273,15 @@ jobs:
             echo "has_changelog=false" >> $GITHUB_OUTPUT
           fi
 
+      # 删除同名已存在的 release：重新打 tag（如修正后重推）时，GitHub 上同名
+      # release 已存在会导致 action-gh-release 创建失败，新增的 changelog/release
+      # notes 无法覆盖旧内容。先删后建，确保每次 tag 都生成最新 release notes。
+      - name: Delete existing release (if any)
+        run: |
+          gh release delete "${{ github.ref_name }}" --yes 2>/dev/null || true
+        env:
+          GH_TOKEN: ${{ github.token }}
+
       - name: Create GitHub release (with changelog)
         if: steps.check_changelog.outputs.has_changelog == 'true'
         uses: softprops/action-gh-release@v2
