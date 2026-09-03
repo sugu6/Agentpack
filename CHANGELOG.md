@@ -7,7 +7,7 @@
 
 ## [Unreleased]
 
-## [0.3.0] - 2026-09-04
+## [0.3.0](https://github.com/sugu6/Agentpack/compare/v0.2.4...v0.3.0) - 2026-09-04
 
 ### 特性
 
@@ -454,4 +454,6 @@ AgentPack 的初始版本，一款面向 AI 编码工具的统一 MCP / Skills /
 ### 持续集成
 
 - 用 macos-latest 上的 darwin/universal 构建替代 macos-13 intel 构建
+
 [Unreleased]: https://github.com/sugu6/Agentpack/compare/v0.3.0...HEAD
+

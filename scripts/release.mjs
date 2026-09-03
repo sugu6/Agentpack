@@ -160,18 +160,22 @@ function updateChangelog(file) {
   let content = readFileSync(file, 'utf8')
   let modified = false
 
+  // 兼容人工编辑产生的写法：转义括号（\[ / \]）、行首缩进、header 内联 URL
+  const esc = '\\\\?' // 正则片段：匹配一个可选的字面反斜杠
+  const optionalUrl = '(?:\\([^)]*\\))?' // 可选的内联 URL，如 ## [0.3.0](url)
+
   // 检查目标版本节是否已存在
-  const versionSectionExists = new RegExp(`## \\[${version}\\]`).test(content)
+  const versionSectionExists = new RegExp(`## ${esc}\\[${version}${esc}\\]`).test(content)
 
   // 检查 [Unreleased] 节是否有内容
   // 注意：用 [ \t]*\n 而非 \s*\n，避免贪婪匹配消耗空行导致下一个版本节内容被误匹配
-  const unreleasedMatch = content.match(/## \[Unreleased\][ \t]*\n([\s\S]*?)(?=\n## \[)/)
+  const unreleasedMatch = content.match(new RegExp(`## ${esc}\\[Unreleased${esc}\\][ \\t]*\\n([\\s\\S]*?)(?=\\n## ${esc}\\[)`))
   const hasUnreleasedContent = unreleasedMatch && unreleasedMatch[1].trim()
 
   if (hasUnreleasedContent) {
     // 将 [Unreleased] 内容转为新版本节，顶部添加新的空 [Unreleased]
     content = content.replace(
-      /## \[Unreleased\][ \t]*\n/,
+      new RegExp(`## ${esc}\\[Unreleased${esc}\\][ \\t]*\\n`),
       `## [Unreleased]\n\n## [${version}] - ${today}\n`
     )
     modified = true
@@ -185,7 +189,7 @@ function updateChangelog(file) {
   }
 
   // 发版时始终将目标版本节的发版日期刷新为今天（含用户已手动维护但日期滞后的场景）
-  const datePattern = new RegExp(`(^## \\[${version}\\]\\s*-\\s*)\\d{4}-\\d{2}-\\d{2}`, 'm')
+  const datePattern = new RegExp(`(^## ${esc}\\[${version}${esc}\\]${optionalUrl}\\s*-\\s*)\\d{4}-\\d{2}-\\d{2}`, 'm')
   const dateMatch = content.match(datePattern)
   const currentDate = dateMatch && dateMatch[0].match(/\d{4}-\d{2}-\d{2}/)[0]
   if (currentDate !== today) {
@@ -204,11 +208,25 @@ function updateChangelog(file) {
     console.log(`${file}: fixed repo URLs -> ${repoUrl}`)
   }
 
-  // 添加新版本的 compare 链接（如果不存在）
-  const versionLinkPattern = new RegExp(`^\\[${version}\\]:`, 'm')
+  // 确保 [Unreleased] 引用行存在且干净。
+  // 兼容转义/行首缩进；缺失时追加（空行分隔，避免粘到上一个列表项末尾）。
+  const unreleasedLinkRegex = new RegExp(`^[ \\t]*${esc}\\[Unreleased${esc}\\]:[^\\n]*$`, 'm')
+  const newUnreleasedLink = `[Unreleased]: ${repoUrl}/compare/v${version}...HEAD`
+  if (unreleasedLinkRegex.test(content)) {
+    content = content.replace(unreleasedLinkRegex, newUnreleasedLink)
+    modified = true
+  } else {
+    content = content.trimEnd() + '\n\n' + newUnreleasedLink + '\n'
+    modified = true
+    console.log(`${file}: added [Unreleased] compare link`)
+  }
+
+  // 补充当前版本的 compare 链接（紧跟 [Unreleased] 之后）。
+  // 若版本节已由用户手动维护，这里补齐链接，避免出现标题无链接的情况。
+  const versionLinkPattern = new RegExp(`^${esc}\\[${version}${esc}\\]:`, 'm')
   if (!versionLinkPattern.test(content)) {
     // 找到前一个版本号（[Unreleased] 后面的第一个版本号，排除当前版本）
-    const versionMatches = content.matchAll(/\[(\d+\.\d+\.\d+)\]/g)
+    const versionMatches = content.matchAll(new RegExp(`${esc}\\[(\\d+\\.\\d+\\.\\d+)${esc}\\]`, 'g'))
     let prevVersion = null
     for (const m of versionMatches) {
       const v = m[1]
@@ -222,29 +240,13 @@ function updateChangelog(file) {
       ? `${repoUrl}/compare/v${prevVersion}...v${version}`
       : `${repoUrl}/releases/tag/v${version}`
 
-    // 在 [Unreleased] 链接行后插入新版本链接
-    const unreleasedLinkPattern = /^(\[Unreleased\]:[^\n]*\n)/m
-    if (unreleasedLinkPattern.test(content)) {
-      content = content.replace(
-        unreleasedLinkPattern,
-        `$1[${version}]: ${compareUrl}\n`
-      )
+    const versionLink = `[${version}]: ${compareUrl}\n`
+    const insertPoint = newUnreleasedLink + '\n'
+    if (content.includes(insertPoint)) {
+      content = content.replace(insertPoint, insertPoint + versionLink)
       modified = true
       console.log(`${file}: added compare link for [${version}]`)
     }
-  }
-
-  // 更新或添加 [Unreleased] 链接
-  const unreleasedLinkRegex = /^\[Unreleased\]:[^\n]*$/m
-  const newUnreleasedLink = `[Unreleased]: ${repoUrl}/compare/v${version}...HEAD`
-  if (unreleasedLinkRegex.test(content)) {
-    content = content.replace(unreleasedLinkRegex, newUnreleasedLink)
-    modified = true
-  } else {
-    // 底部没有 [Unreleased] 链接，在最后一个版本链接后添加
-    content = content.trimEnd() + '\n' + newUnreleasedLink + '\n'
-    modified = true
-    console.log(`${file}: added [Unreleased] compare link`)
   }
 
   if (modified) {
