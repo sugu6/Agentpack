@@ -7,6 +7,28 @@ versioned by [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-04
+
+### Features
+
+- **Architecture refactor**: `app.go`, `tray.go`, `lite.go` moved into sub-packages under `internal/app/` (backup, lite, market, skillbackfill, skillrepos, update, winbridge); MCP backend split into `jsonbackend` / `tomlbackend` / `store` / `types` sub-packages; `i18n` language detection isolated into `detect` sub-package; new `version.go` reads version from `build/config.yml`
+- **MCP remote transport support**: New SSE / HTTP / Streamable HTTP remote server types with `headers` passthrough for auth and `enabled` state preservation; JSON output format compatible with opencode official config
+- **Robust version parsing**: Indent-aware parser finds `version:` only within the `info:` block, no longer confused by top-level `version: '3'`
+
+### Bug Fixes
+
+- **MCP config zero-value pollution**: `opencodeServer` struct missing `omitempty` caused `"environment": null`, `"env": null`, `"url": ""`, `"timeout": 0` on newly added servers; fixed by adding proper JSON tags
+- **Update download race cleanup**: `Shutdown` and download goroutine could concurrently call `os.Remove` on the same temp file; added atomic `tmpRemoved` flag for mutual exclusion
+- **dlTmpPath race window**: `startDownload` now computes `dlTmpPath` while holding the lock, so `Cancel` / `Shutdown` always see a valid path
+- **Skill verification branch check**: `".."` path segment validation was nested inside `branch == ""` making it dead code; restructured into two separate checks — early return for invalid params, then per-segment traversal, no longer falsely rejecting valid branch names like `fix/..bar`
+- **recordPreferred lock granularity**: Merged per-iteration `Lock`/`Unlock` in `recordPreferred` to a single `defer Unlock`
+- **DB time comparison precision**: New `ParseTimeToInt64Nano` provides nanosecond-precision timestamps for `mergeDuplicatesLocked` ordering, fixing non-deterministic dedup for installs in the same second
+
+### Changes
+
+- Removed relocated files: `app_skillrepo_test.go`, `lite.go`, `lite_test.go`, `tray.go` and their counterparts
+- Updated test coverage: added `cleanup_test.go` (injectable `dir` via internal function), `version_test.go` (5 boundary cases)
+
 ## [0.2.4] - 2026-08-17
 
 ### Features
@@ -280,7 +302,8 @@ Initial release of AgentPack — a unified MCP / Skills / Agent management deskt
 [0.1.2]: https://github.com/sugu6/Agentpack/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/sugu6/Agentpack/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/sugu6/Agentpack/releases/tag/v0.1.0
-[Unreleased]: https://github.com/sugu6/Agentpack/compare/v0.2.4...HEAD
+[Unreleased]: https://github.com/sugu6/Agentpack/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/sugu6/Agentpack/compare/v0.2.4...v0.3.0
 [0.2.4]: https://github.com/sugu6/Agentpack/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/sugu6/Agentpack/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/sugu6/Agentpack/compare/v0.2.1...v0.2.2

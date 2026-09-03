@@ -5,6 +5,8 @@ package i18n
 import (
 	"fmt"
 	"strings"
+
+	"agentpack/internal/i18n/detect"
 )
 
 // T 翻译指定 key 到 lang 语言,使用 args 进行命名插值
@@ -37,18 +39,6 @@ func lookup(lang, key string) (string, bool) {
 	return v, ok
 }
 
-// DetectSystemLanguage 检测系统语言,返回 "zh-CN" 或 "en"
-// Windows: 调 GetUserDefaultLocaleName
-// Unix/macOS: 读 LANG 环境变量
-// 检测失败或不支持的语言统一回退到 "en"
-func DetectSystemLanguage() string {
-	lang := detectSystemLanguageOS()
-	if strings.HasPrefix(strings.ToLower(lang), "zh") {
-		return "zh-CN"
-	}
-	return "en"
-}
-
 // ResolveLanguage 将 Settings.Language 解析为最终语言
 // "" (跟随系统) → DetectSystemLanguage()
 // "zh-CN" / "en" → 原值
@@ -60,7 +50,7 @@ func ResolveLanguage(setting string) string {
 	case "en":
 		return "en"
 	case "":
-		return DetectSystemLanguage()
+		return detect.DetectSystemLanguage()
 	default:
 		return "en"
 	}

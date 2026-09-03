@@ -336,14 +336,6 @@ func (e *Exporter) ImportFromReader(r io.Reader, opts ImportOptions) (ImportResu
 	return e.Import(snap, opts)
 }
 
-// decodeSnapshot 解码导入数据为 Snapshot，兼容两种格式：
-//  1. 裸 Snapshot（早期导入文件，或直接由 Import 序列化的快照）
-//  2. ExportPayload{"manifest":..., "snapshot":...}（Manager.ExportToFile 导出的文件）
-//
-// Manager.ExportToFile 以 ExportPayload 包裹写出，而旧的导入路径直接按裸
-// Snapshot 反序列化——Go 的 json.Unmarshal 对未知顶层 key 静默忽略，导致
-// 导出文件被导入时得到空的 Snapshot（MCP/设置全部丢失但不报错）。此处先
-// 检查顶层是否含 "snapshot" 字段，有则取该字段，否则整体作为 Snapshot。
 // DecodeSnapshot 解码导入数据为 Snapshot，兼容两种格式：
 //  1. 裸 Snapshot（早期导入文件，或直接由 Import 序列化的快照）
 //  2. ExportPayload{"manifest":..., "snapshot":...}（Manager.ExportToFile 导出的文件）
@@ -352,7 +344,7 @@ func (e *Exporter) ImportFromReader(r io.Reader, opts ImportOptions) (ImportResu
 // Snapshot 反序列化——Go 的 json.Unmarshal 对未知顶层 key 静默忽略，导致
 // 导出文件被导入时得到空的 Snapshot（MCP/设置全部丢失但不报错）。此处先
 // 检查顶层是否含 "snapshot" 字段，有则取该字段，否则整体作为 Snapshot。
-// 导出（decodeSnapshot 保持包内私有）供 app 层在应用 MCP 之前预检设置。
+// 导出供 app 层在应用 MCP 之前预检设置。
 func DecodeSnapshot(data []byte) (Snapshot, error) {
 	var top map[string]json.RawMessage
 	if err := json.Unmarshal(data, &top); err != nil {

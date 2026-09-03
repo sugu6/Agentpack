@@ -65,7 +65,7 @@ AgentPack 是一个基于 [Wails v3](https://v3.wails.io)（Go + Vue 3 + TypeScr
 
 - **Windows**：需要 [WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/)
 - **macOS**：Xcode Command Line Tools
-- **Linux**：`libgtk-3-dev libwebkit2gtk-4.1-dev pkg-config libfuse2`
+- **Linux**：`libgtk-4-dev libwebkitgtk-6.0-dev pkg-config libfuse2`
 
 ## 快速开始
 
@@ -127,13 +127,11 @@ wails3 task linux:package
 
 ```
 AgentPack/
-├── app.go                 # Wails 应用主入口，暴露给前端的方法
+├── app.go                 # Wails 应用主入口，暴露给前端的方法（含系统托盘）
 ├── main.go                # 程序入口
-├── tray.go                # 系统托盘实现
-├── lite.go                # 轻量模式核心逻辑（空闲计时器、内存释放）
-├── update.go              # 更新检查（GitHub Releases API）
-├── winbridge.go           # Windows 主题桥接（Mica / 深色模式）
-├── winbridge_stub.go      # 非 Windows 平台的空实现
+├── version.go             # 版本信息（启动时从 build/config.yml 注入）
+├── app_windows.go         # Windows 平台构建标签文件
+├── app_unix.go            # 非 Windows 平台构建标签文件
 ├── devmode_dev.go         # 开发模式配置
 ├── devmode_prod.go        # 生产模式配置
 ├── Taskfile.yml           # Wails v3 构建任务定义
@@ -141,19 +139,27 @@ AgentPack/
 ├── CHANGELOG_EN.md        # 更新日志（英文）
 ├── internal/              # 后端业务逻辑
 │   ├── agents/            # Agent 检测与管理
+│   ├── app/               # App 服务层拆分子模块
+│   │   ├── backup/        # 备份/恢复编排
+│   │   ├── lite/          # 轻量模式（空闲计时器、内存释放）
+│   │   ├── market/        # 技能市场安装
+│   │   ├── skillbackfill/ # 技能来源回填
+│   │   ├── skillrepos/    # 技能仓库管理
+│   │   ├── update/        # 应用更新服务（检查/下载/安装状态机）
+│   │   └── winbridge/     # Windows 主题桥接（Mica / 深色模式）
+│   ├── appmeta/           # 跨包共享的应用元数据（版本号等）
 │   ├── backup/            # 备份与导入/导出
 │   ├── config/            # 配置管理
 │   ├── crypto/            # 环境变量加密
 │   ├── database/          # SQLite 数据库
 │   ├── dbutil/            # 数据库工具函数
-│   ├── i18n/              # 国际化（zh-CN / en）
+│   ├── i18n/              # 国际化（zh-CN / en，含系统语言检测）
 │   ├── iowriter/          # 原子写入
 │   ├── logger/            # 日志工具
-│   ├── market/            # 技能市场（Official / skills.sh / GitHub）
+│   ├── market/            # 技能市场（registry / skills.sh / GitHub）
 │   ├── mcp/               # MCP 服务器存储
 │   ├── shared/            # 共享工具函数
-│   ├── skills/            # Skills 管理与更新检查
-│   └── win32/             # Windows 平台特定实现
+│   └── skills/            # Skills 管理与更新检查
 ├── frontend/              # Vue 3 前端
 │   ├── src/
 │   │   ├── views/         # 页面（Agents / MCP / Skills / Market / Settings）

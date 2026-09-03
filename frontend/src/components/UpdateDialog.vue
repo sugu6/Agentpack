@@ -1,21 +1,19 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, onMounted, onUnmounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { api, events, type UpdateCheckResult } from '@/lib/api'
 import { useToast } from '@/composables/useToast'
-import { marked } from 'marked'
-import DOMPurify from 'dompurify'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter, Button } from '@/components/ui'
 import { PhDownload, PhArrowsClockwise, PhPause, PhTrash } from '@phosphor-icons/vue'
 
 const GITHUB_REPO = 'https://github.com/sugu6/Agentpack'
 
-function renderMarkdown(md: string): string {
-  if (!md) return ''
-  // 将相对路径链接（如 ./CHANGELOG.md）转为 GitHub 绝对 URL
-  const fixed = md.replace(/\]\(\.\/(CHANGELOG[^\)]*)\)/g, `](${GITHUB_REPO}/blob/master/$1)`)
-  return DOMPurify.sanitize(marked.parse(fixed, { async: false }) as string)
-}
+// changelog 渲染结果；marked+dompurify（约 70KB）仅此处使用，
+// 动态 import 按需加载，避免打入首屏主 chunk
+const changelogHtml = ref('')
+let renderSeq = 0
+const escapeHtml = (s: string) =>
+  s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c] ?? c)
 
 // 拦截 changelog 内的链接点击，在系统浏览器打开而非 WebView 内
 function onChangelogLinkClick(e: MouseEvent) {
@@ -41,6 +39,24 @@ const isCanceling = ref(false)
 // 用于在后端未提供 speed 时本地推算速度
 let lastTick = 0
 let lastTickBytes = 0
+
+watch(() => result.value?.changelog, async (md) => {
+  const seq = ++renderSeq
+  if (!md) {
+    changelogHtml.value = ''
+    return
+  }
+  try {
+    const [{ marked }, dompurify] = await Promise.all([import('marked'), import('dompurify')])
+    if (seq !== renderSeq) return
+    // 将相对路径链接（如 ./CHANGELOG.md）转为 GitHub 绝对 URL
+    const fixed = md.replace(/\]\(\.\/(CHANGELOG[^\)]*)\)/g, `](${GITHUB_REPO}/blob/master/$1)`)
+    changelogHtml.value = dompurify.default.sanitize(marked.parse(fixed, { async: false }) as string)
+  } catch {
+    // 动态加载失败（理论上不应发生，资源为本地打包产物）：转义后按纯文本展示
+    if (seq === renderSeq) changelogHtml.value = escapeHtml(md)
+  }
+})
 
 let offUpdateAvailable: (() => void) | null = null
 let offShowChangelog: (() => void) | null = null
@@ -251,7 +267,7 @@ function handleClose() {
       <div class="flex-1 overflow-y-auto">
         <div
           class="text-sm text-muted-foreground leading-relaxed max-w-none [&_a]:text-primary [&_a]:underline [&_h1]:text-base [&_h1]:font-semibold [&_h1]:mt-4 [&_h1]:mb-2 [&_h2]:text-sm [&_h2]:font-semibold [&_h2]:mt-3 [&_h2]:mb-2 [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:list-decimal [&_ol]:pl-5 [&_li]:my-1 [&_pre]:bg-muted [&_pre]:p-3 [&_pre]:rounded [&_pre]:overflow-x-auto [&_code]:text-primary [&_hr]:my-4 [&_blockquote]:border-l-2 [&_blockquote]:border-border [&_blockquote]:pl-3 [&_blockquote]:italic"
-          v-html="renderMarkdown(result?.changelog || '')"
+          v-html="changelogHtml"
           @click="onChangelogLinkClick"
         />
       </div>

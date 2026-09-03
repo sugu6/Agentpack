@@ -137,6 +137,8 @@ export class ApiError extends Error {
 function optimizeToPlainObject<T>(obj: T): T {
   if (obj === null || obj === undefined) return obj
   if (typeof obj === 'string' || typeof obj === 'number' || typeof obj === 'boolean') return obj
+  if (obj instanceof Date) return new Date(obj).toISOString() as unknown as T
+  if (obj instanceof RegExp) return obj.toString() as unknown as T
   if (Array.isArray(obj)) return obj.map(item => optimizeToPlainObject(item)) as unknown as T
   if (typeof obj === 'object') {
     const plain: Record<string, unknown> = {}
@@ -446,10 +448,10 @@ export const api = {
     showWindow: () => safeCall(() => ShowWindow()),
     notifyActivity: () => safeCall(() => NotifyActivity()),
     checkUpdate: async (): Promise<UpdateCheckResult> => {
-      return optimizeToPlainObject(await CheckUpdate()) as UpdateCheckResult
+      return optimizeToPlainObject(await safeCall(() => CheckUpdate())) as UpdateCheckResult
     },
     getAppVersion: async (): Promise<string> => {
-      return GetAppVersion()
+      return safeCall(() => GetAppVersion())
     },
     startDownloadUpdate: async (url: string): Promise<void> => {
       return safeCall(() => StartDownloadUpdate(url))
@@ -474,9 +476,6 @@ export const events = {
     return Events.On(event, (ev) => {
       callback(ev.data)
     })
-  },
-  off(event: string) {
-    Events.Off(event)
   },
   emit(event: string, ...args: unknown[]) {
     Events.Emit(event, args.length > 0 ? args[0] : undefined)

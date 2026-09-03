@@ -12,7 +12,6 @@ export const useAgentsStore = defineStore('agents', () => {
   const detected = computed(() => items.value.filter((a) => a.status !== 'not_found'))
   const enabled = computed(() => items.value.filter((a) => a.status === 'enabled'))
   const active = computed(() => items.value.filter((a) => a.status === 'enabled' || a.status === 'detected'))
-  const totalMcp = computed(() => items.value.reduce((s, a) => s + a.mcpCount, 0))
 
   // id → 是否 active（enabled/detected）的映射。
   // 合并组（mergedGroups）会包含 disabled 变体成员（如 CLI enabled + Desktop disabled），
@@ -181,13 +180,20 @@ export const useAgentsStore = defineStore('agents', () => {
   async function toggle(id: string, enabled: boolean) {
     try {
       await api.agents.toggle(id, enabled)
-      // 强制刷新：toggle 常被 UI 在 loading 已置位（初始扫描）时调用，
-      // 默认守卫会跳过刷新导致 UI 与后端不一致
-      await fetch(true)
     } catch (e) {
       const apiError = ApiError.from(e)
       error.value = apiError.message
       throw apiError
+    }
+    // toggle 已在后端生效；后续刷新失败不应让调用方误判为切换失败
+    // （错误 toast 会诱导用户重试，造成二次反向切换）。刷新错误已由
+    // runList 写入 error 供状态栏展示，下次 fetch 会恢复一致。
+    try {
+      // 强制刷新：toggle 常被 UI 在 loading 已置位（初始扫描）时调用，
+      // 默认守卫会跳过刷新导致 UI 与后端不一致
+      await fetch(true)
+    } catch {
+      // 刷新失败不影响 toggle 成功语义
     }
   }
 
@@ -203,7 +209,6 @@ export const useAgentsStore = defineStore('agents', () => {
     detected,
     enabled,
     active,
-    totalMcp,
     activeIds,
     sorted,
     mergedGroups,

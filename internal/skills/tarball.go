@@ -50,6 +50,22 @@ var tarballHTTPClient = &http.Client{
 		// 禁用 HTTP/2，避免代理环境下空闲连接收到 400
 		TLSNextProto: make(map[string]func(authority string, c *tls.Conn) http.RoundTripper),
 	},
+	CheckRedirect: sameHostRedirectPolicy,
+}
+
+// sameHostRedirectPolicy 只跟随同主机重定向。实测 jsDelivr 对无法提供的
+// 文件（仓库被上游封锁/未收录）会 301 到 raw.githubusercontent.com——
+// GFW 环境下该目标不可达，默认跟随会让每个 CDN 候选都耗满超时（表现为
+// 整条 jsDelivr 链全挂），而拒绝后 3xx 按候选失败处理，立即尝试下一候选
+// （如直接服务内容的 jsdmirror 镜像）。同主机跳数限 3 防循环。
+func sameHostRedirectPolicy(req *http.Request, via []*http.Request) error {
+	if len(via) >= 3 {
+		return fmt.Errorf("stopped after 3 redirects")
+	}
+	if req.URL.Host != via[0].URL.Host {
+		return http.ErrUseLastResponse
+	}
+	return nil
 }
 
 // InstallFromTarball 从 GitHub tarball URL 安装 skill 到 SSOT 并同步到 agents
@@ -164,7 +180,7 @@ func tarballCandidateURLs(tarballURL string) []string {
 
 // downloadAndExtractTarball 下载 tar.gz（多代理候选）并安全解压到目标目录
 func downloadAndExtractTarball(ctx context.Context, tarballURL, dest string) error {
-	data, err := httpGetBody(ctx, tarballCandidateURLs(tarballURL))
+	data, _, err := httpGetBody(ctx, tarballCandidateURLs(tarballURL))
 	if err != nil {
 		return fmt.Errorf("download tarball: %w", err)
 	}

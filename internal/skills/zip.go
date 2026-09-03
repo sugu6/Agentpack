@@ -176,7 +176,10 @@ func isWithinDir(target, base string) bool {
 	if rel == "." {
 		return true
 	}
-	return !strings.HasPrefix(rel, "..") && !strings.Contains(rel, string(filepath.Separator)+"..")
+	// filepath.Rel 输出已词法净化（无中间 ".." 段）：target 逃逸 base 时
+	// rel 必为 ".." 或以 "../" 开头。按路径段精确匹配，避免把 ..bar、
+	// foo/..bar 等合法文件名误判为逃逸。
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 // findSkillRoot 在解压目录中查找含 SKILL.md 的 skill 根目录。

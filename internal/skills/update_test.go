@@ -38,12 +38,27 @@ func mockFetchSHA(sha string, err error) func() {
 func forceGitFallbackForTest(t *testing.T) {
 	t.Helper()
 	origJS := jsDelivrDataBase
+	origJSData := jsDelivrDataFallbackBases
 	origGH := gitHubAPIBases
+	origHosts := jsDelivrFileHosts
+	origRawProxies := gitHubRawProxies
+	origRawMirrors := gitHubRawMirrors
+	origRawDirect := gitHubRawDirect
 	jsDelivrDataBase = "http://127.0.0.1:1"
+	jsDelivrDataFallbackBases = []string{"http://127.0.0.1:1"}
 	gitHubAPIBases = []string{"http://127.0.0.1:1"}
+	jsDelivrFileHosts = []string{"http://127.0.0.1:1"}
+	gitHubRawProxies = []string{"http://127.0.0.1:1"}
+	gitHubRawMirrors = []string{"http://127.0.0.1:1"}
+	gitHubRawDirect = "http://127.0.0.1:1"
 	t.Cleanup(func() {
 		jsDelivrDataBase = origJS
+		jsDelivrDataFallbackBases = origJSData
 		gitHubAPIBases = origGH
+		jsDelivrFileHosts = origHosts
+		gitHubRawProxies = origRawProxies
+		gitHubRawMirrors = origRawMirrors
+		gitHubRawDirect = origRawDirect
 	})
 }
 

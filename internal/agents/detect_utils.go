@@ -36,6 +36,12 @@ func CheckCommandExists(cmd string) bool {
 	}
 
 	for _, dir := range filepath.SplitList(path) {
+		// 容忍带引号的 PATH 条目（cmd.exe 接受 "C:\Program Files\xxx" 写法，
+		// SplitList 不剥离引号，含字面引号的路径 os.Stat 必然失败导致漏检）
+		dir = strings.Trim(strings.TrimSpace(dir), `"'`)
+		if dir == "" {
+			continue
+		}
 		for _, ext := range exts {
 			cmdPath := filepath.Join(dir, cmd+ext)
 			info, err := os.Stat(cmdPath)
@@ -300,7 +306,13 @@ func pathExists(p string) bool {
 
 // expandEnvPath 展开路径中的环境变量与用户主目录标记：
 // 支持 %VAR%（Windows 风格）、$VAR/${VAR} 以及前导 ~。
+// 注册表 InstallLocation 等值常被引号包裹（如 "C:\Program Files\App"），
+// 先剥离首尾引号再展开，否则 os.Stat 按含字面引号的路径查找必然失败。
 func expandEnvPath(p string) string {
+	if p == "" {
+		return ""
+	}
+	p = strings.Trim(strings.TrimSpace(p), `"`)
 	if p == "" {
 		return ""
 	}

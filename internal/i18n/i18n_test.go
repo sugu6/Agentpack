@@ -99,13 +99,6 @@ func TestResolveLanguage(t *testing.T) {
 	}
 }
 
-func TestDetectSystemLanguage(t *testing.T) {
-	got := DetectSystemLanguage()
-	if got != "zh-CN" && got != "en" {
-		t.Errorf("DetectSystemLanguage = %q, want zh-CN or en", got)
-	}
-}
-
 func keySet(m map[string]string) map[string]bool {
 	s := make(map[string]bool, len(m))
 	for k := range m {

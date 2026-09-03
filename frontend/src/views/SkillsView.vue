@@ -105,6 +105,17 @@ function toggleImportSelect(path: string, agentIds: string[]) {
   importConfig.value = next
 }
 
+// "全选"复选框：勾选时全部按来源 agent 选中，取消时清空选择
+function toggleImportSelectAll(checked: boolean) {
+  if (!checked) {
+    importConfig.value = new Map()
+    return
+  }
+  const next = new Map<string, Set<string>>()
+  unmanagedList.value.forEach(u => next.set(u.path, new Set(u.agentIds)))
+  importConfig.value = next
+}
+
 function toggleImportAgentExplicit(path: string, agentId: string, enabled: boolean, defaultAgentIds: string[]) {
   const next = new Map(importConfig.value)
   let current = next.get(path)
@@ -574,15 +585,7 @@ async function scanSkills() {
               type="checkbox"
               :checked="selectedPaths.length === unmanagedList.length"
               :indeterminate="selectedPaths.length > 0 && selectedPaths.length < unmanagedList.length"
-              @change="(e: Event) => {
-                if ((e.target as HTMLInputElement).checked) {
-                  const next = new Map()
-                  unmanagedList.forEach(u => next.set(u.path, new Set(u.agentIds)))
-                  importConfig = next
-                } else {
-                  importConfig = new Map()
-                }
-              }"
+              @change="(e: Event) => toggleImportSelectAll((e.target as HTMLInputElement).checked)"
               class="h-3.5 w-3.5"
             />
             {{ t('common.selectAll') }}

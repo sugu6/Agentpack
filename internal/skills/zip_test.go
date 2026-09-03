@@ -58,6 +58,41 @@ func TestInstallFromZip_RootSkillUsesZipName(t *testing.T) {
 	}
 }
 
+// TestIsWithinDir 覆盖 Tar/Zip Slip 防护的边界判定：逃逸必须拒绝，
+// 但 ..bar / foo/..bar 等以 ".." 开头的合法文件名不能误拒。
+func TestIsWithinDir(t *testing.T) {
+	base := t.TempDir()
+	sep := string(os.PathSeparator)
+
+	tests := []struct {
+		name   string
+		rel    string // 相对 base 的目标（已用 Join 净化）
+		within bool
+	}{
+		{"base 本身", ".", true},
+		{"base 内普通文件", "skill.md", true},
+		{"base 内嵌套目录", filepath.Join("sub", "dir", "f.txt"), true},
+		{"以 .. 开头的合法文件名 ..bar", "..bar", true},
+		{"嵌套目录下的 ..bar", filepath.Join("foo", "..bar"), true},
+		{"父目录", "..", false},
+		{"父目录下逃逸", sep + ".." + sep + "escape", false},
+		{"深层逃逸", sep + ".." + sep + ".." + sep + "escape", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			target := filepath.Join(base, tt.rel)
+			if got := isWithinDir(target, base); got != tt.within {
+				t.Errorf("isWithinDir(%q, base) = %v, want %v", tt.rel, got, tt.within)
+			}
+		})
+	}
+
+	// 完全无关的绝对路径同样必须拒绝
+	if isWithinDir(base+"-sibling", base) {
+		t.Error("sibling directory must not be considered within base")
+	}
+}
+
 // TestFindSkillRootInTarball_RepoRootIsSkill 验证仓库根目录本身就是 skill 时
 // （{repo}-{hash}/SKILL.md）能正确定位，而不是报"未找到 SKILL.md"。
 func TestFindSkillRootInTarball_RepoRootIsSkill(t *testing.T) {

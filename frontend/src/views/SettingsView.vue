@@ -45,8 +45,8 @@ const importDialog = ref({
 onMounted(() => {
   // 主动拉取一次设置，防止 store 在其他页面操作后陈旧
   void settings.fetch()
-  // 从后端获取版本号
-  api.system.getAppVersion().then(v => { appVersion.value = v }).catch(() => {})
+  // 从后端获取版本号；失败时用占位符，避免界面渲染成孤立的 "v"
+  api.system.getAppVersion().then(v => { appVersion.value = v }).catch(() => { appVersion.value = '?' })
 })
 
 // 0 是合法值：后端 backupRetention=0 表示无限保留。MIN 取 0 而不是 1，
@@ -559,7 +559,7 @@ const marketSourceList = computed(() => {
       <CardContent class="space-y-3">
         <div class="flex items-center justify-between">
           <Label>{{ t('settings.theme') }}</Label>
-          <Tabs :model-value="settings.config.theme" @update:model-value="(v: any) => setTheme(v)" class="w-fit">
+          <Tabs :model-value="settings.config.theme" @update:model-value="(v) => setTheme(v as 'light' | 'dark' | 'system')" class="w-fit">
             <TabsList>
               <TabsTrigger value="light">{{ t('settings.themeOptions.light') }}</TabsTrigger>
               <TabsTrigger value="dark">{{ t('settings.themeOptions.dark') }}</TabsTrigger>
@@ -569,7 +569,7 @@ const marketSourceList = computed(() => {
         </div>
         <div class="flex items-center justify-between">
           <Label>{{ t('settings.language') }}</Label>
-          <Tabs :model-value="settings.config.language" @update:model-value="(v: any) => setLanguage(v)" class="w-fit">
+          <Tabs :model-value="settings.config.language" @update:model-value="(v) => setLanguage(v as 'zh-CN' | 'en')" class="w-fit">
             <TabsList>
               <TabsTrigger value="">{{ t('settings.languageOptions.system') }}</TabsTrigger>
               <TabsTrigger value="zh-CN">{{ t('settings.languageOptions.zhCN') }}</TabsTrigger>
@@ -589,7 +589,7 @@ const marketSourceList = computed(() => {
         <div class="flex items-start justify-between">
           <Label class="mt-2">{{ t('settings.window.behaviorLabel') }}</Label>
           <div class="flex flex-col items-center gap-1.5">
-            <Tabs :model-value="settings.config.windowAction || 'minimize'" @update:model-value="(v: any) => setWindowAction(v)" class="w-fit">
+            <Tabs :model-value="settings.config.windowAction || 'minimize'" @update:model-value="(v) => setWindowAction(v as 'minimize' | 'close')" class="w-fit">
               <TabsList>
                 <TabsTrigger value="minimize">{{ t('settings.window.action.minimize') }}</TabsTrigger>
                 <TabsTrigger value="exit">{{ t('settings.window.action.exit') }}</TabsTrigger>
@@ -655,7 +655,7 @@ const marketSourceList = computed(() => {
             <Label>{{ t('settings.skills.storage') }}</Label>
             <p class="text-xs text-muted-foreground">{{ t('settings.skills.storageHint') }}</p>
           </div>
-          <Tabs :model-value="settings.config.skillStorage" @update:model-value="(v: any) => setSkillStorage(v)" class="w-fit">
+          <Tabs :model-value="settings.config.skillStorage" @update:model-value="(v) => setSkillStorage(v as 'symlink' | 'copy')" class="w-fit">
             <TabsList>
               <TabsTrigger value="agentpack">~/.agentpack/skills/</TabsTrigger>
               <TabsTrigger value="unified">~/.agents/skills/</TabsTrigger>
@@ -668,7 +668,7 @@ const marketSourceList = computed(() => {
             <Label>{{ t('settings.skills.syncMethod') }}</Label>
             <p class="text-xs text-muted-foreground">{{ t('settings.skills.syncHint') }}</p>
           </div>
-          <Tabs :model-value="settings.config.skillSyncMethod" @update:model-value="(v: any) => setSkillSyncMethod(v)" class="w-fit">
+          <Tabs :model-value="settings.config.skillSyncMethod" @update:model-value="(v) => setSkillSyncMethod(v as 'symlink' | 'copy')" class="w-fit">
             <TabsList>
               <TabsTrigger value="symlink">Symlink</TabsTrigger>
               <TabsTrigger value="copy">Copy</TabsTrigger>

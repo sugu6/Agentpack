@@ -31,13 +31,25 @@ func StrToIfaces(ss []string) []interface{} {
 }
 
 // ParseTimeToInt64 parses an RFC3339 timestamp string and returns its Unix
-// epoch value. Returns 0 on parse failure.
+// epoch value (seconds). Returns 0 on parse failure.
 func ParseTimeToInt64(s string) int64 {
 	t, err := time.Parse(time.RFC3339, s)
 	if err != nil {
 		return 0
 	}
 	return t.Unix()
+}
+
+// ParseTimeToInt64Nano parses an RFC3339 timestamp string and returns its
+// Unix epoch value in nanoseconds. Returns 0 on parse failure.
+// Use this for timestamps that need sub-second precision (e.g. installed_at
+// comparison in mergeDuplicatesLocked).
+func ParseTimeToInt64Nano(s string) int64 {
+	t, err := time.Parse(time.RFC3339Nano, s)
+	if err != nil {
+		return 0
+	}
+	return t.UnixNano()
 }
 
 // IsDuplicateColumnErr returns true if the error indicates an ALTER TABLE

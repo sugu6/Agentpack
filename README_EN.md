@@ -66,7 +66,7 @@ Supported agents:
 
 - **Windows**: [WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/)
 - **macOS**: Xcode Command Line Tools
-- **Linux**: `libgtk-3-dev libwebkit2gtk-4.1-dev pkg-config libfuse2`
+- **Linux**: `libgtk-4-dev libwebkitgtk-6.0-dev pkg-config libfuse2`
 
 ## Quick Start
 
@@ -128,13 +128,11 @@ Build artifacts are located in `bin/`.
 
 ```
 AgentPack/
-├── app.go                 # Wails app entry, methods exposed to frontend
+├── app.go                 # Wails app entry, methods exposed to frontend (incl. system tray)
 ├── main.go                # Program entry
-├── tray.go                # System tray implementation
-├── lite.go                # Lite mode core logic (idle timer, memory release)
-├── update.go              # Update check (GitHub Releases API)
-├── winbridge.go           # Windows theme bridge (Mica / dark mode)
-├── winbridge_stub.go      # Stub for non-Windows platforms
+├── version.go             # Version info (injected from build/config.yml at startup)
+├── app_windows.go         # Windows build-tag file
+├── app_unix.go            # Non-Windows build-tag file
 ├── devmode_dev.go         # Dev mode configuration
 ├── devmode_prod.go        # Production mode configuration
 ├── Taskfile.yml           # Wails v3 build task definitions
@@ -142,20 +140,27 @@ AgentPack/
 ├── CHANGELOG_EN.md        # Changelog (English)
 ├── internal/              # Backend business logic
 │   ├── agents/            # Agent detection and management
+│   ├── app/               # App service-layer submodules
+│   │   ├── backup/        # Backup/restore orchestration
+│   │   ├── lite/          # Lite mode (idle timer, memory release)
+│   │   ├── market/        # Marketplace skill installation
+│   │   ├── skillbackfill/ # Skill source backfill
+│   │   ├── skillrepos/    # Skill repo management
+│   │   ├── update/        # App update service (check/download/install state machine)
+│   │   └── winbridge/     # Windows theme bridge (Mica / dark mode)
+│   ├── appmeta/           # App metadata shared across packages (version, etc.)
 │   ├── backup/            # Backup and import/export
 │   ├── config/            # Configuration management
 │   ├── crypto/            # Environment variable encryption
 │   ├── database/          # SQLite database
 │   ├── dbutil/            # Database utility functions
-│   ├── i18n/              # Internationalization (zh-CN / en)
+│   ├── i18n/              # Internationalization (zh-CN / en, with language detection)
 │   ├── iowriter/          # Atomic file writer
-│   ├── lockfile/          # Cross-platform file locking
 │   ├── logger/            # Logging utility
-│   ├── market/            # Skill marketplace (Official / skills.sh / GitHub)
+│   ├── market/            # Skill marketplace (registry / skills.sh / GitHub)
 │   ├── mcp/               # MCP server storage
 │   ├── shared/            # Shared utility functions
-│   ├── skills/            # Skills management and update check
-│   └── win32/             # Windows-specific implementation
+│   └── skills/            # Skills management and update check
 ├── frontend/              # Vue 3 frontend
 │   ├── src/
 │   │   ├── views/         # Pages (Agents / MCP / Skills / Market / Settings)

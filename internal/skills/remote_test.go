@@ -1,18 +1,26 @@
 package skills
 
 import (
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
+
+	"agentpack/internal/config"
 )
 
 func contentSHAHex(s string) string {
@@ -60,22 +68,28 @@ func mockJsDelivr(t *testing.T, treeJSON string, files map[string]string) *httpt
 	}))
 	t.Cleanup(server.Close)
 	origBase := jsDelivrDataBase
+	origDataFallback := jsDelivrDataFallbackBases
 	origHosts := jsDelivrFileHosts
 	origGH := gitHubAPIBases
 	origRawProxies := gitHubRawProxies
+	origRawMirrors := gitHubRawMirrors
 	origRawDirect := gitHubRawDirect
 	jsDelivrDataBase = server.URL
+	jsDelivrDataFallbackBases = nil
 	jsDelivrFileHosts = []string{server.URL}
 	// GitHub 树/raw 链路也指向 mock server（路径不匹配 → 404 快速失败），
 	// 避免测试意外打到真实 GitHub。
 	gitHubAPIBases = []string{server.URL}
 	gitHubRawProxies = []string{server.URL}
+	gitHubRawMirrors = nil
 	gitHubRawDirect = server.URL
 	t.Cleanup(func() {
 		jsDelivrDataBase = origBase
+		jsDelivrDataFallbackBases = origDataFallback
 		jsDelivrFileHosts = origHosts
 		gitHubAPIBases = origGH
 		gitHubRawProxies = origRawProxies
+		gitHubRawMirrors = origRawMirrors
 		gitHubRawDirect = origRawDirect
 	})
 	return server
@@ -1041,5 +1055,359 @@ func TestDownloadRemoteFile_NetworkErrorFallsThrough(t *testing.T) {
 	}
 	if string(data) != "ok" {
 		t.Fatalf("expected fallback content, got %q", string(data))
+	}
+}
+
+// TestReorderPreferred 验证"上次成功优先"排序：获胜 URL 提到最前、其余
+// 保持原顺序；pref 为空/不在列表中时原样返回。
+func TestReorderPreferred(t *testing.T) {
+	urls := []string{"https://a", "https://b", "https://c"}
+
+	pref := ""
+	if got := reorderPreferred(urls, &pref); !equalStrings(got, urls) {
+		t.Fatalf("empty pref must keep order, got %v", got)
+	}
+
+	pref = "https://b"
+	got := reorderPreferred(urls, &pref)
+	want := []string{"https://b", "https://a", "https://c"}
+	if !equalStrings(got, want) {
+		t.Fatalf("reorder = %v, want %v", got, want)
+	}
+
+	pref = "https://gone"
+	if got := reorderPreferred(urls, &pref); !equalStrings(got, urls) {
+		t.Fatalf("stale pref must keep order, got %v", got)
+	}
+
+	// 原切片不得被修改
+	if !equalStrings(urls, []string{"https://a", "https://b", "https://c"}) {
+		t.Fatalf("input slice mutated: %v", urls)
+	}
+}
+
+// TestDownloadRemoteFile_PrefersLastSuccessfulSource 验证成功下载后记录
+// 获胜候选，下次下载该链路把获胜候选排在最前（先请求者先命中）。
+func TestDownloadRemoteFile_PrefersLastSuccessfulSource(t *testing.T) {
+	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("first"))
+	}))
+	defer first.Close()
+	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("second"))
+	}))
+	defer second.Close()
+
+	origHosts := jsDelivrFileHosts
+	jsDelivrFileHosts = []string{first.URL, second.URL}
+	origPref := prefJsDelivr
+	prefJsDelivr = ""
+	defer func() {
+		jsDelivrFileHosts = origHosts
+		prefJsDelivr = origPref
+	}()
+
+	// 第一次下载：first 可达，记录为偏好
+	if data, err := downloadRemoteFile(context.Background(), "owner", "repo", "main", "f.txt", true); err != nil || string(data) != "first" {
+		t.Fatalf("first download: %v (%s)", err, data)
+	}
+	wantURL := first.URL + "/gh/owner/repo@main/f.txt"
+	if prefJsDelivr != wantURL {
+		t.Fatalf("expected pref = %s, got %q", wantURL, prefJsDelivr)
+	}
+
+	// 第二次下载：first 保持最前（先于列表次序的 second 被请求）。
+	// 用请求顺序计数验证：如果 first 先被请求，order 计数器为 1。
+	var order int32
+	second.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&order, 1)
+		_, _ = w.Write([]byte("second"))
+	})
+	// first handler 记录顺序
+	first.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !atomic.CompareAndSwapInt32(&order, 0, 10) {
+			atomic.AddInt32(&order, 10)
+		}
+		_, _ = w.Write([]byte("first"))
+	})
+	if data, err := downloadRemoteFile(context.Background(), "owner", "repo", "main", "f.txt", true); err != nil || string(data) != "first" {
+		t.Fatalf("second download: %v (%s)", err, data)
+	}
+	if order != 10 {
+		t.Fatalf("expected preferred host to be requested first (order=10), got %d", order)
+	}
+}
+
+// TestRecordPreferred_IgnoresForeignURL 验证不属于候选列表的 winner 不写入 pref。
+func TestRecordPreferred_IgnoresForeignURL(t *testing.T) {
+	pref := ""
+	recordPreferred([]string{"https://a"}, "https://other", &pref)
+	if pref != "" {
+		t.Fatalf("foreign winner must not be recorded, got %q", pref)
+	}
+	recordPreferred([]string{"https://a"}, "https://a", &pref)
+	if pref != "https://a" {
+		t.Fatalf("expected pref https://a, got %q", pref)
+	}
+	recordPreferred([]string{"https://a"}, "", &pref)
+	if pref != "https://a" {
+		t.Fatalf("empty winner must keep pref, got %q", pref)
+	}
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// TestHttpGetBodyOne_CrossHostRedirectNotFollowed 验证跨主机 301 不被跟随：
+// jsDelivr 对无法提供的文件 301 到被墙的 raw.githubusercontent.com，跟随会让
+// 候选耗满超时；拒绝后应立即以 3xx 状态错误返回，让候选循环切换下一源。
+func TestHttpGetBodyOne_CrossHostRedirectNotFollowed(t *testing.T) {
+	// 重定向目标：接受连接但不响应（模拟被墙的 raw）
+	hang := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+		case <-make(chan struct{}):
+		}
+	}))
+	defer hang.Close()
+
+	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, hang.URL+"/raw", http.StatusMovedPermanently)
+	}))
+	defer redirector.Close()
+
+	start := time.Now()
+	_, err := httpGetBodyOne(context.Background(), redirector.URL+"/f.txt")
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("expected error for cross-host redirect")
+	}
+	var se *httpStatusError
+	if !errors.As(err, &se) || se.status != http.StatusMovedPermanently {
+		t.Fatalf("expected 301 status error, got: %v", err)
+	}
+	// 跟随重定向会挂到 8s 超时；拒绝应秒级返回
+	if elapsed > 3*time.Second {
+		t.Fatalf("expected fast failure, took %v", elapsed)
+	}
+}
+
+// TestHttpGetBodyOne_SameHostRedirectFollowed 验证同主机重定向（jsDelivr
+// @branch → @version 的合法跳转）仍被正常跟随。
+func TestHttpGetBodyOne_SameHostRedirectFollowed(t *testing.T) {
+	final := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("resolved"))
+	}))
+	defer final.Close()
+
+	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// 同主机路径跳转（模拟 cdn.jsdelivr.net 内部 @branch → @version）
+		if r.URL.Path == "/resolved/f.txt" {
+			_, _ = w.Write([]byte("resolved"))
+			return
+		}
+		http.Redirect(w, r, "/resolved/f.txt", http.StatusMovedPermanently)
+	}))
+	defer redirector.Close()
+
+	data, err := httpGetBodyOne(context.Background(), redirector.URL+"/f.txt")
+	if err != nil {
+		t.Fatalf("same-host redirect should be followed: %v", err)
+	}
+	if string(data) != "resolved" {
+		t.Fatalf("expected redirected content, got %q", string(data))
+	}
+}
+
+// buildVerifyTarball 构造带顶层 {repo}-{sha} 目录的 tar.gz（模拟 codeload 产物）。
+func buildVerifyTarball(t *testing.T, files map[string]string) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	gw := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gw)
+	names := make([]string, 0, len(files))
+	for name := range files {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		if err := tw.WriteHeader(&tar.Header{Name: name, Typeflag: tar.TypeReg, Mode: 0644, Size: int64(len(files[name]))}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tw.Write([]byte(files[name])); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+// TestVerifySkillSourceByTarball 验证终极回退：codeload tarball 下载解压后
+// 按内容匹配 SKILL.md（约定路径优先），顶层 {repo}-{sha} 目录被正确剥离，
+// 内容不符时给出确定的无匹配结论。
+func TestVerifySkillSourceByTarball(t *testing.T) {
+	tmp := t.TempDir()
+	localDir := filepath.Join(tmp, "demo")
+	if err := os.MkdirAll(localDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(localDir, "SKILL.md"), []byte("current"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(buildVerifyTarball(t, map[string]string{
+			"repo-abc123/skills/demo/SKILL.md":  "current",
+			"repo-abc123/skills/demo/helper.sh": "x",
+			"repo-abc123/other/SKILL.md":        "different",
+		}))
+	}))
+	defer server.Close()
+
+	// 隔离：把配置代理指向本地服务器（tarballCandidateURLs 对 codeload URL
+	// 会先套配置代理），并清空备用代理避免真实网络请求。
+	origProxy := config.DefaultGitHubProxy
+	config.DefaultGitHubProxy = server.URL + "/"
+	origFallbacks := tarballFallbackURLs
+	tarballFallbackURLs = nil
+	t.Cleanup(func() {
+		config.DefaultGitHubProxy = origProxy
+		tarballFallbackURLs = origFallbacks
+	})
+
+	fp, ok, err := verifySkillSourceByTarball(context.Background(), "owner", "repo", "main", "demo", localDir)
+	if err != nil || !ok {
+		t.Fatalf("expected match via tarball, got ok=%v err=%v", ok, err)
+	}
+	if fp != "skills/demo" {
+		t.Fatalf("expected fullPath skills/demo, got %q", fp)
+	}
+
+	// 内容不匹配 → 确定无匹配（不算网络失败）
+	if err := os.WriteFile(filepath.Join(localDir, "SKILL.md"), []byte("changed"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	fp, ok, err = verifySkillSourceByTarball(context.Background(), "owner", "repo", "main", "demo", localDir)
+	if err != nil || ok || fp != "" {
+		t.Fatalf("expected definitive no-match, got fp=%q ok=%v err=%v", fp, ok, err)
+	}
+}
+
+// TestVerifySkillSource_FallsBackToRawWhenTreeFails 验证文件树接口（jsDelivr
+// data API + GitHub Trees API）全线不可达时，VerifySkillSource 降级为用内容
+// CDN/raw 直接下载约定路径的 SKILL.md 字节对比，名字优先回填仍能成功，
+// 而不是因文件树接口 403/超时直接判定网络失败放弃来源关联。
+func TestVerifySkillSource_FallsBackToRawWhenTreeFails(t *testing.T) {
+	tmp := t.TempDir()
+	localDir := filepath.Join(tmp, "demo")
+	if err := os.MkdirAll(localDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(localDir, "SKILL.md"), []byte("current"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// 文件树接口（data API /v1/packages + GitHub Trees API /repos）全线 500，
+	// 但单文件内容 CDN（/gh/.../skills/demo/SKILL.md）可达且内容匹配本地。
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/v1/packages/") ||
+			strings.HasPrefix(r.URL.Path, "/repos/") {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		if strings.Contains(r.URL.Path, "/skills/demo/SKILL.md") {
+			_, _ = w.Write([]byte("current"))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	origBase, origFallback, origHosts := jsDelivrDataBase, jsDelivrDataFallbackBases, jsDelivrFileHosts
+	origGH, origRawP, origRawD := gitHubAPIBases, gitHubRawProxies, gitHubRawDirect
+	jsDelivrDataBase = server.URL
+	jsDelivrDataFallbackBases = nil
+	jsDelivrFileHosts = []string{server.URL}
+	gitHubAPIBases = []string{server.URL}
+	gitHubRawProxies = []string{server.URL}
+	gitHubRawDirect = server.URL
+	defer func() {
+		jsDelivrDataBase, jsDelivrDataFallbackBases, jsDelivrFileHosts = origBase, origFallback, origHosts
+		gitHubAPIBases, gitHubRawProxies, gitHubRawDirect = origGH, origRawP, origRawD
+	}()
+
+	fullPath, ok, err := VerifySkillSource(context.Background(), "demo", "owner", "repo", "main", localDir)
+	if err != nil {
+		t.Fatalf("VerifySkillSource should succeed via raw fallback when tree fails, got: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected ok=true when remote SKILL.md matches local via fallback")
+	}
+	if fullPath != "skills/demo" {
+		t.Fatalf("expected fullPath skills/demo, got %q", fullPath)
+	}
+}
+
+// TestVerifySkillSource_NameFallbackMismatchRejected 验证降级路径下载到约定
+// 路径 SKILL.md 但内容不一致时返回无匹配（nil err，算 mismatched 而非 failed），
+// 让调用方继续下一个候选仓库而非误判网络失败反复重试。
+func TestVerifySkillSource_NameFallbackMismatchRejected(t *testing.T) {
+	tmp := t.TempDir()
+	localDir := filepath.Join(tmp, "demo")
+	if err := os.MkdirAll(localDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(localDir, "SKILL.md"), []byte("local"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// 文件树全线 500；约定路径 SKILL.md 可达但内容与本地不一致
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/v1/packages/") ||
+			strings.HasPrefix(r.URL.Path, "/repos/") {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		if strings.Contains(r.URL.Path, "/skills/demo/SKILL.md") {
+			_, _ = w.Write([]byte("remote")) // 内容不符
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	origBase, origFallback, origHosts := jsDelivrDataBase, jsDelivrDataFallbackBases, jsDelivrFileHosts
+	origGH, origRawP, origRawD := gitHubAPIBases, gitHubRawProxies, gitHubRawDirect
+	jsDelivrDataBase = server.URL
+	jsDelivrDataFallbackBases = nil
+	jsDelivrFileHosts = []string{server.URL}
+	gitHubAPIBases = []string{server.URL}
+	gitHubRawProxies = []string{server.URL}
+	gitHubRawDirect = server.URL
+	defer func() {
+		jsDelivrDataBase, jsDelivrDataFallbackBases, jsDelivrFileHosts = origBase, origFallback, origHosts
+		gitHubAPIBases, gitHubRawProxies, gitHubRawDirect = origGH, origRawP, origRawD
+	}()
+
+	_, ok, err := VerifySkillSource(context.Background(), "demo", "owner", "repo", "main", localDir)
+	if err != nil {
+		t.Fatalf("expected nil err when SKILL.md downloaded but mismatched, got: %v", err)
+	}
+	if ok {
+		t.Fatal("expected ok=false when content differs")
 	}
 }

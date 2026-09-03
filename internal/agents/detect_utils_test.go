@@ -100,6 +100,8 @@ func TestExpandEnvPath(t *testing.T) {
 		{"$VAR 展开", "$AGENTPACK_TEST_VAR" + string(os.PathSeparator) + "sub", filepath.Join("envval", "sub")},
 		{"前导 ~ 展开", "~/app", filepath.Join(home, "app")},
 		{"普通路径不变", filepath.Join("C", "x"), filepath.Join("C", "x")},
+		{"引号包裹的 InstallLocation 剥离引号", `"` + filepath.Join("C", "Program Files", "App") + `"`, filepath.Join("C", "Program Files", "App")},
+		{"首尾空白剥离", "  " + filepath.Join("C", "x") + "  ", filepath.Join("C", "x")},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

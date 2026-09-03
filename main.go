@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 
+	"agentpack/internal/app/winbridge"
 	"agentpack/internal/config"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
@@ -13,6 +14,14 @@ import (
 
 //go:embed all:frontend/dist
 var assets embed.FS
+
+// 托盘图标用 PNG 而非 icon.ico：Wails 的 CreateSmallHIconFromImage 按
+// 裸 PNG 解码，传入多尺寸 .ico 容器必然解码失败（启动日志出现
+// "failed to create systray icon"），虽会回退到 exe 资源图标，但
+// 直接喂 PNG 可走自定义图标路径，避免该警告。
+//
+//go:embed build/appicon.png
+var trayIconData []byte
 
 func main() {
 	cfg := config.Load()
@@ -33,7 +42,7 @@ func main() {
 			ExitCode: 1,
 			OnSecondInstanceLaunch: func(data application.SecondInstanceData) {
 				// 启动完成后二次启动应用时，唤醒主窗口（从托盘恢复）
-				if app.ready() {
+				if app.Ready() {
 					app.ShowWindow()
 				}
 			},
@@ -50,7 +59,7 @@ func main() {
 			Handler: application.AssetFileServerFS(assets),
 		},
 		Windows: application.WindowsOptions{
-			WndProcInterceptor: WndProcHook,
+			WndProcInterceptor: winbridge.WndProcHook,
 		},
 		Mac: application.MacOptions{
 			ApplicationShouldTerminateAfterLastWindowClosed: true,
@@ -58,13 +67,13 @@ func main() {
 		SingleInstance: singleInstance,
 	})
 
-	app.setWailsApp(wailsApp)
+	app.SetWailsApp(wailsApp)
 
 	// 系统主题切换 → 同步原生标题栏暗色（替代 winbridge 手动解析 WM_SETTINGCHANGE）。
 	// themeGetter 读取当前主题配置：仅 system 主题下跟随系统切换；固定主题
-	// （light/dark）时系统切换不改变标题栏，避免与前端固定 UI 视觉撕裂。
-	registerSystemThemeHook(wailsApp, func() string {
-		return app.getTheme()
+	//（light/dark）时系统切换不改变标题栏，避免与前端固定 UI 视觉撕裂。
+	winbridge.RegisterSystemThemeHook(wailsApp, func() string {
+		return app.GetTheme()
 	})
 
 	// 创建主窗口 — 与 v2 完全对齐的 Mica + 透明背景配置
@@ -88,15 +97,15 @@ func main() {
 
 	// 监听窗口关闭事件（v3 RegisterHook 同步拦截，e.Cancel() 可阻止关闭）
 	mainWindow.RegisterHook(events.Common.WindowClosing, func(e *application.WindowEvent) {
-		app.beforeClose(e)
+		app.BeforeClose(e)
 	})
 	// 注入主窗口引用：Window.Current() 依赖窗口激活状态，未激活时返回 nil
 	// 会导致 HideWindow/showWindowRaw nil 解引用 panic，故保存创建时的引用
-	app.setMainWindow(mainWindow)
+	app.SetMainWindow(mainWindow)
 
 	// 创建 v3 原生系统托盘
-	tray := setupTray(wailsApp, app)
-	app.setTray(tray)
+	tray := SetupTray(wailsApp, app, trayIconData)
+	app.SetTray(tray)
 
 	err := wailsApp.Run()
 	if err != nil {
