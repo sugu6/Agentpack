@@ -658,3 +658,102 @@ func TestAdoptSkillCopy(t *testing.T) {
 		}
 	})
 }
+
+func TestCleanOrphanSkillLinks_RemovesDeadLinksOnly(t *testing.T) {
+	env := newReconcileEnv(t)
+	writeReconcileSkill(t, filepath.Join(env.ssotDir, "delta"), "")
+
+	// 1) 孤儿死链 → 删除
+	ghost := filepath.Join(env.claudeDir, "ghost")
+	mustSymlink(t, filepath.Join(env.ssotDir, "no-such-ghost"), ghost)
+	// 2) SSOT 同名死链 → 保留（归 resync/convert 管辖）
+	broken := filepath.Join(env.claudeDir, "delta")
+	mustSymlink(t, filepath.Join(env.ssotDir, "no-such-delta"), broken)
+	// 3) 活的外链条目（不在 SSOT）→ 保留
+	elsewhere := filepath.Join(t.TempDir(), "ext")
+	writeReconcileSkill(t, elsewhere, "")
+	live := filepath.Join(env.claudeDir, "ext")
+	mustSymlink(t, elsewhere, live)
+	// 4) 普通散装目录（不在 SSOT）→ 保留
+	stray := filepath.Join(env.claudeDir, "stray")
+	writeReconcileSkill(t, stray, "")
+
+	if err := env.store.Load(env.reg); err != nil {
+		t.Fatal(err)
+	}
+	removed, err := env.store.CleanOrphanSkillLinks(env.reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// claude-code 与 claude-code-desktop 共享同一物理目录：
+	// 只注册两个 ID 也必须只删一次（Review Focus 4）
+	if len(removed) != 1 || removed[0] != ghost {
+		t.Fatalf("expected exactly [%s], got %v", ghost, removed)
+	}
+	if _, err := os.Lstat(ghost); !os.IsNotExist(err) {
+		t.Error("orphan dead link must be removed")
+	}
+	for _, keep := range []string{broken, live, stray} {
+		if _, err := os.Lstat(keep); err != nil {
+			t.Errorf("entry %s must survive cleanup: %v", keep, err)
+		}
+	}
+}
+
+func TestToggleAgent_GuardAgainstDeletingDivergedCopy(t *testing.T) {
+	t.Run("diverged plain copy refuses disable", func(t *testing.T) {
+		env := newReconcileEnv(t)
+		writeReconcileSkill(t, filepath.Join(env.ssotDir, "gamma2"), "ssot\n")
+		local := filepath.Join(env.claudeDir, "gamma2")
+		writeReconcileSkill(t, local, "local\n")
+		if err := env.store.Load(env.reg); err != nil {
+			t.Fatal(err)
+		}
+		localBefore, _ := HashDir(local)
+		err := env.store.ToggleAgent("skill:gamma2", "claude-code", false, env.reg)
+		if err == nil {
+			t.Fatal("expected refusal: disable must not delete diverged local edits")
+		}
+		localAfter, _ := HashDir(local)
+		if localBefore != localAfter {
+			t.Error("local content must be intact after refused disable")
+		}
+	})
+
+	t.Run("identical plain copy disables normally", func(t *testing.T) {
+		env := newReconcileEnv(t)
+		ssot := filepath.Join(env.ssotDir, "gamma3")
+		writeReconcileSkill(t, ssot, "x\n")
+		local := filepath.Join(env.claudeDir, "gamma3")
+		if err := copyDirRecursive(ssot, local); err != nil {
+			t.Fatal(err)
+		}
+		if err := env.store.Load(env.reg); err != nil {
+			t.Fatal(err)
+		}
+		if err := env.store.ToggleAgent("skill:gamma3", "claude-code", false, env.reg); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Lstat(local); !os.IsNotExist(err) {
+			t.Error("identical copy must be removable on disable")
+		}
+	})
+
+	t.Run("bound symlink disables normally", func(t *testing.T) {
+		env := newReconcileEnv(t)
+		writeReconcileSkill(t, filepath.Join(env.ssotDir, "gamma4"), "")
+		if err := env.store.Load(env.reg); err != nil {
+			t.Fatal(err)
+		}
+		if err := env.store.ToggleAgent("skill:gamma4", "claude-code", true, env.reg); err != nil {
+			t.Fatal(err)
+		}
+		target := filepath.Join(env.claudeDir, "gamma4")
+		if err := env.store.ToggleAgent("skill:gamma4", "claude-code", false, env.reg); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Lstat(target); !os.IsNotExist(err) {
+			t.Error("symlink must be removed on disable")
+		}
+	})
+}

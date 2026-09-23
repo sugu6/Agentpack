@@ -322,3 +322,47 @@ func (s *Store) AdoptSkillCopy(skillID, sourcePath string, reg *agents.Registry)
 	}
 	return refreshed, nil
 }
+
+// CleanOrphanSkillLinks 删除「目标已死且 SSOT 无同名技能」的孤儿死链。
+// 只删死链：活链、普通目录、SSOT 同名条目一律不动。
+// 返回实际删除的路径（按路径排序）；部分失败时已删清单照常返回。
+func (s *Store) CleanOrphanSkillLinks(reg *agents.Registry) ([]string, error) {
+	s.mu.RLock()
+	ssotDirs := make(map[string]bool, len(s.skills))
+	for _, sk := range s.skills {
+		ssotDirs[sk.Directory] = true
+	}
+	s.mu.RUnlock()
+
+	var removed []string
+	var errs []string
+	for _, sd := range scanAgentSkillDirs(reg.SkillCapableAgentIDs(), reg.AgentSkillsDir) {
+		entries, err := os.ReadDir(sd.dir)
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			name := entry.Name()
+			if strings.HasPrefix(name, ".") || ssotDirs[name] {
+				continue
+			}
+			if entry.Type()&os.ModeSymlink == 0 {
+				continue
+			}
+			path := filepath.Join(sd.dir, name)
+			if _, err := os.Stat(path); err == nil {
+				continue
+			}
+			if err := RemovePath(path); err != nil {
+				errs = append(errs, fmt.Sprintf("%s: %v", path, err))
+				continue
+			}
+			removed = append(removed, path)
+		}
+	}
+	sort.Strings(removed)
+	if len(errs) > 0 {
+		return removed, fmt.Errorf("clean orphan links: %s", strings.Join(errs, "; "))
+	}
+	return removed, nil
+}

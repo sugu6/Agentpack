@@ -569,9 +569,18 @@ func (s *Store) ToggleAgent(skillID, agentID string, enabled bool, reg *agents.R
 			return fmt.Errorf("sync to agent: %w", err)
 		}
 	} else {
-		// Disable: remove from agent dir
+		// Disable: remove from agent dir。
+		// 字节守卫：与 SSOT 存在内容分叉的散装副本禁止直接删除——
+		// 删除会永久丢失本地改动；先在对账面板选择处置方式。
+		if info, lerr := os.Lstat(target); lerr == nil && info.Mode()&os.ModeSymlink == 0 {
+			ssotHash, sOK := HashDir(ssotPath)
+			localHash, lOK := HashDir(target)
+			if !sOK || !lOK || localHash == "" || localHash != ssotHash {
+				return fmt.Errorf("local copy of %q differs from SSOT; resolve the conflict before unbinding", sk.Directory)
+			}
+		}
 		if err := RemovePath(target); err != nil {
-			return fmt.Errorf("remove from agent: %w", err)
+			return fmt.Errorf("remove from agent dir: %w", err)
 		}
 	}
 
