@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"agentpack/internal/agents"
 )
 
 func mustSymlink(t *testing.T, oldname, newname string) {
@@ -112,4 +114,221 @@ func TestClassifyCopyEntry(t *testing.T) {
 			t.Errorf("got %q, want wrong_target", cl.kind)
 		}
 	})
+}
+
+type reconcileEnv struct {
+	store     *Store
+	reg       *agents.Registry
+	home      string
+	ssotDir   string
+	claudeDir string
+	codexDir  string
+}
+
+func newReconcileEnv(t *testing.T) *reconcileEnv {
+	t.Helper()
+	setupSkillCapableAgentHome(t)
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg := agents.NewRegistry()
+	reg.Register(agents.Agent{ID: "claude-code", Name: "Claude Code", Status: agents.StatusEnabled})
+	reg.Register(agents.Agent{ID: "claude-code-desktop", Name: "Claude Code Desktop", Status: agents.StatusEnabled})
+	reg.Register(agents.Agent{ID: "codex", Name: "Codex", Status: agents.StatusEnabled})
+	claudeDir := reg.AgentSkillsDir("claude-code")
+	codexDir := reg.AgentSkillsDir("codex")
+	if claudeDir == "" || codexDir == "" {
+		t.Fatalf("adapter IDs not skill-capable (claudeDir=%q codexDir=%q) — verify computeSkillDirCache keys", claudeDir, codexDir)
+	}
+	if reg.AgentSkillsDir("claude-code-desktop") != claudeDir {
+		t.Fatal("claude-code-desktop must share claude skills dir (dedup fixture broken)")
+	}
+	ssotDir := ResolveSSOTDir(StorageUnified)
+	// 目标 agent 目录预先建出：os.Symlink 的父目录必须存在，
+	// 否则 mustSymlink 会因 ENOENT 跳过整测（假绿）。
+	if err := os.MkdirAll(claudeDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(codexDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	return &reconcileEnv{
+		store:     NewStore(ssotDir, SyncMethodSymlink),
+		reg:       reg,
+		home:      home,
+		ssotDir:   ssotDir,
+		claudeDir: claudeDir,
+		codexDir:  codexDir,
+	}
+}
+
+func writeReconcileSkill(t *testing.T, dir, sidecar string) {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("---\nname: test\n---\nbody\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if sidecar != "" {
+		if err := os.WriteFile(filepath.Join(dir, "extra.sh"), []byte(sidecar), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func findReconcileItem(items []ReconcileItem, kind ConflictKind, path string) (ReconcileItem, bool) {
+	for _, it := range items {
+		if it.Kind == kind && it.Path == path {
+			return it, true
+		}
+	}
+	return ReconcileItem{}, false
+}
+
+func TestScanConflicts_ClassifiesAllKinds(t *testing.T) {
+	// 拆为两个子测（Ruling 4）：本机常无 SeCreateSymbolicLinkPrivilege，
+	// monolithic 版本会在首个 mustSymlink 处整测 Skip，连不需要 symlink 的
+	// 散装分类/去重/排除断言也一并丢失（证据假跳）。链接用例整体 Skip 时，
+	// 散装用例仍须真实执行。
+	t.Run("plain entries dedup and stray exclusion", func(t *testing.T) {
+		env := newReconcileEnv(t)
+
+		// alpha: claude 目录同内容散装副本 → plain_same（AgentIDs 含共享目录的两个 ID）
+		alphaSSOT := filepath.Join(env.ssotDir, "alpha")
+		writeReconcileSkill(t, alphaSSOT, "sidecar\n")
+		if err := copyDirRecursive(alphaSSOT, filepath.Join(env.claudeDir, "alpha")); err != nil {
+			t.Fatal(err)
+		}
+
+		// beta: claude 分叉散装 → plain_diff
+		betaSSOT := filepath.Join(env.ssotDir, "beta")
+		writeReconcileSkill(t, betaSSOT, "ssot-sidecar\n")
+		writeReconcileSkill(t, filepath.Join(env.claudeDir, "beta"), "local-sidecar\n")
+
+		// stray: claude 散装、SSOT 无同名 → 属未管理视图，不得出现
+		writeReconcileSkill(t, filepath.Join(env.claudeDir, "stray"), "")
+
+		if err := env.store.Load(env.reg); err != nil {
+			t.Fatal(err)
+		}
+		items := env.store.ScanConflicts(env.reg)
+		if len(items) != 2 {
+			t.Fatalf("expected 2 items, got %d: %+v", len(items), items)
+		}
+		if _, ok := findReconcileItem(items, ConflictPlainDiff, filepath.Join(env.claudeDir, "stray")); ok {
+			t.Error("plain dir without SSOT twin must not appear (belongs to unmanaged view)")
+		}
+		alpha, ok := findReconcileItem(items, ConflictPlainSame, filepath.Join(env.claudeDir, "alpha"))
+		if !ok {
+			t.Fatal("plain_same for claude/alpha not found")
+		}
+		if len(alpha.AgentIDs) != 2 {
+			t.Errorf("shared dir must aggregate both agent IDs, got %v", alpha.AgentIDs)
+		}
+		if alpha.SkillID != "skill:alpha" || !stringsHas(alpha.AgentIDs, "claude-code") || !stringsHas(alpha.AgentIDs, "claude-code-desktop") {
+			t.Errorf("unexpected alpha item: %+v", alpha)
+		}
+	})
+
+	t.Run("link entries classification", func(t *testing.T) {
+		env := newReconcileEnv(t)
+
+		// beta: SSOT 有、codex 错链 → wrong_target
+		betaSSOT := filepath.Join(env.ssotDir, "beta")
+		writeReconcileSkill(t, betaSSOT, "ssot-sidecar\n")
+		other := t.TempDir()
+		otherSkill := filepath.Join(other, "beta")
+		writeReconcileSkill(t, otherSkill, "other\n")
+		mustSymlink(t, otherSkill, filepath.Join(env.codexDir, "beta"))
+
+		// gamma: SSOT 有、codex 死链 → broken_link
+		writeReconcileSkill(t, filepath.Join(env.ssotDir, "gamma"), "")
+		mustSymlink(t, filepath.Join(env.ssotDir, "no-such-gamma"), filepath.Join(env.codexDir, "gamma"))
+
+		// ghost: codex 死链、SSOT 无同名 → orphan_link
+		mustSymlink(t, filepath.Join(env.ssotDir, "no-such-ghost"), filepath.Join(env.codexDir, "ghost"))
+
+		if err := env.store.Load(env.reg); err != nil {
+			t.Fatal(err)
+		}
+		items := env.store.ScanConflicts(env.reg)
+		if len(items) != 3 {
+			t.Fatalf("expected 3 items, got %d: %+v", len(items), items)
+		}
+		if _, ok := findReconcileItem(items, ConflictBrokenLink, filepath.Join(env.codexDir, "gamma")); !ok {
+			t.Error("broken_link for codex/gamma not found")
+		}
+		ghost, ok := findReconcileItem(items, ConflictOrphanLink, filepath.Join(env.codexDir, "ghost"))
+		if !ok || ghost.SkillID != "" {
+			t.Errorf("orphan_link must have empty SkillID, got %+v", ghost)
+		}
+		if _, ok := findReconcileItem(items, ConflictWrongTarget, filepath.Join(env.codexDir, "beta")); !ok {
+			t.Error("wrong_target for codex/beta not found")
+		}
+		for i := 1; i < len(items); i++ {
+			prev, cur := items[i-1], items[i]
+			if prev.Kind > cur.Kind || (prev.Kind == cur.Kind && prev.Directory > cur.Directory) {
+				t.Errorf("items not sorted at %d: %q/%q before %q/%q", i, prev.Kind, prev.Directory, cur.Kind, cur.Directory)
+			}
+		}
+	})
+}
+
+func stringsHas(list []string, v string) bool {
+	for _, s := range list {
+		if s == v {
+			return true
+		}
+	}
+	return false
+}
+
+func TestScanConflicts_AcknowledgeAndDrift(t *testing.T) {
+	env := newReconcileEnv(t)
+	writeReconcileSkill(t, filepath.Join(env.ssotDir, "fork"), "ssot-sidecar\n")
+	local := filepath.Join(env.claudeDir, "fork")
+	writeReconcileSkill(t, local, "local-sidecar\n")
+	if err := env.store.Load(env.reg); err != nil {
+		t.Fatal(err)
+	}
+	ssotHash, _ := HashDir(filepath.Join(env.ssotDir, "fork"))
+	localHash, _ := HashDir(local)
+	if err := WriteConflictAck(env.ssotDir, conflictKey("fork", local), ConflictAck{
+		SSOTHash: ssotHash, LocalHash: localHash, CheckedAt: "2026-09-24T00:00:00Z",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	items := env.store.ScanConflicts(env.reg)
+	it, ok := findReconcileItem(items, ConflictPlainDiff, local)
+	if !ok {
+		t.Fatal("plain_diff for claude/fork not found")
+	}
+	if !it.Acknowledged {
+		t.Error("matching ack must mark item acknowledged")
+	}
+
+	// 本地漂移 → ack 失效重新上屏
+	if err := os.WriteFile(filepath.Join(local, "drift.txt"), []byte("x\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	items = env.store.ScanConflicts(env.reg)
+	it, _ = findReconcileItem(items, ConflictPlainDiff, local)
+	if it.Acknowledged {
+		t.Error("local drift must un-acknowledge the fork")
+	}
+
+	// 复位本地后 SSOT 漂移 → 同样失效
+	if err := os.Remove(filepath.Join(local, "drift.txt")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(env.ssotDir, "fork", "drift2.txt"), []byte("y\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	items = env.store.ScanConflicts(env.reg)
+	it, _ = findReconcileItem(items, ConflictPlainDiff, local)
+	if it.Acknowledged {
+		t.Error("ssot drift must un-acknowledge the fork")
+	}
 }
