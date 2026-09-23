@@ -561,7 +561,6 @@ func (a *App) getMcp() *mcp.Store            { _, ms, _, _, _, _ := a.snapshot()
 func (a *App) getMarket() *market.Store      { _, _, mks, _, _, _ := a.snapshot(); return mks }
 func (a *App) getSkills() *skills.Store      { _, _, _, ss, _, _ := a.snapshot(); return ss }
 func (a *App) getRegistry() *agents.Registry { reg, _, _, _, _, _ := a.snapshot(); return reg }
-func (a *App) getBackups() *backup.Manager   { _, _, _, _, bm, _ := a.snapshot(); return bm }
 
 // emitMcpChangedLocked emits agents:changed + mcp:changed (a.mu already held).
 // Safe when mcpStore may be nil.
@@ -633,17 +632,26 @@ func (a *App) mainWindow() *application.WebviewWindow {
 // ---------- 系统能力（窗口/对话框/URL/退出） ----------
 
 // openSystem 用系统默认程序打开路径或 URL。
+// Windows 使用 rundll32 url.dll,FileProtocolHandler 而非 explorer.exe：
+// explorer.exe 在 Wails WebView 上下文中可能被 HideWindow 抑制导致窗口不显示，
+// rundll32 是标准 Shell 协议处理入口，不依赖控制台窗口标志。
 func openSystem(path string) error {
+	var cmd *exec.Cmd
 	switch runtime.GOOS {
 	case "windows":
-		cmd := exec.Command("explorer.exe", path)
-		hideConsoleWindow(cmd)
-		return cmd.Start()
+		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", path)
 	case "darwin":
-		return exec.Command("open", path).Start()
+		cmd = exec.Command("open", path)
 	default:
-		return exec.Command("xdg-open", path).Start()
+		cmd = exec.Command("xdg-open", path)
 	}
+	// Start 成功后必须 Wait 释放子进程资源（句柄/僵尸进程）；
+	// 打开动作无需结果，异步等待即可（与 Wails 官方 browser 实现一致）。
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	go cmd.Wait() //nolint:errcheck
+	return nil
 }
 
 func (a *App) OpenConfigFolder() error {
@@ -911,11 +919,6 @@ func (a *App) ResumeDownload() error {
 		return fmt.Errorf("no paused download to resume")
 	}
 	return a.upd.Resume()
-}
-
-// GetDownloadState 获取当前下载状态（供前端查询）
-func (a *App) GetDownloadState() (state string, fileName string, offset int64) {
-	return a.upd.GetState()
 }
 
 // ---------- Agent ----------
@@ -1298,19 +1301,6 @@ func (a *App) ListSkillCapableAgents() ([]*agents.Agent, error) {
 	return out, nil
 }
 
-// AutoAdoptSkills 扫描 agent skill 目录，将未管理 skill 自动纳管到 SSOT。
-func (a *App) AutoAdoptSkills() (skills.AdoptionResult, error) {
-	var result skills.AdoptionResult
-	err := a.withSkillsStore(func(ss *skills.Store) error {
-		result = ss.AutoAdopt(a.registry)
-		if len(result.Adopted) > 0 || len(result.Conflicts) > 0 {
-			a.emitLocked("skills:changed", ss.List())
-		}
-		return nil
-	})
-	return result, err
-}
-
 func (a *App) ImportSkillDirectory(path string, agentIDs []string) (skills.Skill, error) {
 	var sk skills.Skill
 	err := a.withSkillsStore(func(ss *skills.Store) error {
@@ -1655,12 +1645,6 @@ func (a *App) GetLastBackfillResult() (skillbackfill.Result, bool) {
 func (a *App) ListBackups() ([]backup.Summary, error) {
 	return withBackups(a, func(m *backup.Manager) ([]backup.Summary, error) {
 		return m.ListSummaries()
-	})
-}
-
-func (a *App) GetBackup(id string) (backup.Snapshot, error) {
-	return withBackups(a, func(m *backup.Manager) (backup.Snapshot, error) {
-		return m.GetSnapshot(id)
 	})
 }
 

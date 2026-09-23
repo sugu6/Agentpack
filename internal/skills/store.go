@@ -39,12 +39,6 @@ func (s *Store) SetSyncMethod(method SyncMethod) {
 	s.syncMethod = method
 }
 
-func (s *Store) SetSSOTDir(dir string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.ssotDir = dir
-}
-
 func (s *Store) SSOTDir() string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

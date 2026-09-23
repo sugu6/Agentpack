@@ -6,6 +6,8 @@ import { useAgentsStore } from '@/stores/agents'
 import { Card, CardContent, Button, Badge, Spinner, Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui'
 import { PhTrash, PhSparkle, PhMagnifyingGlass, PhFileArchive, PhFolderOpen, PhArrowClockwise, PhArrowUp } from '@phosphor-icons/vue'
 import { api, events, ApiError } from '@/lib/api'
+import { isFilePickCancelled } from '@/lib/utils'
+import { toggleGroupMembers } from '@/lib/selection'
 import { normalizeVariant, variantToBadge, agentDisplayName } from '@/composables/useAgentHelpers'
 import AgentToggleButton from '@/components/agent/AgentToggleButton.vue'
 import { useConfirm } from '@/composables/useConfirm'
@@ -175,17 +177,9 @@ function toggleAgentSelect(id: string) {
 }
 
 function toggleGroupSelect(group: { ids: string[] }, enabled: boolean) {
-  const next = new Set(selectedAgentIds.value)
   const capable = new Set(skills.skillCapableAgents.map(a => a.id))
-  for (const id of group.ids) {
-    if (enabled) {
-      // 只添加可绑定成员（capable 集合已限定 enabled/detected）
-      if (capable.has(id)) next.add(id)
-    } else {
-      next.delete(id)
-    }
-  }
-  selectedAgentIds.value = next
+  // 只添加可绑定成员（capable 集合已限定 enabled/detected）
+  selectedAgentIds.value = toggleGroupMembers(selectedAgentIds.value, group.ids, enabled, id => capable.has(id))
 }
 
 function isGroupBound(boundAgents: string[] | null, group: { ids: string[] }) {
@@ -299,12 +293,6 @@ async function installFromZip() {
     if (isFilePickCancelled(e)) return
     toast.error(toast.fromError(e, t('skills.toast.pickFileFailed')))
   }
-}
-
-// 判断是否为用户取消文件选择
-function isFilePickCancelled(e: unknown): boolean {
-  const msg = (e instanceof Error ? e.message : String(e ?? '')).toLowerCase()
-  return msg === '' || msg.includes('cancel')
 }
 
 async function confirmZipImport() {
