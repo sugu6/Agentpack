@@ -135,3 +135,11 @@ type ReconcileItem struct {
 	LocalHash    string       `json:"localHash,omitempty"`
 	Acknowledged bool         `json:"acknowledged"`
 }
+
+// ConflictAck 记录用户对一次内容分叉的"保留"决定。
+// 双指纹：任一侧后续再漂移即失效（重新上屏）。
+type ConflictAck struct {
+	SSOTHash  string `json:"ssotHash"`
+	LocalHash string `json:"localHash"`
+	CheckedAt string `json:"checkedAt"`
+}
