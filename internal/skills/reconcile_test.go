@@ -519,3 +519,142 @@ func canCreateSymlinks(t *testing.T) bool {
 	}
 	return true
 }
+
+func TestOverwriteSkillCopyFromSSOT(t *testing.T) {
+	t.Run("diverged plain replaced by SSOT projection", func(t *testing.T) {
+		env := newReconcileEnv(t)
+		ssot := filepath.Join(env.ssotDir, "beta")
+		writeReconcileSkill(t, ssot, "ssot-sidecar\n")
+		target := filepath.Join(env.claudeDir, "beta")
+		writeReconcileSkill(t, target, "local-sidecar\n")
+		if err := env.store.Load(env.reg); err != nil {
+			t.Fatal(err)
+		}
+		ssotHash, _ := HashDir(ssot)
+		if err := env.store.OverwriteSkillCopyFromSSOT("skill:beta", target, env.reg); err != nil {
+			t.Fatal(err)
+		}
+		info, err := os.Lstat(target)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if canCreateSymlinks(t) && info.Mode()&os.ModeSymlink == 0 {
+			t.Fatal("expected projection after overwrite")
+		}
+		got, _ := HashDir(target)
+		if got != ssotHash {
+			t.Errorf("content must equal SSOT after overwrite: %q vs %q", got, ssotHash)
+		}
+	})
+
+	t.Run("missing entry rejected", func(t *testing.T) {
+		env := newReconcileEnv(t)
+		writeReconcileSkill(t, filepath.Join(env.ssotDir, "gamma"), "")
+		if err := env.store.Load(env.reg); err != nil {
+			t.Fatal(err)
+		}
+		err := env.store.OverwriteSkillCopyFromSSOT("skill:gamma", filepath.Join(env.claudeDir, "gamma"), env.reg)
+		if err == nil {
+			t.Fatal("expected error when entry absent")
+		}
+	})
+
+	t.Run("identical plain replaced without guard", func(t *testing.T) {
+		env := newReconcileEnv(t)
+		ssot := filepath.Join(env.ssotDir, "same")
+		writeReconcileSkill(t, ssot, "x\n")
+		target := filepath.Join(env.claudeDir, "same")
+		if err := copyDirRecursive(ssot, target); err != nil {
+			t.Fatal(err)
+		}
+		if err := env.store.Load(env.reg); err != nil {
+			t.Fatal(err)
+		}
+		if err := env.store.OverwriteSkillCopyFromSSOT("skill:same", target, env.reg); err != nil {
+			t.Fatal(err)
+		}
+		if info, _ := os.Lstat(target); canCreateSymlinks(t) && info.Mode()&os.ModeSymlink == 0 {
+			t.Error("expected symlink projection")
+		}
+	})
+}
+
+func TestAdoptSkillCopy(t *testing.T) {
+	t.Run("diverged local adopted, source linked, backup created", func(t *testing.T) {
+		env := newReconcileEnv(t)
+		ssot := filepath.Join(env.ssotDir, "beta")
+		writeReconcileSkill(t, ssot, "ssot-sidecar\n")
+		target := filepath.Join(env.claudeDir, "beta")
+		writeReconcileSkill(t, target, "local-sidecar\n")
+		if err := env.store.Load(env.reg); err != nil {
+			t.Fatal(err)
+		}
+		sk, err := env.store.AdoptSkillCopy("skill:beta", target, env.reg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := os.ReadFile(filepath.Join(ssot, "extra.sh"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != "local-sidecar\n" {
+			t.Errorf("SSOT must carry adopted local content, got %q", got)
+		}
+		if info, _ := os.Lstat(target); canCreateSymlinks(t) && info.Mode()&os.ModeSymlink == 0 {
+			t.Error("source must become a projection after adopt")
+		}
+		fresh, _ := HashDir(ssot)
+		if sk.ContentHash != fresh {
+			t.Errorf("returned skill hash stale: %q vs %q", sk.ContentHash, fresh)
+		}
+		entries, err := os.ReadDir(filepath.Join(env.home, ".agents", "skill-backups"))
+		if err != nil || len(entries) == 0 {
+			t.Errorf("expected a backup of original SSOT, err=%v entries=%d", err, len(entries))
+		}
+	})
+
+	t.Run("identical content rejected with guidance", func(t *testing.T) {
+		env := newReconcileEnv(t)
+		ssot := filepath.Join(env.ssotDir, "same")
+		writeReconcileSkill(t, ssot, "x\n")
+		target := filepath.Join(env.claudeDir, "same")
+		if err := copyDirRecursive(ssot, target); err != nil {
+			t.Fatal(err)
+		}
+		if err := env.store.Load(env.reg); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := env.store.AdoptSkillCopy("skill:same", target, env.reg); err == nil {
+			t.Fatal("expected error: identical content should use convert instead")
+		}
+	})
+
+	t.Run("backup failure aborts without touching SSOT", func(t *testing.T) {
+		env := newReconcileEnv(t)
+		ssot := filepath.Join(env.ssotDir, "beta")
+		writeReconcileSkill(t, ssot, "ssot-sidecar\n")
+		target := filepath.Join(env.claudeDir, "beta")
+		writeReconcileSkill(t, target, "local-sidecar\n")
+		// 用普通文件占住 skill-backups 路径，强制造错
+		blocker := filepath.Join(env.home, ".agents", "skill-backups")
+		if err := os.WriteFile(blocker, []byte("occupied"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		if err := env.store.Load(env.reg); err != nil {
+			t.Fatal(err)
+		}
+		ssotBefore, _ := HashDir(ssot)
+		localBefore, _ := HashDir(target)
+		if _, err := env.store.AdoptSkillCopy("skill:beta", target, env.reg); err == nil {
+			t.Fatal("expected adopt to abort on backup failure")
+		}
+		ssotAfter, _ := HashDir(ssot)
+		if ssotBefore != ssotAfter {
+			t.Error("SSOT must remain untouched when backup fails")
+		}
+		localAfter, _ := HashDir(target)
+		if localAfter != localBefore {
+			t.Error("local source must remain untouched on abort")
+		}
+	})
+}

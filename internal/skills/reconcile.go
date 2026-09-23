@@ -2,6 +2,7 @@ package skills
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -237,4 +238,87 @@ func (s *Store) KeepSkillFork(skillID, sourcePath string, reg *agents.Registry) 
 		CheckedAt: shared.NowRFC3339(),
 	}
 	return WriteConflictAck(s.ssotDir, conflictKey(sk.Directory, target), ack)
+}
+
+// OverwriteSkillCopyFromSSOT 用 SSOT 内容覆盖 agent 目录中的条目并重建投影。
+// 分叉三选中的「SSOT 覆盖」显式授权路径：本地分叉内容会被删除。
+func (s *Store) OverwriteSkillCopyFromSSOT(skillID, sourcePath string, reg *agents.Registry) error {
+	s.importMu.Lock()
+	defer s.importMu.Unlock()
+
+	sk, ssotPath, method, err := s.lookupSkillPaths(skillID)
+	if err != nil {
+		return err
+	}
+	target, err := resolveAgentSkillPath(sourcePath, sk.Directory, reg)
+	if err != nil {
+		return err
+	}
+	if _, err := os.Lstat(target); err != nil {
+		return fmt.Errorf("entry %q not found: %w", target, err)
+	}
+	_ = DeleteConflictAck(s.ssotDir, conflictKey(sk.Directory, target))
+	if err := RemovePath(target); err != nil {
+		return fmt.Errorf("remove entry: %w", err)
+	}
+	if err := SyncToAgentDir(ssotPath, target, method); err != nil {
+		return fmt.Errorf("create projection: %w", err)
+	}
+	return nil
+}
+
+// AdoptSkillCopy 用 agent 目录中的散装副本内容覆盖 SSOT（分叉三选之「本地收编」）。
+// 覆盖前备份原 SSOT 到 skill-backups；备份失败即中止，绝不丢数据。
+func (s *Store) AdoptSkillCopy(skillID, sourcePath string, reg *agents.Registry) (Skill, error) {
+	s.importMu.Lock()
+	defer s.importMu.Unlock()
+
+	sk, ssotPath, method, err := s.lookupSkillPaths(skillID)
+	if err != nil {
+		return Skill{}, err
+	}
+	target, err := resolveAgentSkillPath(sourcePath, sk.Directory, reg)
+	if err != nil {
+		return Skill{}, err
+	}
+	info, lerr := os.Lstat(target)
+	if lerr != nil {
+		return Skill{}, fmt.Errorf("entry %q not found: %w", target, lerr)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return Skill{}, fmt.Errorf("entry %q is a link, nothing to adopt", target)
+	}
+	if !HasSkillManifest(target) {
+		return Skill{}, fmt.Errorf("entry %q has no SKILL.md", target)
+	}
+	ssotHash, ssotOK := HashDir(ssotPath)
+	localHash, localOK := HashDir(target)
+	if ssotOK && localOK && localHash == ssotHash {
+		return Skill{}, fmt.Errorf("contents of %q are identical to SSOT; use convert instead", sk.Directory)
+	}
+	backupDir := filepath.Join(filepath.Dir(s.ssotDir), "skill-backups")
+	backupPath, backupErr := BackupSkillDir(s.ssotDir, backupDir, sk.Directory)
+	if backupErr != nil {
+		return Skill{}, fmt.Errorf("backup SSOT before adopt (aborted): %w", backupErr)
+	}
+	if err := RemovePath(ssotPath); err != nil {
+		return Skill{}, fmt.Errorf("remove SSOT (backup at %s): %w", backupPath, err)
+	}
+	if err := copyDirRecursive(target, ssotPath); err != nil {
+		if backupPath != "" {
+			if berr := copyDirRecursive(backupPath, ssotPath); berr != nil {
+				log.Printf("adopt: restore from backup %s failed: %v", backupPath, berr)
+			}
+		}
+		return Skill{}, fmt.Errorf("copy local into SSOT: %w", err)
+	}
+	_ = DeleteConflictAck(s.ssotDir, conflictKey(sk.Directory, target))
+	refreshed, err := s.refreshSkillAfterFileUpdate(skillID, ssotPath)
+	if err != nil {
+		return Skill{}, err
+	}
+	if err := SyncToAgentDir(ssotPath, target, method); err != nil {
+		return refreshed, fmt.Errorf("SSOT adopted, but projection refresh failed: %w", err)
+	}
+	return refreshed, nil
 }
