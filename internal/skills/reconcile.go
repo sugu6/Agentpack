@@ -1,12 +1,14 @@
 package skills
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 
 	"agentpack/internal/agents"
+	"agentpack/internal/shared"
 )
 
 type copyClass struct {
@@ -130,4 +132,109 @@ func (s *Store) ScanConflicts(reg *agents.Registry) []ReconcileItem {
 		return items[i].Path < items[j].Path
 	})
 	return items
+}
+
+// lookupSkillPaths 取技能的 SSOT 路径与同步方式（读锁快照）。
+func (s *Store) lookupSkillPaths(skillID string) (Skill, string, SyncMethod, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	sk, ok := s.skills[skillID]
+	if !ok {
+		return Skill{}, "", "", fmt.Errorf("skill %s not found", skillID)
+	}
+	return sk, filepath.Join(s.ssotDir, sk.Directory), s.syncMethod, nil
+}
+
+// resolveAgentSkillPath 校验 sourcePath 必须等于 dirName 在某个
+// skill-capable agent 目录下的条目；返回与 scan 相同构造法的规范路径。
+func resolveAgentSkillPath(sourcePath, dirName string, reg *agents.Registry) (string, error) {
+	abs, err := filepath.Abs(sourcePath)
+	if err != nil {
+		return "", err
+	}
+	abs = filepath.Clean(abs)
+	for _, id := range reg.SkillCapableAgentIDs() {
+		d := reg.AgentSkillsDir(id)
+		if d == "" {
+			continue
+		}
+		candidate := filepath.Join(d, dirName)
+		cAbs, err := filepath.Abs(candidate)
+		if err != nil {
+			continue
+		}
+		if abs == filepath.Clean(cAbs) {
+			return candidate, nil
+		}
+	}
+	return "", fmt.Errorf("path %q is not entry %q of any agent skills directory", sourcePath, dirName)
+}
+
+// ConvertSkillCopyToLink 将 agent 目录中的条目转换为指向 SSOT 的正确投影。
+// 字节守卫：普通目录必须与 SSOT 全树哈希完全一致（两侧均完整），否则拒绝——
+// 内容分叉必须先经 AdoptSkillCopy / OverwriteSkillCopyFromSSOT 显式处置。
+func (s *Store) ConvertSkillCopyToLink(skillID, sourcePath string, reg *agents.Registry) error {
+	s.importMu.Lock()
+	defer s.importMu.Unlock()
+
+	sk, ssotPath, method, err := s.lookupSkillPaths(skillID)
+	if err != nil {
+		return err
+	}
+	target, err := resolveAgentSkillPath(sourcePath, sk.Directory, reg)
+	if err != nil {
+		return err
+	}
+	info, lerr := os.Lstat(target)
+	if lerr != nil {
+		return fmt.Errorf("entry %q not found: %w", target, lerr)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		ssotHash, ssotOK := HashDir(ssotPath)
+		localHash, localOK := HashDir(target)
+		if !ssotOK || !localOK || ssotHash == "" || localHash != ssotHash {
+			return fmt.Errorf("local copy of %q differs from SSOT; choose adopt or overwrite first", sk.Directory)
+		}
+	}
+	if err := RemovePath(target); err != nil {
+		return fmt.Errorf("remove entry: %w", err)
+	}
+	if err := SyncToAgentDir(ssotPath, target, method); err != nil {
+		return fmt.Errorf("create projection: %w", err)
+	}
+	return nil
+}
+
+// KeepSkillFork 记录一次内容分叉的"保留"决定（指纹级 ack，
+// 任一侧后续再漂移会重新出现在对账面板）。
+func (s *Store) KeepSkillFork(skillID, sourcePath string, reg *agents.Registry) error {
+	s.importMu.Lock()
+	defer s.importMu.Unlock()
+
+	sk, ssotPath, _, err := s.lookupSkillPaths(skillID)
+	if err != nil {
+		return err
+	}
+	target, err := resolveAgentSkillPath(sourcePath, sk.Directory, reg)
+	if err != nil {
+		return err
+	}
+	info, lerr := os.Lstat(target)
+	if lerr != nil {
+		return fmt.Errorf("entry %q not found: %w", target, lerr)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("entry %q is a link, nothing to keep", target)
+	}
+	ssotHash, ssotOK := HashDir(ssotPath)
+	localHash, localOK := HashDir(target)
+	if ssotOK && localOK && localHash == ssotHash {
+		return fmt.Errorf("contents of %q are identical to SSOT; nothing to keep", sk.Directory)
+	}
+	ack := ConflictAck{
+		SSOTHash:  ssotHash,
+		LocalHash: localHash,
+		CheckedAt: shared.NowRFC3339(),
+	}
+	return WriteConflictAck(s.ssotDir, conflictKey(sk.Directory, target), ack)
 }

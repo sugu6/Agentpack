@@ -332,3 +332,190 @@ func TestScanConflicts_AcknowledgeAndDrift(t *testing.T) {
 		t.Error("ssot drift must un-acknowledge the fork")
 	}
 }
+
+func TestConvertSkillCopyToLink(t *testing.T) {
+	t.Run("identical plain copy becomes symlink", func(t *testing.T) {
+		env := newReconcileEnv(t)
+		ssot := filepath.Join(env.ssotDir, "alpha")
+		writeReconcileSkill(t, ssot, "x\n")
+		target := filepath.Join(env.claudeDir, "alpha")
+		if err := copyDirRecursive(ssot, target); err != nil {
+			t.Fatal(err)
+		}
+		if err := env.store.Load(env.reg); err != nil {
+			t.Fatal(err)
+		}
+		if err := env.store.ConvertSkillCopyToLink("skill:alpha", target, env.reg); err != nil {
+			t.Fatal(err)
+		}
+		info, err := os.Lstat(target)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// 形状断言按主机能力门控（Ruling 5）：无 symlink 权限的主机上
+		// createSymlink 走既有 copy fallback；下方内容断言（无条件）
+		// 仍然完整验证投影语义，可授权主机上形状仍严格断言。
+		if canCreateSymlinks(t) && info.Mode()&os.ModeSymlink == 0 {
+			t.Fatal("expected target to become a symlink")
+		}
+		before, _ := HashDir(ssot)
+		after, _ := HashDir(target)
+		if before == "" || before != after {
+			t.Errorf("content must be preserved after conversion: %q vs %q", before, after)
+		}
+	})
+
+	t.Run("diverged plain copy refused and untouched", func(t *testing.T) {
+		env := newReconcileEnv(t)
+		ssot := filepath.Join(env.ssotDir, "beta")
+		writeReconcileSkill(t, ssot, "ssot-sidecar\n")
+		target := filepath.Join(env.claudeDir, "beta")
+		writeReconcileSkill(t, target, "local-sidecar\n")
+		if err := env.store.Load(env.reg); err != nil {
+			t.Fatal(err)
+		}
+		localBefore, _ := HashDir(target)
+		err := env.store.ConvertSkillCopyToLink("skill:beta", target, env.reg)
+		if err == nil {
+			t.Fatal("expected refusal for diverged copy (D1 byte guard)")
+		}
+		localAfter, _ := HashDir(target)
+		if localBefore != localAfter {
+			t.Error("refused conversion must not modify local content")
+		}
+		if info, lerr := os.Lstat(target); lerr != nil || info.Mode()&os.ModeSymlink != 0 {
+			t.Errorf("entry must remain a plain dir, info=%v err=%v", info, lerr)
+		}
+	})
+
+	t.Run("dead link repaired", func(t *testing.T) {
+		env := newReconcileEnv(t)
+		writeReconcileSkill(t, filepath.Join(env.ssotDir, "gamma"), "")
+		target := filepath.Join(env.codexDir, "gamma")
+		mustSymlink(t, filepath.Join(env.ssotDir, "no-such"), target)
+		if err := env.store.Load(env.reg); err != nil {
+			t.Fatal(err)
+		}
+		if err := env.store.ConvertSkillCopyToLink("skill:gamma", target, env.reg); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Stat(target); err != nil {
+			t.Errorf("link must resolve after conversion: %v", err)
+		}
+	})
+
+	t.Run("wrong-target link relinked", func(t *testing.T) {
+		env := newReconcileEnv(t)
+		writeReconcileSkill(t, filepath.Join(env.ssotDir, "delta"), "")
+		other := filepath.Join(t.TempDir(), "delta")
+		writeReconcileSkill(t, other, "")
+		target := filepath.Join(env.codexDir, "delta")
+		mustSymlink(t, other, target)
+		if err := env.store.Load(env.reg); err != nil {
+			t.Fatal(err)
+		}
+		if err := env.store.ConvertSkillCopyToLink("skill:delta", target, env.reg); err != nil {
+			t.Fatal(err)
+		}
+		link, err := os.Readlink(target)
+		if err != nil {
+			t.Fatal(err)
+		}
+		wantAbs, _ := filepath.Abs(filepath.Join(env.ssotDir, "delta"))
+		gotAbs, _ := filepath.Abs(link)
+		if filepath.Clean(wantAbs) != filepath.Clean(gotAbs) {
+			t.Errorf("link must point at SSOT, got %q want %q", link, wantAbs)
+		}
+	})
+
+	t.Run("path outside agent dirs rejected", func(t *testing.T) {
+		env := newReconcileEnv(t)
+		writeReconcileSkill(t, filepath.Join(env.ssotDir, "eps"), "")
+		outsider := filepath.Join(t.TempDir(), "eps")
+		writeReconcileSkill(t, outsider, "")
+		if err := env.store.Load(env.reg); err != nil {
+			t.Fatal(err)
+		}
+		if err := env.store.ConvertSkillCopyToLink("skill:eps", outsider, env.reg); err == nil {
+			t.Fatal("expected error for path not inside any agent skills dir")
+		}
+	})
+
+	t.Run("unknown skill rejected", func(t *testing.T) {
+		env := newReconcileEnv(t)
+		if err := env.store.Load(env.reg); err != nil {
+			t.Fatal(err)
+		}
+		if err := env.store.ConvertSkillCopyToLink("skill:nope", filepath.Join(env.claudeDir, "nope"), env.reg); err == nil {
+			t.Fatal("expected error for unknown skill ID")
+		}
+	})
+}
+
+func TestKeepSkillFork(t *testing.T) {
+	t.Run("diverged fork records ack matching ScanConflicts", func(t *testing.T) {
+		env := newReconcileEnv(t)
+		writeReconcileSkill(t, filepath.Join(env.ssotDir, "fork"), "ssot-sidecar\n")
+		local := filepath.Join(env.claudeDir, "fork")
+		writeReconcileSkill(t, local, "local-sidecar\n")
+		if err := env.store.Load(env.reg); err != nil {
+			t.Fatal(err)
+		}
+		if err := env.store.KeepSkillFork("skill:fork", local, env.reg); err != nil {
+			t.Fatal(err)
+		}
+		items := env.store.ScanConflicts(env.reg)
+		it, ok := findReconcileItem(items, ConflictPlainDiff, local)
+		if !ok {
+			t.Fatal("plain_diff item not found after keep")
+		}
+		if !it.Acknowledged {
+			t.Error("kept fork must be acknowledged in subsequent scan")
+		}
+	})
+
+	t.Run("identical copy rejected without ack", func(t *testing.T) {
+		env := newReconcileEnv(t)
+		ssot := filepath.Join(env.ssotDir, "same")
+		writeReconcileSkill(t, ssot, "x\n")
+		target := filepath.Join(env.claudeDir, "same")
+		if err := copyDirRecursive(ssot, target); err != nil {
+			t.Fatal(err)
+		}
+		if err := env.store.Load(env.reg); err != nil {
+			t.Fatal(err)
+		}
+		if err := env.store.KeepSkillFork("skill:same", target, env.reg); err == nil {
+			t.Fatal("expected error when nothing diverges")
+		}
+		if acks := ReadConflictAcks(env.ssotDir); len(acks) != 0 {
+			t.Errorf("no ack must be written, got %d", len(acks))
+		}
+	})
+
+	t.Run("path outside agent dirs rejected", func(t *testing.T) {
+		env := newReconcileEnv(t)
+		writeReconcileSkill(t, filepath.Join(env.ssotDir, "k"), "a\n")
+		outsider := filepath.Join(t.TempDir(), "k")
+		writeReconcileSkill(t, outsider, "b\n")
+		if err := env.store.Load(env.reg); err != nil {
+			t.Fatal(err)
+		}
+		if err := env.store.KeepSkillFork("skill:k", outsider, env.reg); err == nil {
+			t.Fatal("expected error for foreign path")
+		}
+	})
+}
+
+// canCreateSymlinks probes whether this host may create symlinks
+// (Windows: SeCreateSymbolicLinkPrivilege or Developer Mode).
+// 形状断言按其结果门控；内容/行为断言始终无条件执行（Ruling 5）。
+func canCreateSymlinks(t *testing.T) bool {
+	t.Helper()
+	probe := filepath.Join(t.TempDir(), "probe")
+	if err := os.Symlink("x", probe); err != nil {
+		t.Logf("symlink unavailable, shape assertion skipped: %v", err)
+		return false
+	}
+	return true
+}
