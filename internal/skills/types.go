@@ -112,3 +112,26 @@ type UpdateSkillsResult struct {
 	Updated []Skill       `json:"updated"`
 	Errors  []UpdateError `json:"errors"`
 }
+
+// ConflictKind 是对账扫描产出的条目分类。
+type ConflictKind string
+
+const (
+	ConflictPlainSame   ConflictKind = "plain_same"
+	ConflictPlainDiff   ConflictKind = "plain_diff"
+	ConflictOrphanLink  ConflictKind = "orphan_link"
+	ConflictBrokenLink  ConflictKind = "broken_link"
+	ConflictWrongTarget ConflictKind = "wrong_target"
+)
+
+// ReconcileItem 是对账扫描的单条 (技能, agent 目录) 冲突。
+type ReconcileItem struct {
+	Kind         ConflictKind `json:"kind"`
+	SkillID      string       `json:"skillId,omitempty"` // orphan_link 无 SSOT 技能，为空
+	Directory    string       `json:"directory"`
+	Path         string       `json:"path"`
+	AgentIDs     []string     `json:"agentIds"`
+	SSOTHash     string       `json:"ssotHash,omitempty"`
+	LocalHash    string       `json:"localHash,omitempty"`
+	Acknowledged bool         `json:"acknowledged"`
+}
