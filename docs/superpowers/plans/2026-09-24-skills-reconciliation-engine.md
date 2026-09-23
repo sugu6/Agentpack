@@ -555,67 +555,92 @@ func findReconcileItem(items []ReconcileItem, kind ConflictKind, path string) (R
 }
 
 func TestScanConflicts_ClassifiesAllKinds(t *testing.T) {
-	env := newReconcileEnv(t)
+	// 拆为两个子测（Ruling 4）：本机常无 SeCreateSymbolicLinkPrivilege，
+	// monolithic 版本会在首个 mustSymlink 处整测 Skip，连不需要 symlink 的
+	// 散装分类/去重/排除断言也一并丢失（证据假跳）。链接用例整体 Skip 时，
+	// 散装用例仍须真实执行。
+	t.Run("plain entries dedup and stray exclusion", func(t *testing.T) {
+		env := newReconcileEnv(t)
 
-	// alpha: claude 目录同内容散装副本 → plain_same（AgentIDs 含共享目录的两个 ID）
-	alphaSSOT := filepath.Join(env.ssotDir, "alpha")
-	writeReconcileSkill(t, alphaSSOT, "sidecar\n")
-	if err := copyDirRecursive(alphaSSOT, filepath.Join(env.claudeDir, "alpha")); err != nil {
-		t.Fatal(err)
-	}
-
-	// beta: claude 分叉散装 + codex 错链 → plain_diff + wrong_target
-	betaSSOT := filepath.Join(env.ssotDir, "beta")
-	writeReconcileSkill(t, betaSSOT, "ssot-sidecar\n")
-	writeReconcileSkill(t, filepath.Join(env.claudeDir, "beta"), "local-sidecar\n")
-	other := t.TempDir()
-	otherSkill := filepath.Join(other, "beta")
-	writeReconcileSkill(t, otherSkill, "other\n")
-	mustSymlink(t, otherSkill, filepath.Join(env.codexDir, "beta"))
-
-	// gamma: SSOT 有、codex 死链 → broken_link
-	writeReconcileSkill(t, filepath.Join(env.ssotDir, "gamma"), "")
-	mustSymlink(t, filepath.Join(env.ssotDir, "no-such-gamma"), filepath.Join(env.codexDir, "gamma"))
-
-	// ghost: codex 死链、SSOT 无同名 → orphan_link
-	mustSymlink(t, filepath.Join(env.ssotDir, "no-such-ghost"), filepath.Join(env.codexDir, "ghost"))
-
-	// stray: claude 散装、SSOT 无同名 → 属未管理视图，不得出现
-	writeReconcileSkill(t, filepath.Join(env.claudeDir, "stray"), "")
-
-	if err := env.store.Load(env.reg); err != nil {
-		t.Fatal(err)
-	}
-	items := env.store.ScanConflicts(env.reg)
-	if len(items) != 5 {
-		t.Fatalf("expected 5 items, got %d: %+v", len(items), items)
-	}
-	if _, ok := findReconcileItem(items, ConflictPlainDiff, filepath.Join(env.claudeDir, "stray")); ok {
-		t.Error("plain dir without SSOT twin must not appear (belongs to unmanaged view)")
-	}
-	alpha, ok := findReconcileItem(items, ConflictPlainSame, filepath.Join(env.claudeDir, "alpha"))
-	if !ok {
-		t.Fatal("plain_same for claude/alpha not found")
-	}
-	if len(alpha.AgentIDs) != 2 {
-		t.Errorf("shared dir must aggregate both agent IDs, got %v", alpha.AgentIDs)
-	}
-	if alpha.SkillID != "skill:alpha" || !stringsHas(alpha.AgentIDs, "claude-code") || !stringsHas(alpha.AgentIDs, "claude-code-desktop") {
-		t.Errorf("unexpected alpha item: %+v", alpha)
-	}
-	if _, ok := findReconcileItem(items, ConflictBrokenLink, filepath.Join(env.codexDir, "gamma")); !ok {
-		t.Error("broken_link for codex/gamma not found")
-	}
-	ghost, ok := findReconcileItem(items, ConflictOrphanLink, filepath.Join(env.codexDir, "ghost"))
-	if !ok || ghost.SkillID != "" {
-		t.Errorf("orphan_link must have empty SkillID, got %+v", ghost)
-	}
-	for i := 1; i < len(items); i++ {
-		prev, cur := items[i-1], items[i]
-		if prev.Kind > cur.Kind || (prev.Kind == cur.Kind && prev.Directory > cur.Directory) {
-			t.Errorf("items not sorted at %d: %q/%q before %q/%q", i, prev.Kind, prev.Directory, cur.Kind, cur.Directory)
+		// alpha: claude 目录同内容散装副本 → plain_same（AgentIDs 含共享目录的两个 ID）
+		alphaSSOT := filepath.Join(env.ssotDir, "alpha")
+		writeReconcileSkill(t, alphaSSOT, "sidecar\n")
+		if err := copyDirRecursive(alphaSSOT, filepath.Join(env.claudeDir, "alpha")); err != nil {
+			t.Fatal(err)
 		}
-	}
+
+		// beta: claude 分叉散装 → plain_diff
+		betaSSOT := filepath.Join(env.ssotDir, "beta")
+		writeReconcileSkill(t, betaSSOT, "ssot-sidecar\n")
+		writeReconcileSkill(t, filepath.Join(env.claudeDir, "beta"), "local-sidecar\n")
+
+		// stray: claude 散装、SSOT 无同名 → 属未管理视图，不得出现
+		writeReconcileSkill(t, filepath.Join(env.claudeDir, "stray"), "")
+
+		if err := env.store.Load(env.reg); err != nil {
+			t.Fatal(err)
+		}
+		items := env.store.ScanConflicts(env.reg)
+		if len(items) != 2 {
+			t.Fatalf("expected 2 items, got %d: %+v", len(items), items)
+		}
+		if _, ok := findReconcileItem(items, ConflictPlainDiff, filepath.Join(env.claudeDir, "stray")); ok {
+			t.Error("plain dir without SSOT twin must not appear (belongs to unmanaged view)")
+		}
+		alpha, ok := findReconcileItem(items, ConflictPlainSame, filepath.Join(env.claudeDir, "alpha"))
+		if !ok {
+			t.Fatal("plain_same for claude/alpha not found")
+		}
+		if len(alpha.AgentIDs) != 2 {
+			t.Errorf("shared dir must aggregate both agent IDs, got %v", alpha.AgentIDs)
+		}
+		if alpha.SkillID != "skill:alpha" || !stringsHas(alpha.AgentIDs, "claude-code") || !stringsHas(alpha.AgentIDs, "claude-code-desktop") {
+			t.Errorf("unexpected alpha item: %+v", alpha)
+		}
+	})
+
+	t.Run("link entries classification", func(t *testing.T) {
+		env := newReconcileEnv(t)
+
+		// beta: SSOT 有、codex 错链 → wrong_target
+		betaSSOT := filepath.Join(env.ssotDir, "beta")
+		writeReconcileSkill(t, betaSSOT, "ssot-sidecar\n")
+		other := t.TempDir()
+		otherSkill := filepath.Join(other, "beta")
+		writeReconcileSkill(t, otherSkill, "other\n")
+		mustSymlink(t, otherSkill, filepath.Join(env.codexDir, "beta"))
+
+		// gamma: SSOT 有、codex 死链 → broken_link
+		writeReconcileSkill(t, filepath.Join(env.ssotDir, "gamma"), "")
+		mustSymlink(t, filepath.Join(env.ssotDir, "no-such-gamma"), filepath.Join(env.codexDir, "gamma"))
+
+		// ghost: codex 死链、SSOT 无同名 → orphan_link
+		mustSymlink(t, filepath.Join(env.ssotDir, "no-such-ghost"), filepath.Join(env.codexDir, "ghost"))
+
+		if err := env.store.Load(env.reg); err != nil {
+			t.Fatal(err)
+		}
+		items := env.store.ScanConflicts(env.reg)
+		if len(items) != 3 {
+			t.Fatalf("expected 3 items, got %d: %+v", len(items), items)
+		}
+		if _, ok := findReconcileItem(items, ConflictBrokenLink, filepath.Join(env.codexDir, "gamma")); !ok {
+			t.Error("broken_link for codex/gamma not found")
+		}
+		ghost, ok := findReconcileItem(items, ConflictOrphanLink, filepath.Join(env.codexDir, "ghost"))
+		if !ok || ghost.SkillID != "" {
+			t.Errorf("orphan_link must have empty SkillID, got %+v", ghost)
+		}
+		if _, ok := findReconcileItem(items, ConflictWrongTarget, filepath.Join(env.codexDir, "beta")); !ok {
+			t.Error("wrong_target for codex/beta not found")
+		}
+		for i := 1; i < len(items); i++ {
+			prev, cur := items[i-1], items[i]
+			if prev.Kind > cur.Kind || (prev.Kind == cur.Kind && prev.Directory > cur.Directory) {
+				t.Errorf("items not sorted at %d: %q/%q before %q/%q", i, prev.Kind, prev.Directory, cur.Kind, cur.Directory)
+			}
+		}
+	})
 }
 
 func stringsHas(list []string, v string) bool {
