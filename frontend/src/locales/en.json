@@ -343,6 +343,28 @@
     "directory": "Directory",
     "agents": "Bound agents",
     "boundAgentCount": "{count} agents",
+    "conflicts": {
+      "title": "Reconciliation",
+      "badge": "{count} conflicts",
+      "kind": {
+        "plain_same": "Identical plain copy",
+        "plain_diff": "Diverged copy",
+        "orphan_link": "Orphan dead link",
+        "broken_link": "Broken projection",
+        "wrong_target": "Wrong target"
+      },
+      "convert": "Convert to link",
+      "cleanAll": "Clean dead links",
+      "cleanMessage": "Removes {count} dead links whose targets are gone (a link holds no content, so nothing is lost). Live links and plain skills are untouched.",
+      "adoptTitle": "Adopt local copy?",
+      "adoptMessage": "SSOT entry {directory} will be replaced with the content of {path}; the original is backed up to skill-backups first.",
+      "adoptConfirm": "Adopt",
+      "overwriteTitle": "Overwrite local copy with SSOT?",
+      "overwriteMessage": "Deletes the local content at {path} and rebuilds it as a projection of SSOT. Local edits cannot be recovered.",
+      "overwriteConfirm": "Overwrite",
+      "keepFork": "Keep fork",
+      "kept": "Kept"
+    },
     "noCapableAgents": "No Skills-capable agents detected",
     "goToRepo": "Go to repository",
     "empty": "No skills",
@@ -386,7 +408,14 @@
       "updateSuccess": "Update successful",
       "updateFailed": "Update failed: {error}",
       "updateAllSuccess": "Updated {count} skills",
-      "updateAllPartial": "Updated {success}, {failed} failed"
+      "updateAllPartial": "Updated {success}, {failed} failed",
+      "conflictConverted": "Converted to link",
+      "conflictActionFailed": "Reconciliation action failed",
+      "adopted": "Local copy adopted",
+      "overwritten": "Local copy overwritten from SSOT",
+      "forkKept": "Fork kept",
+      "cleanedCount": "Removed {count} dead link(s)",
+      "convertedCount": "Converted {count} source director(y/ies) to links"
     },
     "confirmUpdateAll": "Update {count} skills?"
   },

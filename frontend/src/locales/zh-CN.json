@@ -343,6 +343,28 @@
     "directory": "目录",
     "agents": "绑定 Agent",
     "boundAgentCount": "{count} 个 Agent",
+    "conflicts": {
+      "title": "对账",
+      "badge": "{count} 处冲突",
+      "kind": {
+        "plain_same": "散装副本·内容相同",
+        "plain_diff": "内容分叉",
+        "orphan_link": "孤儿断链",
+        "broken_link": "投影断链",
+        "wrong_target": "错误指向"
+      },
+      "convert": "转为映射",
+      "cleanAll": "清理全部断链",
+      "cleanMessage": "将删除 {count} 条目标已失效的死链（链接本身无内容，删除无数据损失）。活链与散装技能不受影响。",
+      "adoptTitle": "收编本地副本？",
+      "adoptMessage": "将用 {path} 的内容覆盖 SSOT 中的 {directory}；覆盖前原版本会备份到 skill-backups。",
+      "adoptConfirm": "收编",
+      "overwriteTitle": "用 SSOT 覆盖本地副本？",
+      "overwriteMessage": "将删除 {path} 的本地内容并重建为指向 SSOT 的投影，本地改动不可恢复。",
+      "overwriteConfirm": "覆盖",
+      "keepFork": "保留分叉",
+      "kept": "已保留"
+    },
     "noCapableAgents": "未检测到支持 Skills 的 Agent",
     "goToRepo": "前往仓库",
     "empty": "暂无 Skills",
@@ -386,7 +408,14 @@
       "updateSuccess": "更新成功",
       "updateFailed": "更新失败：{error}",
       "updateAllSuccess": "已更新 {count} 个 Skill",
-      "updateAllPartial": "已更新 {success} 个，{failed} 个失败"
+      "updateAllPartial": "已更新 {success} 个，{failed} 个失败",
+      "conflictConverted": "已转为映射",
+      "conflictActionFailed": "对账操作失败",
+      "adopted": "已收编本地副本",
+      "overwritten": "已用 SSOT 覆盖本地副本",
+      "forkKept": "已保留该分叉",
+      "cleanedCount": "已清理 {count} 条死链",
+      "convertedCount": "已将 {count} 个来源目录转为映射"
     },
     "confirmUpdateAll": "确定要更新 {count} 个 Skill 吗？"
   },

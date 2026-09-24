@@ -5,7 +5,7 @@ import { useSkillsStore } from '@/stores/skills'
 import { useAgentsStore } from '@/stores/agents'
 import { Card, CardContent, Button, Badge, Spinner, Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui'
 import { PhTrash, PhSparkle, PhMagnifyingGlass, PhFileArchive, PhFolderOpen, PhArrowClockwise, PhArrowUp } from '@phosphor-icons/vue'
-import { api, events, ApiError } from '@/lib/api'
+import { api, events, ApiError, type ReconcileItem } from '@/lib/api'
 import { isFilePickCancelled } from '@/lib/utils'
 import { toggleGroupMembers } from '@/lib/selection'
 import { normalizeVariant, variantToBadge, agentDisplayName } from '@/composables/useAgentHelpers'
@@ -401,6 +401,99 @@ async function onUpdateAll() {
   }
 }
 
+// 对账冲突列表：后端零冲突时返回 null（Go 空切片序列化为 JSON null），统一兜底
+const conflictList = computed<ReconcileItem[]>(() => skills.conflicts ?? [])
+// 对账：冲突按技能分组（卡片徽标）+ 平铺列表（对账面板）
+const conflictsBySkill = computed(() => {
+  const m = new Map<string, ReconcileItem[]>()
+  for (const it of conflictList.value) {
+    if (!it.skillId) continue
+    const arr = m.get(it.skillId) ?? []
+    arr.push(it)
+    m.set(it.skillId, arr)
+  }
+  return m
+})
+function skillConflicts(skillId: string): ReconcileItem[] {
+  return conflictsBySkill.value.get(skillId) ?? []
+}
+const orphanCount = computed(() => conflictList.value.filter(c => c.kind === 'orphan_link').length)
+const conflictsCleaning = ref(false)
+
+function kindLabel(kind: ReconcileItem['kind']): string {
+  return t(`skills.conflicts.kind.${kind}`)
+}
+
+async function onConvertConflict(item: ReconcileItem) {
+  if (!item.skillId) return
+  try {
+    await skills.convertSkillCopy(item.skillId, item.path)
+    toast.success(t('skills.toast.conflictConverted'))
+  } catch (e: unknown) {
+    toast.error(toast.fromError(e, t('skills.toast.conflictActionFailed')))
+  }
+}
+
+async function onAdoptConflict(item: ReconcileItem) {
+  if (!item.skillId) return
+  const ok = await confirm.confirm({
+    title: t('skills.conflicts.adoptTitle'),
+    message: t('skills.conflicts.adoptMessage', { path: item.path, directory: item.directory }),
+    confirmText: t('skills.conflicts.adoptConfirm'),
+  })
+  if (!ok) return
+  try {
+    await skills.adoptSkillCopy(item.skillId, item.path)
+    toast.success(t('skills.toast.adopted'))
+  } catch (e: unknown) {
+    toast.error(toast.fromError(e, t('skills.toast.conflictActionFailed')))
+  }
+}
+
+async function onOverwriteConflict(item: ReconcileItem) {
+  if (!item.skillId) return
+  const ok = await confirm.confirm({
+    title: t('skills.conflicts.overwriteTitle'),
+    message: t('skills.conflicts.overwriteMessage', { path: item.path }),
+    confirmText: t('skills.conflicts.overwriteConfirm'),
+  })
+  if (!ok) return
+  try {
+    await skills.overwriteSkillCopy(item.skillId, item.path)
+    toast.success(t('skills.toast.overwritten'))
+  } catch (e: unknown) {
+    toast.error(toast.fromError(e, t('skills.toast.conflictActionFailed')))
+  }
+}
+
+async function onKeepConflict(item: ReconcileItem) {
+  if (!item.skillId) return
+  try {
+    await skills.keepSkillFork(item.skillId, item.path)
+    toast.success(t('skills.toast.forkKept'))
+  } catch (e: unknown) {
+    toast.error(toast.fromError(e, t('skills.toast.conflictActionFailed')))
+  }
+}
+
+async function onCleanOrphans() {
+  const ok = await confirm.confirm({
+    title: t('skills.conflicts.cleanAll'),
+    message: t('skills.conflicts.cleanMessage', { count: orphanCount.value }),
+    confirmText: t('skills.conflicts.cleanAll'),
+  })
+  if (!ok) return
+  conflictsCleaning.value = true
+  try {
+    const removed = await skills.cleanOrphanLinks()
+    toast.success(t('skills.toast.cleanedCount', { count: removed.length }))
+  } catch (e: unknown) {
+    toast.error(toast.fromError(e, t('skills.toast.conflictActionFailed')))
+  } finally {
+    conflictsCleaning.value = false
+  }
+}
+
 async function scanSkills() {
   try {
     scanning.value = true
@@ -412,6 +505,8 @@ async function scanSkills() {
     await skills.load()
     // 4. Scan unmanaged skills in global ~/.agents/skills (read-only)
     await skills.scanUnmanaged()
+    // 5. 对账扫描：散装副本 / 分叉 / 死链分类（只读）
+    await skills.scanConflicts()
     toast.success(t('skills.toast.scanComplete'))
   } catch (e: unknown) {
     toast.error(toast.fromError(e, t('skills.toast.scanFailed')))
@@ -502,6 +597,7 @@ async function scanSkills() {
                 <div class="flex items-center gap-2">
                   <h3 class="text-sm font-semibold">{{ skill.name }}</h3>
                   <Badge variant="outline">{{ skill.directory }}</Badge>
+                  <Badge v-if="skillConflicts(skill.id).length > 0" variant="outline" class="border-destructive/40 text-destructive">{{ t('skills.conflicts.badge', { count: skillConflicts(skill.id).length }) }}</Badge>
                   <Badge v-if="skills.updatingSkillIds.has(skill.id)" variant="outline">{{ t('skills.updating') }}</Badge>
                   <Badge v-else-if="skills.updateStatusOf(skill.id)?.hasUpdate" variant="warning">{{ t('skills.hasUpdate') }}</Badge>
                   <Badge v-else-if="skills.updateStatusOf(skill.id)?.error" variant="destructive" :title="skills.updateStatusOf(skill.id)!.error">{{ t('skills.checkFailed') }}</Badge>
@@ -547,6 +643,39 @@ async function scanSkills() {
                 <Button variant="outline" size="icon" class="border-destructive/40 text-destructive hover:bg-destructive/10" :aria-label="t('common.uninstall')" @click="uninstallSkill(skill.id)">
                   <PhTrash :size="14" class="text-destructive" />
                 </Button>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        <!-- 对账面板：散装副本 / 分叉 / 死链 -->
+        <Card v-if="conflictList.length > 0">
+          <CardContent class="p-4">
+            <div class="flex items-center justify-between border-b border-border pb-2">
+              <div class="flex items-center gap-2">
+                <h3 class="text-sm font-semibold">{{ t('skills.conflicts.title') }}</h3>
+                <Badge variant="outline" class="border-destructive/40 text-destructive">{{ conflictList.length }}</Badge>
+              </div>
+              <Button v-if="orphanCount > 0" variant="outline" size="sm" :disabled="conflictsCleaning" @click="onCleanOrphans">
+                {{ t('skills.conflicts.cleanAll') }}
+              </Button>
+            </div>
+            <div class="mt-2 divide-y divide-border">
+              <div v-for="item in conflictList" :key="item.kind + item.path" class="flex items-start justify-between gap-3 py-2">
+                <div class="min-w-0">
+                  <span class="mr-2 inline-flex items-center rounded border border-border px-1.5 py-0.5 text-[10px] text-muted-foreground">{{ kindLabel(item.kind) }}</span>
+                  <span class="text-xs font-medium">{{ item.directory }}</span>
+                  <span v-if="item.acknowledged" class="ml-2 text-[10px] text-muted-foreground">{{ t('skills.conflicts.kept') }}</span>
+                  <div class="mt-0.5 break-all text-[11px] text-muted-foreground">{{ item.path }} → {{ item.agentIds.join(', ') }}</div>
+                </div>
+                <div v-if="item.kind !== 'orphan_link'" class="flex shrink-0 gap-1">
+                  <template v-if="item.kind === 'plain_diff'">
+                    <Button variant="outline" size="sm" class="h-7 text-xs" @click="onAdoptConflict(item)">{{ t('skills.conflicts.adoptConfirm') }}</Button>
+                    <Button variant="outline" size="sm" class="h-7 text-xs border-destructive/40 text-destructive" @click="onOverwriteConflict(item)">{{ t('skills.conflicts.overwriteConfirm') }}</Button>
+                    <Button v-if="item.acknowledged === false" variant="ghost" size="sm" class="h-7 text-xs" @click="onKeepConflict(item)">{{ t('skills.conflicts.keepFork') }}</Button>
+                  </template>
+                  <Button v-else variant="outline" size="sm" class="h-7 text-xs" @click="onConvertConflict(item)">{{ t('skills.conflicts.convert') }}</Button>
+                </div>
               </div>
             </div>
           </CardContent>
