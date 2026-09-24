@@ -1378,6 +1378,76 @@ func (a *App) ScanUnmanagedSkills() ([]skills.UnmanagedSkill, error) {
 	return a.skillsStore.ScanUnmanaged(a.registry), nil
 }
 
+// ScanSkillConflicts returns per-agent-directory skill copy conflicts
+// (plain residual copies / diverged copies / dead or mis-pointed links).
+// Read-only operation; results are sorted and deterministic.
+func (a *App) ScanSkillConflicts() ([]skills.ReconcileItem, error) {
+	if err := a.assertInit(); err != nil {
+		return nil, err
+	}
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if a.closed {
+		return nil, fmt.Errorf("app is shutting down")
+	}
+	if a.skillsStore == nil {
+		return nil, fmt.Errorf("skills store not initialized")
+	}
+	return a.skillsStore.ScanConflicts(a.registry), nil
+}
+
+// ConvertSkillCopyToLink converts an agent-dir entry into a correct SSOT
+// projection. Refuses byte-diverged plain copies (D1 byte guard).
+func (a *App) ConvertSkillCopyToLink(skillID, sourcePath string) error {
+	return a.withSkillsStore(func(ss *skills.Store) error {
+		return ss.ConvertSkillCopyToLink(skillID, sourcePath, a.registry)
+	})
+}
+
+// OverwriteSkillCopyFromSSOT replaces a diverged local copy with SSOT content
+// and rebuilds the projection (explicit fork-resolution choice).
+func (a *App) OverwriteSkillCopyFromSSOT(skillID, sourcePath string) error {
+	return a.withSkillsStore(func(ss *skills.Store) error {
+		return ss.OverwriteSkillCopyFromSSOT(skillID, sourcePath, a.registry)
+	})
+}
+
+// AdoptSkillCopy overwrites SSOT with the local copy (backing up the original
+// first, aborting if the backup fails) and returns the refreshed skill.
+func (a *App) AdoptSkillCopy(skillID, sourcePath string) (skills.Skill, error) {
+	var sk skills.Skill
+	err := a.withSkillsStore(func(ss *skills.Store) error {
+		var e error
+		sk, e = ss.AdoptSkillCopy(skillID, sourcePath, a.registry)
+		if e != nil {
+			return e
+		}
+		a.emitLocked("skills:changed", ss.List())
+		return nil
+	})
+	return sk, err
+}
+
+// KeepSkillFork records an explicit decision to retain a diverged copy
+// (fingerprint-keyed; auto re-surfaces when either side drifts).
+func (a *App) KeepSkillFork(skillID, sourcePath string) error {
+	return a.withSkillsStore(func(ss *skills.Store) error {
+		return ss.KeepSkillFork(skillID, sourcePath, a.registry)
+	})
+}
+
+// CleanOrphanSkillLinks removes dead symlinks whose names are absent from the
+// SSOT. Returns the paths actually removed.
+func (a *App) CleanOrphanSkillLinks() ([]string, error) {
+	var removed []string
+	err := a.withSkillsStore(func(ss *skills.Store) error {
+		var e error
+		removed, e = ss.CleanOrphanSkillLinks(a.registry)
+		return e
+	})
+	return removed, err
+}
+
 func (a *App) MigrateSkillStorage(target string) (skills.MigrationResult, error) {
 	var result skills.MigrationResult
 	err := a.withSkillsStore(func(ss *skills.Store) error {
