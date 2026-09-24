@@ -358,10 +358,10 @@ func TestConvertSkillCopyToLink(t *testing.T) {
 		if canCreateSymlinks(t) && info.Mode()&os.ModeSymlink == 0 {
 			t.Fatal("expected target to become a symlink")
 		}
-		before, _ := HashDir(ssot)
-		after, _ := HashDir(target)
-		if before == "" || before != after {
-			t.Errorf("content must be preserved after conversion: %q vs %q", before, after)
+		before, beforeOK := HashDir(ssot)
+		after, afterOK := hashEntryContent(target)
+		if !beforeOK || !afterOK || before == "" || before != after {
+			t.Errorf("content must be preserved after conversion: %q vs %q (complete before=%v after=%v)", before, after, beforeOK, afterOK)
 		}
 	})
 
@@ -520,6 +520,25 @@ func canCreateSymlinks(t *testing.T) bool {
 	return true
 }
 
+// hashEntryContent 返回条目的内容哈希：条目为符号链接时先解析目标再哈希。
+// HashDir 根路径是 WalkDir/Lstat 语义、不跟随链接——对"指向目录的链接"会按
+// 文件 ReadFile（Windows 上报 Incorrect function）→ 空哈希 + ok=false，
+// 直接哈希链接路径测不到内容；无 symlink 权限主机上 createSymlink 的既有
+// copy fallback 落回真目录，两种形态在此统一归一。
+func hashEntryContent(path string) (string, bool) {
+	if fi, err := os.Lstat(path); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+		resolved, err := os.Readlink(path)
+		if err != nil {
+			return "", false
+		}
+		if !filepath.IsAbs(resolved) {
+			resolved = filepath.Join(filepath.Dir(path), resolved)
+		}
+		return HashDir(resolved)
+	}
+	return HashDir(path)
+}
+
 func TestOverwriteSkillCopyFromSSOT(t *testing.T) {
 	t.Run("diverged plain replaced by SSOT projection", func(t *testing.T) {
 		env := newReconcileEnv(t)
@@ -541,9 +560,9 @@ func TestOverwriteSkillCopyFromSSOT(t *testing.T) {
 		if canCreateSymlinks(t) && info.Mode()&os.ModeSymlink == 0 {
 			t.Fatal("expected projection after overwrite")
 		}
-		got, _ := HashDir(target)
-		if got != ssotHash {
-			t.Errorf("content must equal SSOT after overwrite: %q vs %q", got, ssotHash)
+		got, gotOK := hashEntryContent(target)
+		if !gotOK || got != ssotHash {
+			t.Errorf("content must equal SSOT after overwrite: %q vs %q (complete=%v)", got, ssotHash, gotOK)
 		}
 	})
 
