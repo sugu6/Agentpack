@@ -20,16 +20,11 @@ import (
 type Exporter struct {
 	mcpStore    *mcp.Store
 	registry    *agents.Registry
-	baseDir     string
 	cfgProvider func() map[string]any // 返回应用设置，用于导出
 }
 
 func NewExporter(ms *mcp.Store, reg *agents.Registry) *Exporter {
 	return &Exporter{mcpStore: ms, registry: reg}
-}
-
-func (e *Exporter) SetBaseDir(dir string) {
-	e.baseDir = dir
 }
 
 func (e *Exporter) SetSettingsProvider(fn func() map[string]any) {
@@ -62,16 +57,6 @@ func (e *Exporter) Export() (Snapshot, error) {
 		snap.Settings = settings
 	}
 	return snap, nil
-}
-
-func (e *Exporter) ExportToWriter(w io.Writer) error {
-	snap, err := e.Export()
-	if err != nil {
-		return err
-	}
-	enc := json.NewEncoder(w)
-	enc.SetIndent("", "  ")
-	return enc.Encode(snap)
 }
 
 func (e *Exporter) ExportToFile(path string) error {

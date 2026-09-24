@@ -8,6 +8,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription, Switch, Butt
 
 import { PhFolderOpen, PhArrowsClockwise, PhDownload, PhUpload, PhPlus, PhTrash, PhPencilSimple } from '@phosphor-icons/vue'
 import { api, ApiError, events, type SkillRepo, type UpdateCheckResult } from '@/lib/api'
+import { isFilePickCancelled } from '@/lib/utils'
 
 import { useToast } from '@/composables/useToast'
 import { useI18n } from 'vue-i18n'
@@ -128,19 +129,32 @@ function setLiteAutoEnabled(v: boolean) {
   withAutoSave(cfg => { cfg.liteAutoEnabled = v })
 }
 
-function setLiteAutoDelay(v: string | number) {
-  // 数字输入防抖（见 setBackupRetention）：逐字符保存会清空市场缓存、
-  // 触发全局 fetch，300ms 合并为一次保存。
+// 数字输入防抖保存的共享内核：guard → clamp →300ms 合并为一次保存。
+// 空输入（''/null/undefined）不保存——Number('')=0 会被 clamp 成合法值
+// （如保留策略的 0=无限保留），编辑途中清空字段会意外改变配置。
+// 防抖理由：逐字符触发完整保存 = 后端 config.Save + 市场缓存清理 +
+// settings:changed 全局 fetch，输入 "500" 会保存三次并反复清缓存。
+function debouncedNumSave(
+  timer: { value: ReturnType<typeof setTimeout> | null },
+  v: string | number,
+  min: number,
+  max: number,
+  commit: (value: number) => void,
+) {
   if (v === '' || v === null || v === undefined) return
   const parsed = Number(v)
-  const value = Number.isFinite(parsed)
-    ? Math.min(Math.max(Math.trunc(parsed), MIN_LITE_DELAY), MAX_LITE_DELAY)
-    : MIN_LITE_DELAY
-  if (liteDelayTimer.value) clearTimeout(liteDelayTimer.value)
-  liteDelayTimer.value = setTimeout(() => {
-    liteDelayTimer.value = null
-    withAutoSave(cfg => { cfg.liteAutoDelay = value })
+  const value = Number.isFinite(parsed) ? Math.min(Math.max(Math.trunc(parsed), min), max) : min
+  if (timer.value) clearTimeout(timer.value)
+  timer.value = setTimeout(() => {
+    timer.value = null
+    commit(value)
   }, 300)
+}
+
+function setLiteAutoDelay(v: string | number) {
+  debouncedNumSave(liteDelayTimer, v, MIN_LITE_DELAY, MAX_LITE_DELAY, (value) => {
+    withAutoSave(cfg => { cfg.liteAutoDelay = value })
+  })
 }
 
 function setMarketSource(key: string, v: boolean) {
@@ -226,22 +240,12 @@ function setSkillSyncMethod(v: string) {
 }
 
 function setBackupRetention(v: string | number) {
-  // 输入框清空（''）不保存：Number('')=0 会被 clamp 成合法的 0（无限保留），
-  // 用户在编辑途中清空字段会意外改变保留策略。
-  if (v === '' || v === null || v === undefined) return
-  const parsed = Number(v)
-  const value = Number.isFinite(parsed) ? Math.min(Math.max(Math.trunc(parsed), MIN_RETENTION), MAX_RETENTION) : MIN_RETENTION
-  // 数字输入防抖：逐字符触发完整保存 = 后端 config.Save + 市场缓存清理 +
-  // settings:changed 全局 fetch，输入 "500" 会保存三次并反复清缓存。
-  // 300ms 合并为一次保存（clamp 值在保存时生效）。
-  if (retentionTimer.value) clearTimeout(retentionTimer.value)
-  retentionTimer.value = setTimeout(() => {
-    retentionTimer.value = null
+  debouncedNumSave(retentionTimer, v, MIN_RETENTION, MAX_RETENTION, (value) => {
     withAutoSave(cfg => {
       cfg.backupRetention = value
       cfg.backupCount = value
     })
-  }, 300)
+  })
 }
 
 
@@ -262,7 +266,15 @@ async function createBackup() {
 async function exportData() {
   backupLoading.value = 'export'
   try {
-    const exportDir = await api.system.pickDirectory()
+    let exportDir: string
+    try {
+      exportDir = await api.system.pickDirectory()
+    } catch (e) {
+      // 仅目录选择对话框的取消在此静默；备份创建/导出写入的真实错误
+      // 不能走此分支（错误消息含 "cancel" 或为空会被误判吞掉）。
+      if (isFilePickCancelled(e)) return
+      throw e
+    }
     if (!exportDir) return
     const summary = await api.backup.create(t('settings.toast.exportBackupLabel'))
     const backupId = summary.id || ''
@@ -294,6 +306,7 @@ async function importData() {
       applySettings: false,
     }
   } catch (e) {
+    if (isFilePickCancelled(e)) return
     const apiError = ApiError.from(e)
     toast.error(t('settings.toast.pickFileFailed', { error: apiError.message }))
   }

@@ -7,6 +7,20 @@ versioned by [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Features
+
+- **Codex config writes aligned with the latest schema**: `tomlbackend` no longer writes keys unrecognized by current Codex (`type` / `headers` / `timeout`, which trigger the app's "unrecognized configuration settings" warnings) and instead emits `http_headers` / `tool_timeout_sec` / `enabled`; transport is inferred from the presence of command/url
+
+### Bug Fixes
+
+- **Unmodeled Codex keys lost on full-table rewrite**: app-managed keys such as `env_vars` / `startup_timeout_sec` / `oauth` were silently dropped on rewrites; they are now preserved via `Server.Extra` and written back verbatim
+- **Agent-specific JSON keys lost on rewrite**: Claude Code's `oauth` / `headersHelper` / `alwaysLoad`, Cursor's `envFile` / `auth`, Trae's `disabled`, and OpenCode's `oauth` are now preserved via `Server.Extra` (previously a single install/uninstall rewrite could re-enable a server the user had disabled in Trae)
+- **Null-value noise fields in JSON writes**: no longer emits unset fields such as `"command": ""` and `"args": null` into Claude / Cursor / Trae / OpenCode configs
+
+### Changed
+
+- **OpenCode latest-schema fields**: local servers now write `cwd` (working directory); remote `oauth` config is preserved losslessly
+
 ## [0.3.0] - 2026-09-04
 
 ### Features

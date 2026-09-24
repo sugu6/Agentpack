@@ -59,13 +59,17 @@ type Server struct {
 	Headers map[string]string `json:"headers,omitempty"`
 	// Enabled 透传 opencode 的 "enabled" 状态（用户手动禁用的服务器）。
 	// 缺失时 opencode 默认视为启用，因此不保留会导致禁用被写回后撤销。
-	Enabled     *bool    `json:"enabled,omitempty"`
-	Timeout     int      `json:"timeout,omitempty"`
-	Source      string   `json:"source"`
-	SourceID    string   `json:"sourceId,omitempty"`
-	BoundAgents []string `json:"boundAgents"`
-	InstalledAt string   `json:"installedAt"`
-	UpdatedAt   string   `json:"updatedAt"`
+	Enabled *bool `json:"enabled,omitempty"`
+	Timeout int   `json:"timeout,omitempty"`
+	// Extra 保存配置文件条目中未被显式建模的原始键值（如 Codex 应用自管理的
+	// env_vars / startup_timeout_sec / oauth 等最新字段）。读文件时收集、写文件时
+	// 原样回写，保证整表重写不丢失这些键。不参与 DB 持久化与前端展示。
+	Extra       map[string]any `json:"-"`
+	Source      string         `json:"source"`
+	SourceID    string         `json:"sourceId,omitempty"`
+	BoundAgents []string       `json:"boundAgents"`
+	InstalledAt string         `json:"installedAt"`
+	UpdatedAt   string         `json:"updatedAt"`
 }
 
 type McpInstallOptions struct {

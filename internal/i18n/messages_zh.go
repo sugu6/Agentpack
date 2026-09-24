@@ -11,14 +11,17 @@ var MessagesZh = map[string]string{
 	"tray.tooltip":  "AgentPack - Agent 管理工具",
 
 	// update - 检查更新
-	"update.message.hasUpdate":     "发现新版本 v{version}",
-	"update.message.latest":        "当前已是最新版本 v{version}",
-	"update.message.noRelease":     "尚未发布任何版本",
-	"update.message.rateLimited":   "GitHub API 请求过于频繁,请稍后再试",
-	"update.message.networkFailed": "网络请求失败: {error}",
-	"update.download.serverError":  "服务器返回 {code}",
-	"update.download.failed":       "下载失败: {error}",
-	"update.download.canceled":     "下载已取消",
+	"update.message.hasUpdate":          "发现新版本 v{version}",
+	"update.message.latest":             "当前已是最新版本 v{version}",
+	"update.message.noRelease":          "尚未发布任何版本",
+	"update.message.rateLimited":        "GitHub API 请求过于频繁,请稍后再试",
+	"update.message.networkFailed":      "网络请求失败: {error}",
+	"update.download.serverError":       "服务器返回 {code}",
+	"update.download.failed":            "下载失败: {error}",
+	"update.download.canceled":          "下载已取消",
+	"update.download.verifyUnavailable": "无法获取发布完整性摘要: {error}",
+	"update.download.verifyUnsupported": "发布摘要使用了不支持的算法 {algo}",
+	"update.download.verifyMismatch":    "下载完整性校验失败: sha256 不匹配 (期望 {expected}…, 实得 {actual}…)",
 
 	// error - 通用错误
 	"error.network":          "网络错误: {error}",

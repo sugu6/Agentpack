@@ -807,6 +807,12 @@ func scanDedupKey(srv types.Server) string {
 	if srv.Transport == types.TransportSSE || srv.Transport == types.TransportHTTP || srv.Transport == types.TransportStreamableHTTP {
 		return "url:" + srv.URL
 	}
+	// 无 command 也无 URL 的条目（opencode 仅 {"enabled"} 的覆盖条目）没有可
+	// 归一化的命令：按名字区分，否则所有覆盖条目键相同（"cmd:\x00"），Scan
+	// 折叠、Load 合并删重，多条覆盖条目在管理清单中只剩一条。
+	if srv.Command == "" && srv.URL == "" {
+		return "override:" + srv.Name
+	}
 	cmd, args := normalizeCommand(srv.Command, srv.Args)
 	return "cmd:" + cmd + "\x00" + strings.Join(append([]string{cmd}, args...), "\x00")
 }
@@ -1536,6 +1542,15 @@ func (s *Store) writeToAgentLocked(server types.Server, agentID string, reg *age
 			return fmt.Errorf("server with same command/url already exists as %q in agent %s", name, agentID)
 		}
 	}
+	// 重写条目时沿用文件中既有的 Extra 键（用户/agent 专属配置，如 Trae 的
+	// disabled、Claude 的 oauth）：新 server 来自 DB/请求不携带 Extra，直接
+	// 替换会让整表重写静默删除这些键。Extra 是每文件条目属性，只取目标文件
+	// 自身既有条目上的键，忽略调用方携带的（可能来自另一个 agent 文件的加载
+	// 结果），否则绑定/回滚会把外来 agent 的键写进本文件。
+	server.Extra = nil
+	if existing, ok := current[server.Name]; ok && existing.Extra != nil {
+		server.Extra = existing.Extra
+	}
 	current[server.Name] = server
 	if err := backend.Write(ag.ConfigPath, current); err != nil {
 		return fmt.Errorf("write: %w", err)
@@ -1625,12 +1640,22 @@ func (s *Store) replaceServerInConfigsLocked(oldServer types.Server, newServer *
 		// 删除旧条目：key 不匹配视为用户改写。纯删除场景（该 agent 不在新
 		// 绑定集）静默跳过，与 removeFromAgentLocked 一致；替换场景（新旧
 		// 都绑定）报错，与 writeToAgentLocked 的拒绝覆盖语义一致。
+		// 删除前先取原条目 Extra 键：整表重写时新条目（来自 DB/请求、不带
+		// Extra）需沿用这些用户/agent 专属配置（如 Trae 的 disabled、Claude
+		// 的 oauth），否则被静默删除。
+		pendingExtra := map[string]any(nil)
 		if existing, has := current[oldServer.Name]; has {
 			if scanDedupKey(oldServer) != scanDedupKey(existing) {
 				if newServer != nil {
 					return prev, fmt.Errorf("server name %q in %s was modified outside the app", oldServer.Name, path)
 				}
 			} else {
+				// 旧条目随即被删除，Extra 在此捕获：只要本次会删旧条目且新条目
+				// 未自带 Extra 就沿用其键。不按新旧同名门控——改名（同一 server
+				// ID 换名）也走这条删除路径，按名字门控会让改名必丢 Extra。
+				if newServer != nil && newServer.Extra == nil && existing.Extra != nil {
+					pendingExtra = existing.Extra
+				}
 				delete(current, oldServer.Name)
 				changed = true
 			}
@@ -1641,7 +1666,21 @@ func (s *Store) replaceServerInConfigsLocked(oldServer types.Server, newServer *
 					return prev, fmt.Errorf("server name %q already exists in %s", newServer.Name, path)
 				}
 			}
-			current[newServer.Name] = *newServer
+			// Extra 是每个文件条目自己的属性，只在本文件范围内解析，绝不在循环
+			// 内改写共享的 newServer：否则首个处理的文件写回的 Extra 会让后续
+			// 所有绑定文件跳过自身捕获与回退，被第一个文件的键覆盖、自己的键
+			// 随旧条目删除而丢失（byPath 是 map，受害文件每次运行不确定）。
+			// 回退顺序：优先取新名在文件中已有条目（改名后旧名已删的场景），
+			// 否则用删除旧条目时捕获的 pendingExtra（同名重写/改名的场景）。
+			entry := *newServer
+			if entry.Extra == nil {
+				if existing, has := current[newServer.Name]; has && existing.Extra != nil {
+					entry.Extra = existing.Extra
+				} else {
+					entry.Extra = pendingExtra
+				}
+			}
+			current[newServer.Name] = entry
 			changed = true
 		}
 		if changed {
@@ -1790,17 +1829,4 @@ func BackupPath(agentType string) string {
 // BackupConfig 备份配置文件到指定 agent 类型的备份目录。
 func BackupConfig(agentType, path string) (string, error) {
 	return iowriter.BackupFile(path, BackupPath(agentType))
-}
-
-// BackupConfigContent 备份配置文件并返回其内容。
-func BackupConfigContent(agentType, path string) (string, []byte, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return "", nil, err
-	}
-	backupPath, err := iowriter.BackupFile(path, BackupPath(agentType))
-	if err != nil {
-		return "", nil, err
-	}
-	return backupPath, data, nil
 }

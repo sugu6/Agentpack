@@ -7,6 +7,20 @@
 
 ## [Unreleased]
 
+### 特性
+
+- **Codex 配置写入对齐最新 schema**：`tomlbackend` 不再写出新版 Codex 不认识的 `type` / `headers` / `timeout` 键（触发应用 "unrecognized configuration settings" 警告），改写为最新 schema 的 `http_headers` / `tool_timeout_sec` / `enabled`；传输方式由 command/url 有无隐式确定
+
+### 修复
+
+- **Codex 配置未建模键整表重写丢失**：Codex 应用自管理的 `env_vars` / `startup_timeout_sec` / `oauth` 等键在整表重写时被静默丢弃，现经 `Server.Extra` 原样保留写回
+- **JSON 配置 agent 专属键整表重写丢失**：Claude Code 的 `oauth` / `headersHelper` / `alwaysLoad`、Cursor 的 `envFile` / `auth`、Trae 的 `disabled`、OpenCode 的 `oauth` 等均经 `Server.Extra` 保留（此前一次 install/uninstall 重写会把用户在 Trae 手动禁用的服务器重新启用）
+- **JSON 写入空值噪声字段**：不再向 Claude / Cursor / Trae / OpenCode 配置写出 `"command": ""`、`"args": null` 等未设置字段
+
+### 变更
+
+- **OpenCode 最新 schema 字段**：local server 支持写 `cwd`（工作目录）；remote server 的 `oauth` 配置无损保留
+
 ## [0.3.0](https://github.com/sugu6/Agentpack/compare/v0.2.4...v0.3.0) - 2026-09-04
 
 ### 特性
@@ -456,4 +470,3 @@ AgentPack 的初始版本，一款面向 AI 编码工具的统一 MCP / Skills /
 - 用 macos-latest 上的 darwin/universal 构建替代 macos-13 intel 构建
 
 [Unreleased]: https://github.com/sugu6/Agentpack/compare/v0.3.0...HEAD
-

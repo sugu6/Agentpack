@@ -196,21 +196,6 @@ func (r *Registry) AllAgentIDs() []string {
 	return out
 }
 
-// DetectedAgents 返回所有已启用的 Agent（状态为 enabled 或 detected）
-func (r *Registry) DetectedAgents() []*Agent {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	out := make([]*Agent, 0, len(r.agents))
-	for _, a := range r.agents {
-		if a.Status != StatusEnabled && a.Status != StatusDetected {
-			continue
-		}
-		c := *a
-		out = append(out, &c)
-	}
-	return out
-}
-
 func (r *Registry) All() []*Agent {
 	r.mu.RLock()
 	defer r.mu.RUnlock()

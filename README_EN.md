@@ -131,8 +131,6 @@ AgentPack/
 ├── app.go                 # Wails app entry, methods exposed to frontend (incl. system tray)
 ├── main.go                # Program entry
 ├── version.go             # Version info (injected from build/config.yml at startup)
-├── app_windows.go         # Windows build-tag file
-├── app_unix.go            # Non-Windows build-tag file
 ├── devmode_dev.go         # Dev mode configuration
 ├── devmode_prod.go        # Production mode configuration
 ├── Taskfile.yml           # Wails v3 build task definitions

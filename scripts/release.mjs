@@ -168,14 +168,14 @@ function updateChangelog(file) {
   const versionSectionExists = new RegExp(`## ${esc}\\[${version}${esc}\\]`).test(content)
 
   // 检查 [Unreleased] 节是否有内容
-  // 注意：用 [ \t]*\n 而非 \s*\n，避免贪婪匹配消耗空行导致下一个版本节内容被误匹配
-  const unreleasedMatch = content.match(new RegExp(`## ${esc}\\[Unreleased${esc}\\][ \\t]*\\n([\\s\\S]*?)(?=\\n## ${esc}\\[)`))
+  // 注意：用 [ \t]*\r?\n 而非 \s*\n，避免贪婪匹配消耗空行导致下一个版本节内容被误匹配；\r? 兼容 CRLF checkout
+  const unreleasedMatch = content.match(new RegExp(`## ${esc}\\[Unreleased${esc}\\][ \\t]*\\r?\\n([\\s\\S]*?)(?=\\n## ${esc}\\[)`))
   const hasUnreleasedContent = unreleasedMatch && unreleasedMatch[1].trim()
 
   if (hasUnreleasedContent) {
     // 将 [Unreleased] 内容转为新版本节，顶部添加新的空 [Unreleased]
     content = content.replace(
-      new RegExp(`## ${esc}\\[Unreleased${esc}\\][ \\t]*\\n`),
+      new RegExp(`## ${esc}\\[Unreleased${esc}\\][ \\t]*\\r?\\n`),
       `## [Unreleased]\n\n## [${version}] - ${today}\n`
     )
     modified = true

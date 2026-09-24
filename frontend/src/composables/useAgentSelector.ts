@@ -1,5 +1,6 @@
 import { computed, ref } from 'vue'
 import { useAgentsStore } from '@/stores/agents'
+import { isGroupFullySelected, toggleGroupMembers } from '@/lib/selection'
 
 export function useAgentSelector(options?: { defaultAllSelected?: boolean }) {
   const { defaultAllSelected = true } = options ?? {}
@@ -20,20 +21,11 @@ export function useAgentSelector(options?: { defaultAllSelected?: boolean }) {
 
   function isGroupSelected(group: { ids: string[] }): boolean {
     // 只按组内 active 成员判断：disabled 成员不可选、不计入选中状态
-    const active = group.ids.filter(id => agentsStore.activeIds.get(id))
-    return active.length > 0 && active.every(id => selectedAgentIds.value.has(id))
+    return isGroupFullySelected(selectedAgentIds.value, group.ids, id => !!agentsStore.activeIds.get(id))
   }
 
   function toggleGroup(group: { ids: string[] }, val: boolean) {
-    const next = new Set(selectedAgentIds.value)
-    for (const id of group.ids) {
-      if (val) {
-        if (agentsStore.activeIds.get(id)) next.add(id)
-      } else {
-        next.delete(id)
-      }
-    }
-    selectedAgentIds.value = next
+    selectedAgentIds.value = toggleGroupMembers(selectedAgentIds.value, group.ids, val, id => !!agentsStore.activeIds.get(id))
   }
 
   function toggleSelectAll(checked: boolean) {

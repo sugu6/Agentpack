@@ -93,6 +93,38 @@ func TestJsonBackend_SyncsBothContainersWhenBothExist(t *testing.T) {
 	}
 }
 
+// TestWriteStandard_OmitsUnsetType 验证空 Transport 且无 ConfigType 时不写出
+// "type": ""（相对 HEAD 的 omitempty 行为不回归；CHANGELOG 承诺不写未设置字段）。
+func TestWriteStandard_OmitsUnsetType(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "mcp.json")
+	writeFile(t, path, `{}`)
+
+	backend := NewBackend("claude-code")
+	if err := backend.Write(path, map[string]types.Server{
+		"no-type": {Name: "no-type", Command: "echo", Args: []string{"hi"}}, // Transport 空、ConfigType 空
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg struct {
+		McpServers map[string]map[string]json.RawMessage `json:"mcpServers"`
+	}
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	entry, ok := cfg.McpServers["no-type"]
+	if !ok {
+		t.Fatalf("entry missing: %s", data)
+	}
+	if v, ok := entry["type"]; ok {
+		t.Errorf("unset transport written as type field (%s); want key omitted:\n%s", v, data)
+	}
+}
+
 // TestServerDeterministicID_NoPathLeak 验证确定性 ID 不含完整配置路径（L3 回归）。
 func TestServerDeterministicID_NoPathLeak(t *testing.T) {
 	path := filepath.Join("C:\\Users", "someuser", ".config", "cursor", "mcp.json")
@@ -727,4 +759,338 @@ func TestJsonBackend_CursorNoTypeField(t *testing.T) {
 // containsStr 是原 mcp 包测试 helper 的本地副本（独立包无法共享）。
 func containsStr(s, sub string) bool {
 	return strings.Contains(s, sub)
+}
+
+// TestJsonBackend_OpenCodeEnabledOverrideEntry 验证官方 schema 的最小覆盖
+// 条目 {"enabled": bool}（用于启用/禁用组织远端提供的 MCP server）：
+// 按合法条目读入（不标记 partial），重写时原样保留。
+func TestJsonBackend_OpenCodeEnabledOverrideEntry(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "opencode.json")
+	writeFile(t, path, `{"mcp":{"org-server":{"enabled":true}}}`)
+
+	backend := NewBackend("opencode")
+	servers, err := backend.Read(path)
+	if err != nil {
+		t.Fatalf("enabled-only override entry must not mark partial: %v", err)
+	}
+	srv, ok := servers["org-server"]
+	if !ok {
+		t.Fatal("expected org-server entry")
+	}
+	if srv.Enabled == nil || !*srv.Enabled {
+		t.Fatalf("expected enabled=true, got %v", srv.Enabled)
+	}
+
+	if err := backend.Write(path, servers); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(data)
+	if !containsStr(body, `"org-server"`) || (!containsStr(body, `"enabled":true`) && !containsStr(body, `"enabled": true`)) {
+		t.Errorf("override entry lost on rewrite:\n%s", body)
+	}
+	if containsStr(body, `"command"`) || containsStr(body, `"url"`) {
+		t.Errorf("override entry must be written as {\"enabled\": ...} only:\n%s", body)
+	}
+
+	// 二次往返
+	out2, err := backend.Read(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out2["org-server"].Enabled == nil || !*out2["org-server"].Enabled {
+		t.Error("override entry lost on second round-trip")
+	}
+}
+
+// TestJsonBackend_OpenCodeExtraWhitelist 验证严格 schema（additionalProperties:
+// false）下的 Extra 写回策略：官方支持的 oauth 键保留，未知键不写出。
+func TestJsonBackend_OpenCodeExtraWhitelist(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "opencode.json")
+	writeFile(t, path, `{
+		"mcp": {
+			"remote-srv": {
+				"type": "remote",
+				"url": "https://mcp.example.com",
+				"oauth": {"clientId": "cid"},
+				"bogus-unknown-key": 1
+			}
+		}
+	}`)
+
+	backend := NewBackend("opencode")
+	servers, err := backend.Read(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := servers["remote-srv"]
+	if _, ok := srv.Extra["oauth"]; !ok {
+		t.Fatalf("oauth not captured in Extra: %#v", srv.Extra)
+	}
+
+	if err := backend.Write(path, servers); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(data)
+	if !containsStr(body, `"oauth"`) {
+		t.Errorf("official oauth key lost on rewrite:\n%s", body)
+	}
+	if containsStr(body, `"bogus-unknown-key"`) {
+		t.Errorf("unknown key must not be written back under strict opencode schema:\n%s", body)
+	}
+}
+
+// TestJsonBackend_TraePreservesDisabled 验证 Trae 的 "disabled" 键在整表
+// 重写时原样保留。此前该键未被建模，一次 install/uninstall 重写就会把
+// 用户在 Trae 里手动禁用的服务器重新启用。
+func TestJsonBackend_TraePreservesDisabled(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "mcp.json")
+	writeFile(t, path, `{
+		"mcpServers": {
+			"MySQL": {
+				"command": "npx",
+				"args": ["-y", "@f4ww4z/mcp-mysql-server"],
+				"type": "stdio",
+				"disabled": true
+			}
+		}
+	}`)
+
+	backend := NewBackend("trae")
+	servers, err := backend.Read(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv, ok := servers["MySQL"]
+	if !ok {
+		t.Fatal("expected MySQL server")
+	}
+	if _, ok := srv.Extra["disabled"]; !ok {
+		t.Fatalf("disabled key not captured in Extra: %#v", srv.Extra)
+	}
+
+	// 模拟 install 流程：读入全量服务器后整表重写
+	if err := backend.Write(path, servers); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsStr(string(data), `"disabled":true`) && !containsStr(string(data), `"disabled": true`) {
+		t.Errorf("disabled key lost on rewrite:\n%s", string(data))
+	}
+
+	out2, err := backend.Read(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := out2["MySQL"].Extra["disabled"]; !ok {
+		t.Error("disabled key lost on second round-trip")
+	}
+}
+
+// TestJsonBackend_ClaudePreservesOAuthAndHeadersHelper 验证 Claude Code
+// 最新文档的 oauth / headersHelper / alwaysLoad 键在重写时原样保留。
+func TestJsonBackend_ClaudePreservesOAuthAndHeadersHelper(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "claude.json")
+	writeFile(t, path, `{
+		"mcpServers": {
+			"remote": {
+				"type": "http",
+				"url": "https://mcp.example.com/mcp",
+				"oauth": {"clientId": "cid", "callbackPort": 8080},
+				"headersHelper": "/opt/bin/get-headers.sh",
+				"alwaysLoad": true,
+				"timeout": 60000
+			}
+		}
+	}`)
+
+	backend := NewBackend("claude-code")
+	servers, err := backend.Read(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := servers["remote"]
+	if srv.Timeout != 60000 {
+		t.Errorf("expected timeout=60000, got %d", srv.Timeout)
+	}
+	for _, k := range []string{"oauth", "headersHelper", "alwaysLoad"} {
+		if _, ok := srv.Extra[k]; !ok {
+			t.Errorf("key %q not captured in Extra: %#v", k, srv.Extra)
+		}
+	}
+
+	if err := backend.Write(path, servers); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(data)
+	for _, k := range []string{`"oauth"`, `"headersHelper"`, `"alwaysLoad"`, `"timeout"`} {
+		if !containsStr(body, k) {
+			t.Errorf("key %s lost on rewrite:\n%s", k, body)
+		}
+	}
+	if !containsStr(body, "60000") {
+		t.Errorf("timeout value lost on rewrite:\n%s", body)
+	}
+}
+
+// TestJsonBackend_CursorPreservesEnvFileAndAuth 验证 Cursor 最新文档的
+// envFile / auth 键在重写时原样保留。
+func TestJsonBackend_CursorPreservesEnvFileAndAuth(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "mcp.json")
+	writeFile(t, path, `{
+		"mcpServers": {
+			"local-srv": {
+				"type": "stdio",
+				"command": "node",
+				"envFile": ".env",
+				"env": {"API_KEY": "k"}
+			},
+			"oauth-srv": {
+				"url": "https://api.example.com/mcp",
+				"auth": {"CLIENT_ID": "id", "scopes": ["read"]}
+			}
+		}
+	}`)
+
+	backend := NewBackend("cursor")
+	servers, err := backend.Read(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := servers["local-srv"].Extra["envFile"]; !ok {
+		t.Errorf("envFile not captured in Extra: %#v", servers["local-srv"].Extra)
+	}
+	if _, ok := servers["oauth-srv"].Extra["auth"]; !ok {
+		t.Errorf("auth not captured in Extra: %#v", servers["oauth-srv"].Extra)
+	}
+
+	if err := backend.Write(path, servers); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(data)
+	if !containsStr(body, `"envFile":".env"`) && !containsStr(body, `"envFile": ".env"`) {
+		t.Errorf("envFile lost on rewrite:\n%s", body)
+	}
+	if !containsStr(body, `"auth"`) {
+		t.Errorf("auth lost on rewrite:\n%s", body)
+	}
+}
+
+// TestJsonBackend_StandardOmitsEmptyFields 验证写出条目不再包含
+// "command": "" / "args": null 等空值噪声键（各 agent 最新文档均省略
+// 未设置的字段）。
+func TestJsonBackend_StandardOmitsEmptyFields(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "claude.json")
+
+	backend := NewBackend("claude-code")
+	in := map[string]types.Server{
+		"remote": {Name: "remote", URL: "https://mcp.example.com", Transport: types.TransportHTTP},
+		"stdio":  {Name: "stdio", Command: "npx", Transport: types.TransportStdio},
+	}
+	if err := backend.Write(path, in); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg struct {
+		McpServers map[string]map[string]any `json:"mcpServers"`
+	}
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	remote := cfg.McpServers["remote"]
+	if _, has := remote["command"]; has {
+		t.Errorf("remote entry should omit empty command: %v", remote)
+	}
+	if _, has := remote["args"]; has {
+		t.Errorf("remote entry should omit null args: %v", remote)
+	}
+	stdioSrv := cfg.McpServers["stdio"]
+	if _, has := stdioSrv["args"]; has {
+		t.Errorf("stdio entry without args should omit args key: %v", stdioSrv)
+	}
+	if remote["type"] != "http" {
+		t.Errorf("expected type=http derived from transport, got %v", remote["type"])
+	}
+}
+
+// TestJsonBackend_OpenCodeCwdAndOAuth 验证最新 opencode schema 的
+// local cwd 与 remote oauth 键的读写。
+func TestJsonBackend_OpenCodeCwdAndOAuth(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "opencode.json")
+	writeFile(t, path, `{
+		"mcp": {
+			"local-srv": {
+				"type": "local",
+				"command": ["node", "server.js"],
+				"cwd": "subdir"
+			},
+			"remote-srv": {
+				"type": "remote",
+				"url": "https://mcp.example.com",
+				"oauth": {"clientId": "cid", "callbackPort": 19876}
+			}
+		}
+	}`)
+
+	backend := NewBackend("opencode")
+	servers, err := backend.Read(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	local := servers["local-srv"]
+	if local.Cwd != "subdir" {
+		t.Errorf("expected cwd=subdir, got %q", local.Cwd)
+	}
+	remote, ok := servers["remote-srv"]
+	if !ok {
+		t.Fatal("expected remote-srv")
+	}
+	if _, has := remote.Extra["oauth"]; !has {
+		t.Fatalf("oauth not captured in Extra: %#v", remote.Extra)
+	}
+
+	if err := backend.Write(path, servers); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(data)
+	if !containsStr(body, `"cwd":"subdir"`) && !containsStr(body, `"cwd": "subdir"`) {
+		t.Errorf("cwd lost on rewrite:\n%s", body)
+	}
+	if !containsStr(body, `"oauth"`) {
+		t.Errorf("oauth lost on rewrite:\n%s", body)
+	}
+
+	// 二次往返
+	out2, err := backend.Read(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out2["local-srv"].Cwd != "subdir" {
+		t.Errorf("cwd lost on second round-trip: %q", out2["local-srv"].Cwd)
+	}
 }

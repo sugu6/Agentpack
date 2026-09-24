@@ -43,14 +43,33 @@ func (b *TomlBackend) Read(path string) (map[string]types.Server, error) {
 	}
 
 	// Try Codex [[mcp_servers]] array format first
+	// 条目以 Primitive 解码：一次解出显式建模字段，再解一遍原始键值保留
+	// 未建模键（最新 Codex 的 env_vars / startup_timeout_sec / oauth 等），
+	// 整表重写时经 Server.Extra 原样写回，不丢配置。
 	var codexCfg struct {
-		McpServers []tomlMcpServer `toml:"mcp_servers"`
+		McpServers []toml.Primitive `toml:"mcp_servers"`
 	}
 	if err := toml.Unmarshal(data, &codexCfg); err == nil && len(codexCfg.McpServers) > 0 {
 		out := make(map[string]types.Server, len(codexCfg.McpServers))
 		partial := false
 		var skipped []string
-		for _, ts := range codexCfg.McpServers {
+		for _, prim := range codexCfg.McpServers {
+			var ts tomlMcpServer
+			if derr := toml.PrimitiveDecode(prim, &ts); derr != nil {
+				// 单条坏条目只跳过该条目并标记 partial（与 table 格式一致），
+				// 不因一条坏条目导致整表重写时其余条目全部不可见
+				log.Printf("mcp: skip unparseable entry in %s: %v", path, derr)
+				partial = true
+				skipped = append(skipped, "(unparseable)")
+				continue
+			}
+			if ts.Name == "" {
+				// 数组格式以 name 为条目 key，缺 name 的条目无法定位，跳过
+				log.Printf("mcp: skip unnamed entry in %s", path)
+				partial = true
+				skipped = append(skipped, "(unnamed)")
+				continue
+			}
 			if ts.Command == "" && ts.URL == "" {
 				// 残缺条目（仅 name 无 command/url）：同样标记 partial，
 				// 否则整表重写时该条目被静默删除
@@ -67,6 +86,12 @@ func (b *TomlBackend) Read(path string) (map[string]types.Server, error) {
 					skipped = append(skipped, ts.Name)
 					continue
 				}
+			}
+			extra, xerr := extraFromPrimitive(prim)
+			if xerr != nil {
+				// 保留已建模字段，仅放弃额外键，不让单个键破坏整条条目
+				log.Printf("mcp: keep entry %q in %s without extra keys: %v", ts.Name, path, xerr)
+				extra = nil
 			}
 			transport := types.TransportStdio
 			if ts.Type == "sse" {
@@ -90,9 +115,11 @@ func (b *TomlBackend) Read(path string) (map[string]types.Server, error) {
 				Transport:  transport,
 				ConfigType: ts.Type,
 				URL:        ts.URL,
-				Timeout:    ts.Timeout,
+				Timeout:    resolveTimeout(ts.Timeout, ts.ToolTimeoutSec),
 				Cwd:        ts.Cwd,
-				Headers:    ts.Headers,
+				Headers:    mergeHeaders(ts.Headers, ts.HTTPHeaders),
+				Enabled:    ts.Enabled,
+				Extra:      extra,
 				Source:     "config",
 			}
 			if s.ID == "" {
@@ -143,27 +170,85 @@ func (b *TomlBackend) Read(path string) (map[string]types.Server, error) {
 }
 
 // tomlMcpServer represents a single [[mcp_servers]] entry in Codex config.toml
+// type/headers/timeout 为旧版键（新版 Codex 不再识别，transport 由 command/url
+// 有无隐式确定）；http_headers/tool_timeout_sec 为最新 Codex schema 对应键。
+// 两套键都读、只写新键，保证新旧两代配置文件都能往返。
 type tomlMcpServer struct {
-	Name    string            `toml:"name"`
-	Type    string            `toml:"type"`
-	Command string            `toml:"command"`
-	Args    []string          `toml:"args"`
-	Env     map[string]string `toml:"env"`
-	Headers map[string]string `toml:"headers"`
-	URL     string            `toml:"url"`
-	Timeout int               `toml:"timeout"`
-	Cwd     string            `toml:"cwd"`
+	Name           string            `toml:"name"`
+	Type           string            `toml:"type"`
+	Command        string            `toml:"command"`
+	Args           []string          `toml:"args"`
+	Env            map[string]string `toml:"env"`
+	Headers        map[string]string `toml:"headers"`      // 旧键
+	HTTPHeaders    map[string]string `toml:"http_headers"` // 最新键
+	URL            string            `toml:"url"`
+	Timeout        int               `toml:"timeout"`          // 旧键
+	ToolTimeoutSec float64           `toml:"tool_timeout_sec"` // 最新键（秒）
+	Cwd            string            `toml:"cwd"`
+	Enabled        *bool             `toml:"enabled"`
 }
 
 type tomlServer struct {
-	Type    string            `toml:"type"`
-	Command string            `toml:"command"`
-	Args    []string          `toml:"args"`
-	Env     map[string]string `toml:"env"`
-	Headers map[string]string `toml:"headers"`
-	URL     string            `toml:"url"`
-	Timeout int               `toml:"timeout"`
-	Cwd     string            `toml:"cwd"`
+	Type           string            `toml:"type"`
+	Command        string            `toml:"command"`
+	Args           []string          `toml:"args"`
+	Env            map[string]string `toml:"env"`
+	Headers        map[string]string `toml:"headers"`      // 旧键
+	HTTPHeaders    map[string]string `toml:"http_headers"` // 最新键
+	URL            string            `toml:"url"`
+	Timeout        int               `toml:"timeout"`          // 旧键
+	ToolTimeoutSec float64           `toml:"tool_timeout_sec"` // 最新键（秒）
+	Cwd            string            `toml:"cwd"`
+	Enabled        *bool             `toml:"enabled"`
+}
+
+// codexKnownKeys 是本后端显式建模的条目键；其余键一律收进 Server.Extra 原样保留。
+// 新增建模字段时必须同步维护此集合，否则该键会同时出现在 Extra 中被重复写出。
+var codexKnownKeys = map[string]struct{}{
+	"name": {}, "type": {}, "command": {}, "args": {}, "env": {},
+	"headers": {}, "http_headers": {}, "url": {}, "timeout": {},
+	"tool_timeout_sec": {}, "cwd": {}, "enabled": {},
+}
+
+// extraFromPrimitive 解出条目原始键值，返回未显式建模的部分（Extra 保留集）。
+func extraFromPrimitive(prim toml.Primitive) (map[string]any, error) {
+	var rawMap map[string]any
+	if err := toml.PrimitiveDecode(prim, &rawMap); err != nil {
+		return nil, err
+	}
+	extra := map[string]any{}
+	for k, v := range rawMap {
+		if _, known := codexKnownKeys[k]; !known {
+			extra[k] = v
+		}
+	}
+	if len(extra) == 0 {
+		return nil, nil
+	}
+	return extra, nil
+}
+
+// mergeHeaders 合并旧 "headers" 键与最新 "http_headers" 键；冲突时 http_headers 优先。
+func mergeHeaders(legacy, latest map[string]string) map[string]string {
+	if len(legacy) == 0 && len(latest) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(legacy)+len(latest))
+	for k, v := range legacy {
+		out[k] = v
+	}
+	for k, v := range latest {
+		out[k] = v
+	}
+	return out
+}
+
+// resolveTimeout 优先取最新 tool_timeout_sec（秒），回退旧版 timeout。
+func resolveTimeout(legacy int, latest float64) int {
+	if latest > 0 {
+		return int(latest)
+	}
+	return legacy
 }
 
 func parseTomlServer(name string, prim toml.Primitive) (types.Server, error) {
@@ -196,6 +281,11 @@ func parseTomlServer(name string, prim toml.Primitive) (types.Server, error) {
 	if len(args) == 0 {
 		args = nil
 	}
+	extra, err := extraFromPrimitive(prim)
+	if err != nil {
+		// 保留已建模字段，仅放弃额外键，不让单个键破坏整条条目
+		extra = nil
+	}
 	return types.Server{
 		Name:       name,
 		Command:    ts.Command,
@@ -204,10 +294,12 @@ func parseTomlServer(name string, prim toml.Primitive) (types.Server, error) {
 		Transport:  transport,
 		ConfigType: ts.Type,
 		URL:        ts.URL,
-		Timeout:    ts.Timeout,
+		Timeout:    resolveTimeout(ts.Timeout, ts.ToolTimeoutSec),
 		Cwd:        ts.Cwd,
-		Headers:    ts.Headers,
+		Headers:    mergeHeaders(ts.Headers, ts.HTTPHeaders),
 		Source:     "config",
+		Enabled:    ts.Enabled,
+		Extra:      extra,
 	}, nil
 }
 
@@ -252,28 +344,38 @@ func (b *TomlBackend) writeArrayFormat(path string, existing map[string]any, ser
 		if s.Command != "" {
 			entry["command"] = s.Command
 		}
-		if s.ConfigType != "" {
-			entry["type"] = s.ConfigType
-		} else {
-			entry["type"] = string(s.Transport)
-		}
+		// 不写 type 键：新版 Codex 不认识该键（触发 "unrecognized
+		// configuration settings" 警告），传输方式由 command/url 有无隐式确定。
 		if len(s.Args) > 0 {
 			entry["args"] = s.Args
 		}
 		if len(s.Env) > 0 {
 			entry["env"] = s.Env
 		}
+		// 最新 Codex schema 的请求头键为 http_headers（旧 headers 键被忽略）
 		if len(s.Headers) > 0 {
-			entry["headers"] = s.Headers
+			entry["http_headers"] = s.Headers
 		}
 		if s.URL != "" {
 			entry["url"] = s.URL
 		}
+		// 最新 Codex schema 的超时键为 tool_timeout_sec（秒）
 		if s.Timeout > 0 {
-			entry["timeout"] = s.Timeout
+			entry["tool_timeout_sec"] = s.Timeout
+		}
+		if s.Enabled != nil {
+			entry["enabled"] = *s.Enabled
 		}
 		if s.Cwd != "" {
 			entry["cwd"] = s.Cwd
+		}
+		// 原样写回未显式建模的键（如应用自管理的 env_vars /
+		// startup_timeout_sec / oauth），跳过与显式键冲突者
+		for k, v := range s.Extra {
+			if writtenKey(k) {
+				continue
+			}
+			entry[k] = v
 		}
 		mcpServers = append(mcpServers, entry)
 	}
@@ -315,11 +417,8 @@ func (b *TomlBackend) writeTableFormat(path string, existing map[string]any, ser
 	for _, name := range names {
 		s := servers[name]
 		fmt.Fprintf(&buf, "[mcp_servers.%s]\n", quoteTomlKey(name))
-		if s.ConfigType != "" {
-			fmt.Fprintf(&buf, "type = %s\n", tomlQuoteValue(s.ConfigType))
-		} else {
-			fmt.Fprintf(&buf, "type = %s\n", tomlQuoteValue(string(s.Transport)))
-		}
+		// 不写 type 键：新版 Codex 不认识该键（触发 "unrecognized
+		// configuration settings" 警告），传输方式由 command/url 有无隐式确定。
 		if s.Command != "" {
 			fmt.Fprintf(&buf, "command = %s\n", tomlQuoteValue(s.Command))
 		}
@@ -349,8 +448,9 @@ func (b *TomlBackend) writeTableFormat(path string, existing map[string]any, ser
 			}
 			buf.WriteString("}\n")
 		}
+		// 最新 Codex schema 的请求头键为 http_headers（旧 headers 键被忽略）
 		if len(s.Headers) > 0 {
-			buf.WriteString("headers = {")
+			buf.WriteString("http_headers = {")
 			headerKeys := make([]string, 0, len(s.Headers))
 			for k := range s.Headers {
 				headerKeys = append(headerKeys, k)
@@ -367,16 +467,44 @@ func (b *TomlBackend) writeTableFormat(path string, existing map[string]any, ser
 		if s.URL != "" {
 			fmt.Fprintf(&buf, "url = %s\n", tomlQuoteValue(s.URL))
 		}
+		// 最新 Codex schema 的超时键为 tool_timeout_sec（秒）
 		if s.Timeout > 0 {
-			fmt.Fprintf(&buf, "timeout = %d\n", s.Timeout)
+			fmt.Fprintf(&buf, "tool_timeout_sec = %d\n", s.Timeout)
+		}
+		if s.Enabled != nil {
+			fmt.Fprintf(&buf, "enabled = %t\n", *s.Enabled)
 		}
 		if s.Cwd != "" {
 			fmt.Fprintf(&buf, "cwd = %s\n", tomlQuoteValue(s.Cwd))
+		}
+		// 原样写回未显式建模的键（如应用自管理的 env_vars /
+		// startup_timeout_sec / oauth），跳过与显式键冲突者
+		extraKeys := make([]string, 0, len(s.Extra))
+		for k := range s.Extra {
+			if !writtenKey(k) {
+				extraKeys = append(extraKeys, k)
+			}
+		}
+		sort.Strings(extraKeys)
+		for _, k := range extraKeys {
+			fmt.Fprintf(&buf, "%s = ", quoteTomlKey(k))
+			writeTomlValue(&buf, s.Extra[k])
+			buf.WriteByte('\n')
 		}
 		buf.WriteByte('\n')
 	}
 
 	return iowriter.WriteAtomic(path, buf.Bytes(), 0600)
+}
+
+// writtenKey 判断键是否由写路径显式输出，防止 Extra 键与其重名导致
+// 同一键出现两次（生成非法 TOML）。
+func writtenKey(k string) bool {
+	switch k {
+	case "name", "command", "args", "env", "http_headers", "url", "tool_timeout_sec", "enabled", "cwd":
+		return true
+	}
+	return false
 }
 
 // quoteTomlKey quotes anything outside TOML's bare-key character set.

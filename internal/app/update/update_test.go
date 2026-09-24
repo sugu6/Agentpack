@@ -136,3 +136,30 @@ func TestCompareVersions(t *testing.T) {
 		}
 	}
 }
+
+// TestValidateDownloadURL 验证更新下载 URL 白名单（仅本仓库 CI 发布资产：
+// P2-2 钉死 owner/repo + /releases/download/ 前缀，防任意 GitHub 仓库投毒）。
+func TestValidateDownloadURL(t *testing.T) {
+	cases := []struct {
+		url    string
+		wantOK bool
+	}{
+		{"https://github.com/sugu6/AgentPack/releases/download/v1.0.0/AgentPack-1.0.0-windows-amd64-installer.exe", true},
+		{"https://github.com/other/repo/releases/download/v1/a.exe", false},                   // 任意仓库必须拒绝
+		{"https://github.com/sugu6/AgentPackX/releases/download/v1/a.exe", false},             // 同名前缀仓库必须拒绝
+		{"https://github.com/sugu6/AgentPack/releases/tag/v1.0.0", false},                     // 非下载路径必须拒绝
+		{"http://github.com/sugu6/AgentPack/releases/download/v1/a.exe", false},               // 必须 https
+		{"https://gh-proxy.com/github.com/sugu6/AgentPack/releases/download/v1/a.exe", false}, // 代理形 URL 不走白名单（startDownload 校验发生在改写前）
+		{"https://evil.com/a.exe", false},
+		{"", false},
+	}
+	for _, c := range cases {
+		err := ValidateDownloadURL(c.url)
+		if c.wantOK && err != nil {
+			t.Errorf("ValidateDownloadURL(%q) = %v, want nil", c.url, err)
+		}
+		if !c.wantOK && err == nil {
+			t.Errorf("ValidateDownloadURL(%q) = nil, want error", c.url)
+		}
+	}
+}

@@ -9,36 +9,32 @@ import (
 )
 
 func TestWriteAtomic(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "sub", "file.txt")
-
-	if err := WriteAtomic(path, []byte("hello"), 0644); err != nil {
-		t.Fatal(err)
+	tests := []struct {
+		name   string
+		rel    string   // 相对 dir 的目标路径
+		writes []string // 按序写入的内容
+		want   string   // 最终文件内容
+	}{
+		{name: "creates nested dirs", rel: filepath.Join("sub", "file.txt"), writes: []string{"hello"}, want: "hello"},
+		{name: "overwrites existing", rel: "file.txt", writes: []string{"v1", "v2"}, want: "v2"},
 	}
-
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(data) != "hello" {
-		t.Errorf("expected hello, got %s", string(data))
-	}
-}
-
-func TestWriteAtomic_Overwrite(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "file.txt")
-
-	if err := WriteAtomic(path, []byte("v1"), 0644); err != nil {
-		t.Fatal(err)
-	}
-	if err := WriteAtomic(path, []byte("v2"), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	data, _ := os.ReadFile(path)
-	if string(data) != "v2" {
-		t.Errorf("expected v2, got %s", string(data))
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, tt.rel)
+			for _, w := range tt.writes {
+				if err := WriteAtomic(path, []byte(w), 0644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(data) != tt.want {
+				t.Errorf("expected %s, got %s", tt.want, string(data))
+			}
+		})
 	}
 }
 
@@ -55,48 +51,32 @@ func TestWriteAtomic_RemovesTempFile(t *testing.T) {
 }
 
 func TestBackupFile_Dedup(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.json")
-	backupDir := filepath.Join(dir, "backups")
-
-	if err := os.WriteFile(path, []byte("v1"), 0644); err != nil {
-		t.Fatal(err)
+	tests := []struct {
+		name        string
+		contents    []string // 每次写入后立即备份
+		wantBackups int
+	}{
+		{name: "same content dedups", contents: []string{"v1", "v1"}, wantBackups: 1},
+		{name: "different content keeps both", contents: []string{"v1", "v2-different"}, wantBackups: 2},
 	}
-
-	if _, err := BackupFile(path, backupDir); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := BackupFile(path, backupDir); err != nil {
-		t.Fatal(err)
-	}
-
-	entries, _ := os.ReadDir(backupDir)
-	if len(entries) != 1 {
-		t.Errorf("expected dedup to keep 1 backup, got %d", len(entries))
-	}
-}
-
-func TestBackupFile_DifferentContent(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.json")
-	backupDir := filepath.Join(dir, "backups")
-
-	if err := os.WriteFile(path, []byte("v1"), 0644); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := BackupFile(path, backupDir); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, []byte("v2-different"), 0644); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := BackupFile(path, backupDir); err != nil {
-		t.Fatal(err)
-	}
-
-	entries, _ := os.ReadDir(backupDir)
-	if len(entries) != 2 {
-		t.Errorf("expected 2 backups for different content, got %d", len(entries))
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "config.json")
+			backupDir := filepath.Join(dir, "backups")
+			for _, content := range tt.contents {
+				if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := BackupFile(path, backupDir); err != nil {
+					t.Fatal(err)
+				}
+			}
+			entries, _ := os.ReadDir(backupDir)
+			if len(entries) != tt.wantBackups {
+				t.Errorf("expected %d backups, got %d", tt.wantBackups, len(entries))
+			}
+		})
 	}
 }
 

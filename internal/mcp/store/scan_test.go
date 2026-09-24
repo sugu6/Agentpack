@@ -488,3 +488,18 @@ func TestStore_AdoptSkipsBackupSnapshot(t *testing.T) {
 		t.Fatalf("real add should create 1 backup snapshot: %d -> %d", before2, after2)
 	}
 }
+
+// TestScanDedupKey_DistinctForEnabledOnlyOverrides 验证 opencode 仅含 enabled
+// 的覆盖条目（无 command/url）按名字区分去重键：否则多条覆盖条目键全相同，
+// Scan 折叠、Load 合并删重，管理清单丢条目。
+func TestScanDedupKey_DistinctForEnabledOnlyOverrides(t *testing.T) {
+	off, on := false, true
+	a := types.Server{Name: "org-a", Enabled: &off}
+	b := types.Server{Name: "org-b", Enabled: &on}
+	if scanDedupKey(a) == scanDedupKey(b) {
+		t.Errorf("enabled-only overrides collide on key %q; want distinct per-name keys", scanDedupKey(a))
+	}
+	if k := scanDedupKey(a); k != scanDedupKey(a) {
+		t.Errorf("key not deterministic: %q vs %q", k, scanDedupKey(a))
+	}
+}

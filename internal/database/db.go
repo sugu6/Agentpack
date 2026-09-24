@@ -28,16 +28,6 @@ func GetDB() *sql.DB {
 	return db
 }
 
-// MustGetDB 返回当前数据库连接，如果未初始化则 panic。
-// 仅在确定数据库已初始化时使用。
-func MustGetDB() *sql.DB {
-	db := GetDB()
-	if db == nil {
-		panic("database not initialized")
-	}
-	return db
-}
-
 const schema = `
 CREATE TABLE IF NOT EXISTS mcp_servers (
   id TEXT PRIMARY KEY,

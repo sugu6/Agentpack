@@ -11,14 +11,17 @@ var MessagesEn = map[string]string{
 	"tray.tooltip":  "AgentPack - Agent management tool",
 
 	// update - check for updates
-	"update.message.hasUpdate":     "Found new version v{version}",
-	"update.message.latest":        "You're on the latest version v{version}",
-	"update.message.noRelease":     "No releases published yet",
-	"update.message.rateLimited":   "GitHub API rate limited, please try again later",
-	"update.message.networkFailed": "Network request failed: {error}",
-	"update.download.serverError":  "Server returned {code}",
-	"update.download.failed":       "Download failed: {error}",
-	"update.download.canceled":     "Download canceled",
+	"update.message.hasUpdate":          "Found new version v{version}",
+	"update.message.latest":             "You're on the latest version v{version}",
+	"update.message.noRelease":          "No releases published yet",
+	"update.message.rateLimited":        "GitHub API rate limited, please try again later",
+	"update.message.networkFailed":      "Network request failed: {error}",
+	"update.download.serverError":       "Server returned {code}",
+	"update.download.failed":            "Download failed: {error}",
+	"update.download.canceled":          "Download canceled",
+	"update.download.verifyUnavailable": "Cannot fetch release integrity digest: {error}",
+	"update.download.verifyUnsupported": "Release digest uses unsupported algorithm {algo}",
+	"update.download.verifyMismatch":    "Download failed integrity check: sha256 mismatch (expected {expected}…, got {actual}…)",
 
 	// error - generic errors
 	"error.network":          "Network error: {error}",

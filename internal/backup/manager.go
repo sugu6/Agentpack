@@ -358,52 +358,6 @@ func (m *Manager) CreateSnapshot(snap Snapshot) (string, error) {
 	return id, nil
 }
 
-func (m *Manager) ListSnapshots(limit int) ([]Snapshot, error) {
-	if limit <= 0 {
-		limit = 50
-	}
-	db := database.GetDB()
-	if db == nil {
-		return []Snapshot{}, nil
-	}
-	rows, err := db.Query(`SELECT id, data FROM export_snapshots ORDER BY created_at DESC LIMIT ?`, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := make([]Snapshot, 0, limit)
-	var corruptCount int
-	for rows.Next() {
-		var id, data string
-		if err := rows.Scan(&id, &data); err != nil {
-			return nil, err
-		}
-		var snap Snapshot
-		if err := json.Unmarshal([]byte(data), &snap); err != nil {
-			log.Printf("backup list: skip corrupt snapshot %s: %v", id, err)
-			corruptCount++
-			continue
-		}
-		out = append(out, snap)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate snapshots: %w", err)
-	}
-	if corruptCount > 0 {
-		log.Printf("backup list: %d corrupt snapshot(s) skipped", corruptCount)
-	}
-	return out, nil
-}
-
-func (m *Manager) DeleteSnapshot(id string) error {
-	db := database.GetDB()
-	if db == nil {
-		return nil
-	}
-	_, err := db.Exec(`DELETE FROM export_snapshots WHERE id = ?`, id)
-	return err
-}
-
 func (m *Manager) Delete(id string) error {
 	db := database.GetDB()
 	if db == nil {

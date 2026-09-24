@@ -154,7 +154,77 @@ type opencodeServer struct {
 	URL     string            `json:"url,omitempty"`
 	Headers map[string]string `json:"headers,omitempty"`
 	Enabled *bool             `json:"enabled,omitempty"`
-	Timeout int               `json:"timeout,omitempty"`
+	// Cwd 对应 opencode 最新 schema LocalServer.cwd（工作目录，相对路径
+	// 以工作区为基准解析）；旧版 opencode 无此键，缺失时读写均不受影响。
+	Cwd     string `json:"cwd,omitempty"`
+	Timeout int    `json:"timeout,omitempty"`
+}
+
+// jsonServerKnownKeys 是标准 JSON 后端（Claude Code / Cursor / Trae）显式建模的
+// 条目键；其余键一律收进 Server.Extra 原样保留。
+// 最新各 agent 的 agent 专属字段（Claude 的 oauth/headersHelper/alwaysLoad、
+// Cursor 的 envFile/auth、Trae 的 disabled 等）都走 Extra，整表重写不丢配置。
+var jsonServerKnownKeys = map[string]struct{}{
+	"command": {}, "args": {}, "env": {}, "transport": {}, "url": {},
+	"timeout": {}, "cwd": {}, "type": {}, "headers": {},
+}
+
+// opencodeServerKnownKeys 是 OpenCode 后端显式建模的条目键（对齐最新
+// opencode schema 的 Local/Remote server 字段）。
+// 官方 schema 对条目声明 additionalProperties:false（Effect 严格解码），
+// 因此 opencode 的 Extra 只允许回写官方支持但未显式建模的键（见
+// opencodeExtraWriteKeys），未知键写出会破坏该 agent 的配置校验。
+var opencodeServerKnownKeys = map[string]struct{}{
+	"type": {}, "command": {}, "environment": {}, "env": {}, "url": {},
+	"headers": {}, "enabled": {}, "timeout": {}, "cwd": {},
+}
+
+// opencodeExtraWriteKeys：官方 schema 支持、但本工具未显式建模的条目键。
+// 写回时只放行这些键（严格 schema 下的无损保留）。
+var opencodeExtraWriteKeys = map[string]struct{}{
+	"oauth": {},
+}
+
+// jsonExtraFor 解出条目原始键值，返回未显式建模的部分（Extra 保留集）。
+func jsonExtraFor(raw json.RawMessage, known map[string]struct{}) (map[string]any, error) {
+	var fields map[string]any
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return nil, err
+	}
+	extra := map[string]any{}
+	for k, v := range fields {
+		if _, ok := known[k]; !ok {
+			extra[k] = v
+		}
+	}
+	if len(extra) == 0 {
+		return nil, nil
+	}
+	return extra, nil
+}
+
+// mergeJSONExtras 把 Extra 键并入写出的条目，跳过与显式键冲突者
+// （理论上 Extra 与 known 键不相交，此检查仅作防御）。
+func mergeJSONExtras(entry map[string]any, extra map[string]any) {
+	for k, v := range extra {
+		if _, exists := entry[k]; !exists {
+			entry[k] = v
+		}
+	}
+}
+
+// whitelistJSONExtras 与 mergeJSONExtras 相同，但只放行 allow 白名单内的键。
+// 用于配置 schema 严格校验（additionalProperties:false）的 agent：未知键
+// 写出会破坏该 agent 的配置合法性，宁可丢弃也不回写。
+func whitelistJSONExtras(entry map[string]any, extra map[string]any, allow map[string]struct{}) {
+	for k, v := range extra {
+		if _, ok := allow[k]; !ok {
+			continue
+		}
+		if _, exists := entry[k]; !exists {
+			entry[k] = v
+		}
+	}
 }
 
 func (b *JsonBackend) parseJsonServer(name string, raw json.RawMessage) (types.Server, error) {
@@ -199,6 +269,13 @@ func (b *JsonBackend) parseStandardJsonServer(name string, raw json.RawMessage) 
 	if len(args) == 0 {
 		args = nil
 	}
+	// 未建模键（Claude 的 oauth/headersHelper/alwaysLoad、Cursor 的 envFile/auth、
+	// Trae 的 disabled 等）收进 Extra，整表重写时原样写回，不丢配置
+	extra, err := jsonExtraFor(raw, jsonServerKnownKeys)
+	if err != nil {
+		// 保留已建模字段，仅放弃额外键，不让单个键破坏整条条目
+		extra = nil
+	}
 	return types.Server{
 		Name:       name,
 		Command:    js.Command,
@@ -211,6 +288,7 @@ func (b *JsonBackend) parseStandardJsonServer(name string, raw json.RawMessage) 
 		Cwd:        js.WorkingDir,
 		Headers:    js.Headers,
 		Source:     "config",
+		Extra:      extra,
 	}, nil
 }
 
@@ -258,6 +336,17 @@ func (b *JsonBackend) parseOpencodeServer(name string, raw json.RawMessage) (typ
 	// 残缺条目（无命令且无 URL）没有可执行内容：拒绝并标记 partial，
 	// 与标准 JSON/TOML 后端行为一致。
 	if command == "" && oc.URL == "" {
+		// 官方 schema 允许最小覆盖条目 {"enabled": bool}（启用/禁用组织远端
+		// .well-known/opencode 提供的 MCP server，本身无 command/url）：作为
+		// 合法条目读入。若按坏条目跳过并标记 partial，Rescan 会整体失败
+		// （ErrPartialRead 级联），且整表重写会把这些条目从配置中删除。
+		if oc.Enabled != nil {
+			return types.Server{
+				Name:    name,
+				Enabled: oc.Enabled,
+				Source:  "config",
+			}, nil
+		}
 		return types.Server{}, fmt.Errorf("server %q: missing command and url", name)
 	}
 
@@ -270,7 +359,12 @@ func (b *JsonBackend) parseOpencodeServer(name string, raw json.RawMessage) (typ
 		// "environment" 缺失时退回 "env"（用户手写的兼容键）
 		env = oc.Env
 	}
-
+	// 未建模键（最新 opencode schema 的 remote oauth 等）收进 Extra，
+	// 整表重写时原样写回，不丢配置
+	extra, err := jsonExtraFor(raw, opencodeServerKnownKeys)
+	if err != nil {
+		extra = nil
+	}
 	return types.Server{
 		Name:       name,
 		Command:    command,
@@ -280,9 +374,11 @@ func (b *JsonBackend) parseOpencodeServer(name string, raw json.RawMessage) (typ
 		ConfigType: oc.Type,
 		URL:        oc.URL,
 		Timeout:    oc.Timeout,
+		Cwd:        oc.Cwd,
 		Headers:    oc.Headers,
 		Enabled:    oc.Enabled,
 		Source:     "config",
+		Extra:      extra,
 	}, nil
 }
 
@@ -307,21 +403,41 @@ func (b *JsonBackend) writeStandard(path string, servers map[string]types.Server
 
 	mcServers := make(map[string]json.RawMessage, len(servers))
 	for name, s := range servers {
-		js := jsonServer{
-			Command:    s.Command,
-			Args:       s.Args,
-			Env:        s.Env,
-			Type:       s.ConfigType,
-			URL:        s.URL,
-			Timeout:    s.Timeout,
-			WorkingDir: s.Cwd,
-			Headers:    s.Headers,
+		// 按"仅写出已设置字段"构造条目：避免 "command": "" / "args": null
+		// 这类空值噪声进入各 agent 的配置文件。
+		entry := map[string]any{}
+		if s.Command != "" {
+			entry["command"] = s.Command
 		}
-		// 如果原始配置没有 type 字段，根据transport 推导
-		if js.Type == "" {
-			js.Type = string(s.Transport)
+		// 各 agent（Claude Code / Cursor / Trae）最新配置均使用 type 字段；
+		// 原始配置没有时根据 transport 推导。两者都未设置时不写该键——
+		// 写出 "type": "" 是未设置字段的噪声（CHANGELOG 承诺不再写出）。
+		if s.ConfigType != "" {
+			entry["type"] = s.ConfigType
+		} else if t := string(s.Transport); t != "" {
+			entry["type"] = t
 		}
-		encoded, err := json.Marshal(js)
+		if len(s.Args) > 0 {
+			entry["args"] = s.Args
+		}
+		if len(s.Env) > 0 {
+			entry["env"] = s.Env
+		}
+		if len(s.Headers) > 0 {
+			entry["headers"] = s.Headers
+		}
+		if s.URL != "" {
+			entry["url"] = s.URL
+		}
+		if s.Timeout > 0 {
+			entry["timeout"] = s.Timeout
+		}
+		if s.Cwd != "" {
+			entry["cwd"] = s.Cwd
+		}
+		// 原样写回未显式建模的键（oauth / envFile / disabled 等）
+		mergeJSONExtras(entry, s.Extra)
+		encoded, err := json.Marshal(entry)
 		if err != nil {
 			return err
 		}
@@ -368,8 +484,8 @@ func (b *JsonBackend) writeOpencode(path string, servers map[string]types.Server
 
 	opencodeServers := make(map[string]json.RawMessage, len(servers))
 	for name, s := range servers {
-		oc := b.serverToOpencode(s)
-		encoded, err := json.Marshal(oc)
+		entry := b.opencodeEntry(s)
+		encoded, err := json.Marshal(entry)
 		if err != nil {
 			return err
 		}
@@ -423,8 +539,16 @@ func (b *JsonBackend) detectFlatMcpFormat(existing map[string]json.RawMessage) b
 	return !hasServers && !hasServers2
 }
 
-func (b *JsonBackend) serverToOpencode(s types.Server) opencodeServer {
-	oc := opencodeServer{}
+// opencodeEntry 构造单个 OpenCode 条目的写出键值（仅含已设置字段），并并入
+// Extra 保留的官方未建模键（如最新 schema 的 remote oauth 配置）。
+func (b *JsonBackend) opencodeEntry(s types.Server) map[string]any {
+	// 最小覆盖条目（仅 enabled，无 command/url）：官方 schema 的该对象
+	// 只允许 enabled 键，原样写回。
+	if s.Command == "" && s.URL == "" && s.Enabled != nil {
+		return map[string]any{"enabled": *s.Enabled}
+	}
+
+	entry := map[string]any{}
 
 	// 只要 URL 非空就写回：含 URL 的条目（无论传输标记为何）必须保留 url 字段，
 	// 否则 stdio+URL 等畸形解析结果会让远程服务器配置在写回时永久丢失 URL。
@@ -435,37 +559,49 @@ func (b *JsonBackend) serverToOpencode(s types.Server) opencodeServer {
 		// 缺失或无法识别时才用 types.Transport 推导。
 		switch s.ConfigType {
 		case "remote", "sse", "http", "streamable-http", "streamableHttp":
-			oc.Type = s.ConfigType
+			entry["type"] = s.ConfigType
 		default:
-			oc.Type = "remote"
+			entry["type"] = "remote"
 		}
-		oc.URL = s.URL
+		entry["url"] = s.URL
 	} else {
-		oc.Type = "local"
+		entry["type"] = "local"
 	}
 
 	// OpenCode uses command as an array: [command, ...args]
 	if s.Command != "" {
 		cmd := []string{s.Command}
 		cmd = append(cmd, s.Args...)
-		oc.Command = cmd
+		entry["command"] = cmd
 	}
 
+	// 官方键为 "environment"；旧文件手写的 "env" 在读取时已归一化，
+	// 写回统一用 "environment"（最新 schema 只认 environment）
 	if len(s.Env) > 0 {
-		oc.Environment = s.Env
+		entry["environment"] = s.Env
 	}
 
-	oc.Timeout = s.Timeout
+	if s.Timeout > 0 {
+		entry["timeout"] = s.Timeout
+	}
 
 	if len(s.Headers) > 0 {
-		oc.Headers = s.Headers
+		entry["headers"] = s.Headers
+	}
+
+	// 最新 opencode schema 的 local server 支持 cwd 工作目录
+	if entry["type"] == "local" && s.Cwd != "" {
+		entry["cwd"] = s.Cwd
 	}
 
 	// opencode 条目省略 enabled 时默认为 true；只有显式禁用（false）才写出，
 	// 与 opencode 自身的省略语义一致，同时保留用户手动禁用的状态。
 	if s.Enabled != nil && !*s.Enabled {
-		oc.Enabled = s.Enabled
+		entry["enabled"] = false
 	}
 
-	return oc
+	// 原样写回未显式建模的键（如 remote 的 oauth 配置）
+	whitelistJSONExtras(entry, s.Extra, opencodeExtraWriteKeys)
+
+	return entry
 }

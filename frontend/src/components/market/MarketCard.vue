@@ -105,23 +105,17 @@ async function copyToClipboard(text: string): Promise<boolean> {
   }
 }
 
-async function copyCommand() {
-  if (!commandPreview.value) return
-  const ok = await copyToClipboard(commandPreview.value)
+async function copyWithFeedback(text: string | undefined | null, copied: { value: boolean }) {
+  if (!text) return
+  const ok = await copyToClipboard(text)
   if (ok) {
-    copiedCommand.value = true
-    setTimeout(() => { copiedCommand.value = false }, 2000)
+    copied.value = true
+    setTimeout(() => { copied.value = false }, 2000)
   }
 }
 
-async function copyEnv() {
-  if (!envText.value) return
-  const ok = await copyToClipboard(envText.value)
-  if (ok) {
-    copiedEnv.value = true
-    setTimeout(() => { copiedEnv.value = false }, 2000)
-  }
-}
+const copyCommand = () => copyWithFeedback(commandPreview.value, copiedCommand)
+const copyEnv = () => copyWithFeedback(envText.value, copiedEnv)
 
 async function openExternal(url: string) {
   if (!url) return

@@ -173,107 +173,79 @@ func TestRegistryToggle_NotFound(t *testing.T) {
 	}
 }
 
-func TestCodexAdapter_Toml(t *testing.T) {
-	tmp := t.TempDir()
-	t.Setenv("HOME", tmp)
-	t.Setenv("USERPROFILE", tmp)
-	t.Setenv("APPDATA", "")
-	t.Setenv("PATH", tmp)
-	ResetNpmCache()
-	ResetRegistryCache()
-
-	// Codex 配置文件路径为 .codex/config.toml
-	configDir := filepath.Join(tmp, ".codex")
-	if err := os.MkdirAll(configDir, 0755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(configDir, "config.toml"), []byte("model = \"gpt-4\"\n"), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	a := NewCodexAdapter()
-	info := a.Detect()
-
-	// 仅配置文件存在但 CLI 未安装，应为 not_found + VariantConfig
-	if info.Status != StatusNotFound {
-		t.Errorf("expected not_found, got %s", info.Status)
-	}
-	if info.Variant != VariantConfig {
-		t.Errorf("expected config variant, got %s", info.Variant)
-	}
-}
-
-func TestCursorAdapter_Detected(t *testing.T) {
-	tmp := t.TempDir()
-	t.Setenv("HOME", tmp)
-	t.Setenv("USERPROFILE", tmp)
-	t.Setenv("APPDATA", "")
-	t.Setenv("PATH", tmp)
-	ResetNpmCache()
-	ResetRegistryCache()
-
-	writeJSON(t, filepath.Join(tmp, ".cursor", "mcp.json"), `{"mcpServers":{}}`)
-
-	a := NewCursorAdapter()
-	info := a.Detect()
-	// 仅配置文件存在但 IDE 未安装，应为 not_found + VariantConfig
-	if info.Status != StatusNotFound {
-		t.Errorf("expected not_found, got %s", info.Status)
-	}
-	if info.Variant != VariantConfig {
-		t.Errorf("expected config variant, got %s", info.Variant)
-	}
-}
-
-func TestOpenCodeAdapter_NestedMcpFormat(t *testing.T) {
-	tmp := t.TempDir()
-	t.Setenv("HOME", tmp)
-	t.Setenv("USERPROFILE", tmp)
-	t.Setenv("APPDATA", "")
-	t.Setenv("PATH", tmp)
-	ResetNpmCache()
-	ResetRegistryCache()
-
-	writeJSON(t, filepath.Join(tmp, ".config", "opencode", "opencode.json"), `{
-		"mcp": {
-			"servers": {
-				"github": {"command": "npx", "args": ["-y", "pkg"]},
-				"fs": {"command": "npx", "args": ["-y", "fs-pkg"]}
-			}
+// 仅配置文件存在而 CLI/Desktop 未安装时，各适配器应报 not_found + VariantConfig。
+func TestAdapters_ConfigOnly_NotFoundVariant(t *testing.T) {
+	tests := []struct {
+		name     string
+		adapter  Adapter
+		writeCfg func(t *testing.T, tmp string)
+	}{
+		{
+			name:    "CodexAdapter_Toml",
+			adapter: NewCodexAdapter(),
+			writeCfg: func(t *testing.T, tmp string) {
+				// Codex 配置文件路径为 .codex/config.toml
+				configDir := filepath.Join(tmp, ".codex")
+				if err := os.MkdirAll(configDir, 0755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(configDir, "config.toml"), []byte("model = \"gpt-4\"\n"), 0644); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name:    "CursorAdapter_Detected",
+			adapter: NewCursorAdapter(),
+			writeCfg: func(t *testing.T, tmp string) {
+				writeJSON(t, filepath.Join(tmp, ".cursor", "mcp.json"), `{"mcpServers":{}}`)
+			},
+		},
+		{
+			name:    "OpenCodeAdapter_NestedMcpFormat",
+			adapter: NewOpenCodeAdapter(),
+			writeCfg: func(t *testing.T, tmp string) {
+				writeJSON(t, filepath.Join(tmp, ".config", "opencode", "opencode.json"), `{
+	"mcp": {
+		"servers": {
+			"github": {"command": "npx", "args": ["-y", "pkg"]},
+			"fs": {"command": "npx", "args": ["-y", "fs-pkg"]}
 		}
-	}`)
-
-	a := NewOpenCodeAdapter()
-	info := a.Detect()
-	// 仅配置文件存在但 CLI 未安装，应为 not_found + VariantConfig
-	if info.Status != StatusNotFound {
-		t.Errorf("expected not_found, got %s", info.Status)
 	}
-	if info.Variant != VariantConfig {
-		t.Errorf("expected config variant, got %s", info.Variant)
+}`)
+			},
+		},
+		{
+			name:    "ClaudeCodeVariant",
+			adapter: NewClaudeCodeAdapter(),
+			writeCfg: func(t *testing.T, tmp string) {
+				// 仅配置文件存在
+				writeJSON(t, filepath.Join(tmp, ".claude.json"), `{}`)
+			},
+		},
 	}
-}
 
-func TestClaudeCodeVariant(t *testing.T) {
-	tmp := t.TempDir()
-	t.Setenv("HOME", tmp)
-	t.Setenv("USERPROFILE", tmp)
-	t.Setenv("APPDATA", "")
-	t.Setenv("PATH", tmp)
-	ResetNpmCache()
-	ResetRegistryCache()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmp := t.TempDir()
+			t.Setenv("HOME", tmp)
+			t.Setenv("USERPROFILE", tmp)
+			t.Setenv("APPDATA", "")
+			t.Setenv("PATH", tmp)
+			ResetNpmCache()
+			ResetRegistryCache()
 
-	// 仅配置文件存在
-	writeJSON(t, filepath.Join(tmp, ".claude.json"), `{}`)
+			tt.writeCfg(t, tmp)
 
-	a := NewClaudeCodeAdapter()
-	info := a.Detect()
-	// 仅配置文件存在但 CLI/Desktop 均未安装，应为 not_found + VariantConfig
-	if info.Status != StatusNotFound {
-		t.Errorf("expected not_found, got %s", info.Status)
-	}
-	if info.Variant != VariantConfig {
-		t.Errorf("expected config variant, got %s", info.Variant)
+			info := tt.adapter.Detect()
+			// 仅配置文件存在但 CLI/Desktop 均未安装，应为 not_found + VariantConfig
+			if info.Status != StatusNotFound {
+				t.Errorf("expected not_found, got %s", info.Status)
+			}
+			if info.Variant != VariantConfig {
+				t.Errorf("expected config variant, got %s", info.Variant)
+			}
+		})
 	}
 }
 

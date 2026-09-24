@@ -130,8 +130,6 @@ AgentPack/
 ├── app.go                 # Wails 应用主入口，暴露给前端的方法（含系统托盘）
 ├── main.go                # 程序入口
 ├── version.go             # 版本信息（启动时从 build/config.yml 注入）
-├── app_windows.go         # Windows 平台构建标签文件
-├── app_unix.go            # 非 Windows 平台构建标签文件
 ├── devmode_dev.go         # 开发模式配置
 ├── devmode_prod.go        # 生产模式配置
 ├── Taskfile.yml           # Wails v3 构建任务定义

@@ -262,7 +262,9 @@ args = ["/c", "npx", "-y", "@upstash/context7-mcp"]
 		t.Errorf("context7: expected configType=stdio, got %q", c7.ConfigType)
 	}
 
-	// 写回并验证保留 type 字段和 table 格式
+	// 写回并验证 table 格式；最新 Codex schema 无 type 键，
+	// 写路径不再输出（transport 由 command/url 隐式确定），避免触发
+	// "unrecognized configuration settings" 警告。
 	if err := backend.Write(path, out); err != nil {
 		t.Fatal(err)
 	}
@@ -271,8 +273,8 @@ args = ["/c", "npx", "-y", "@upstash/context7-mcp"]
 		t.Fatal(err)
 	}
 	body := string(data)
-	if !containsStr(body, `type = "stdio"`) {
-		t.Error("expected type = \"stdio\" in output")
+	if containsStr(body, `type = `) {
+		t.Error("type key must not be written (unrecognized by current Codex)")
 	}
 	if !containsStr(body, `[mcp_servers.fetch]`) {
 		t.Error("expected [mcp_servers.fetch] table format")
@@ -293,8 +295,11 @@ args = ["/c", "npx", "-y", "@upstash/context7-mcp"]
 	if len(out2) != 4 {
 		t.Fatalf("round-trip: expected 4 servers, got %d", len(out2))
 	}
-	if out2["context7"].ConfigType != "stdio" {
-		t.Errorf("round-trip: expected configType=stdio, got %q", out2["context7"].ConfigType)
+	if out2["context7"].Transport != types.TransportStdio {
+		t.Errorf("round-trip: expected transport=stdio, got %q", out2["context7"].Transport)
+	}
+	if out2["context7"].Command != "cmd" {
+		t.Errorf("round-trip: expected command=cmd, got %q", out2["context7"].Command)
 	}
 }
 
@@ -370,7 +375,7 @@ args = ["-y", "@mcp/server-fs"]
 		t.Errorf("expected configType=stdio, got %q", got.ConfigType)
 	}
 
-	// 写回保留 type 字段
+	// 写回不再输出 type 键（最新 Codex schema 不识别该键）
 	if err := backend.Write(path, out); err != nil {
 		t.Fatal(err)
 	}
@@ -379,8 +384,152 @@ args = ["-y", "@mcp/server-fs"]
 		t.Fatal(err)
 	}
 	body := string(data)
-	if !containsStr(body, `type = "stdio"`) {
-		t.Error("expected type = \"stdio\" in array format output")
+	if containsStr(body, `type = "stdio"`) {
+		t.Error("type key must not be written in array format output")
+	}
+	// 条目仍可往返
+	out2, err := backend.Read(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out2["my-server"].Transport != types.TransportStdio {
+		t.Errorf("round-trip: expected transport=stdio, got %q", out2["my-server"].Transport)
+	}
+}
+
+// TestTomlBackend_LatestCodexKeys 验证最新 Codex schema 键的读写：
+// http_headers / tool_timeout_sec / enabled 显式建模，
+// env_vars / startup_timeout_sec 等未建模键经 Extra 原样保留。
+func TestTomlBackend_LatestCodexKeys(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+
+	writeFile(t, path, `
+[mcp_servers.appmanaged]
+command = "uvx"
+args = ["mcp-server-fetch"]
+env_vars = ["CODEX_WINDOWS_REGISTERED_CORE"]
+startup_timeout_sec = 120
+enabled = false
+http_headers = { "Authorization" = "Bearer token123" }
+tool_timeout_sec = 30
+`)
+
+	backend := NewBackend()
+	out, err := backend.Read(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv, ok := out["appmanaged"]
+	if !ok {
+		t.Fatal("expected appmanaged server")
+	}
+	if srv.Headers["Authorization"] != "Bearer token123" {
+		t.Errorf("expected http_headers parsed, got %v", srv.Headers)
+	}
+	if srv.Timeout != 30 {
+		t.Errorf("expected timeout=30 from tool_timeout_sec, got %d", srv.Timeout)
+	}
+	if srv.Enabled == nil || *srv.Enabled != false {
+		t.Errorf("expected enabled=false, got %v", srv.Enabled)
+	}
+	if got := srv.Extra["env_vars"]; got == nil {
+		t.Error("expected env_vars preserved in Extra")
+	} else if list, ok := got.([]any); !ok || len(list) != 1 {
+		t.Errorf("unexpected env_vars shape: %#v", got)
+	}
+	if _, ok := srv.Extra["startup_timeout_sec"]; !ok {
+		t.Error("expected startup_timeout_sec preserved in Extra")
+	}
+
+	if err := backend.Write(path, out); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(data)
+	if containsStr(body, `type = `) {
+		t.Error("type key must not be written")
+	}
+	if !containsStr(body, `http_headers = `) {
+		t.Error("expected http_headers in output")
+	}
+	if !containsStr(body, `tool_timeout_sec = 30`) {
+		t.Error("expected tool_timeout_sec = 30 in output")
+	}
+	if !containsStr(body, `enabled = false`) {
+		t.Error("expected enabled = false in output")
+	}
+	if !containsStr(body, `env_vars = `) {
+		t.Error("expected env_vars preserved in output")
+	}
+	if !containsStr(body, `startup_timeout_sec = 120`) {
+		t.Error("expected startup_timeout_sec preserved in output")
+	}
+
+	// 二次往返：Extra 键持续保留
+	out2, err := backend.Read(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := out2["appmanaged"].Extra["env_vars"]; !ok {
+		t.Error("env_vars lost on second round-trip")
+	}
+	if out2["appmanaged"].Headers["Authorization"] != "Bearer token123" {
+		t.Errorf("http_headers lost on second round-trip: %v", out2["appmanaged"].Headers)
+	}
+}
+
+// TestTomlBackend_LegacyKeysMigrate 验证旧版键（headers/timeout）读入后
+// 按最新 schema 键（http_headers/tool_timeout_sec）写回。
+func TestTomlBackend_LegacyKeysMigrate(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+
+	writeFile(t, path, `
+[mcp_servers.remote]
+url = "https://example.com/mcp"
+headers = { "X-Api-Key" = "legacy" }
+timeout = 45
+`)
+
+	backend := NewBackend()
+	out, err := backend.Read(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := out["remote"]
+	if srv.Headers["X-Api-Key"] != "legacy" {
+		t.Errorf("expected legacy headers parsed, got %v", srv.Headers)
+	}
+	if srv.Timeout != 45 {
+		t.Errorf("expected timeout=45, got %d", srv.Timeout)
+	}
+	if srv.Transport != types.TransportHTTP {
+		t.Errorf("expected http transport, got %q", srv.Transport)
+	}
+
+	if err := backend.Write(path, out); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(data)
+	if !containsStr(body, `http_headers = `) {
+		t.Error("expected http_headers (latest key) in output")
+	}
+	if !containsStr(body, `tool_timeout_sec = 45`) {
+		t.Error("expected tool_timeout_sec (latest key) in output")
+	}
+	if containsStr(body, "\nheaders = ") {
+		t.Error("legacy headers key must not be written")
+	}
+	if containsStr(body, "\ntimeout = ") {
+		t.Error("legacy timeout key must not be written")
 	}
 }
 

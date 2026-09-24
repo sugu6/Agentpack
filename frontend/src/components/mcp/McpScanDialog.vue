@@ -4,6 +4,7 @@ import { useI18n } from 'vue-i18n'
 import { useMcpStore } from '@/stores/mcp'
 import { useAgentsStore } from '@/stores/agents'
 import type { ScanItem } from '@/lib/api'
+import { isGroupFullySelected } from '@/lib/selection'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, Button, Badge, DialogFooter } from '@/components/ui'
 import AgentToggleButton from '@/components/agent/AgentToggleButton.vue'
 import { normalizeVariant, variantToBadge, agentDisplayName } from '@/composables/useAgentHelpers'
@@ -151,11 +152,8 @@ function isSelected(key: string): boolean {
 }
 
 function isGroupSelected(key: string, group: { ids: string[] }): boolean {
-  const selected = importConfig.value.get(key)
-  if (!selected) return false
   // disabled 变体成员不可选，不计入选中状态
-  const active = group.ids.filter(id => agents.activeIds.get(id))
-  return active.length > 0 && active.every(id => selected.has(id))
+  return isGroupFullySelected(importConfig.value.get(key), group.ids, id => !!agents.activeIds.get(id))
 }
 
 function isSourceItem(item: ScanItem, group: { ids: string[] }): boolean {
