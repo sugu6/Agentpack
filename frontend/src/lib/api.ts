@@ -35,6 +35,12 @@ import {
   ToggleMcpServerAgent,
   ToggleSkillAgent,
   UninstallSkill,
+  AdoptSkillCopy,
+  CleanOrphanSkillLinks,
+  ConvertSkillCopyToLink,
+  KeepSkillFork,
+  OverwriteSkillCopyFromSSOT,
+  ScanSkillConflicts,
   AddMcpServer,
   AddSkillRepo,
   CancelDownload,
@@ -308,6 +314,19 @@ export interface UpdateError {
   error: string
 }
 
+export type ConflictKind = 'plain_same' | 'plain_diff' | 'orphan_link' | 'broken_link' | 'wrong_target'
+
+export interface ReconcileItem {
+  kind: ConflictKind
+  skillId?: string
+  directory: string
+  path: string
+  agentIds: string[]
+  ssotHash?: string
+  localHash?: string
+  acknowledged: boolean
+}
+
 export interface SkillSourceBackfillResult {
   matched: string[]
   mismatched: string[]
@@ -393,6 +412,15 @@ export const api = {
     resync: () => safeCall(async () => ResyncSkills()),
     migrateStorage: (target: string) => safeCall(async () => MigrateSkillStorage(target)),
     scanUnmanaged: async () => optimizeToPlainObject(await ScanUnmanagedSkills()) as UnmanagedSkill[],
+    scanConflicts: async () => optimizeToPlainObject(await ScanSkillConflicts()) as ReconcileItem[],
+    convertSkillCopy: (skillId: string, sourcePath: string) => safeCall(() => ConvertSkillCopyToLink(skillId, sourcePath)),
+    overwriteSkillCopy: (skillId: string, sourcePath: string) => safeCall(() => OverwriteSkillCopyFromSSOT(skillId, sourcePath)),
+    adoptSkillCopy: async (skillId: string, sourcePath: string) => optimizeToPlainObject(await AdoptSkillCopy(skillId, sourcePath)) as Skill,
+    keepSkillFork: (skillId: string, sourcePath: string) => safeCall(() => KeepSkillFork(skillId, sourcePath)),
+    cleanOrphanLinks: async () => {
+      const removed = await CleanOrphanSkillLinks()
+      return Array.isArray(removed) ? removed : []
+    },
     checkUpdates: async () => optimizeToPlainObject(await CheckSkillUpdates()) as UpdateStatus[],
     updateSkill: async (skillId: string) => optimizeToPlainObject(await UpdateSkill(skillId)) as Skill,
     updateSkills: async (skillIds: string[]) => {

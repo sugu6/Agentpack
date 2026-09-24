@@ -1,11 +1,13 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
-import { api, type Skill, type Agent, type UnmanagedSkill, type UpdateStatus, ApiError } from '@/lib/api'
+import { api, type Skill, type Agent, type UnmanagedSkill, type ReconcileItem, type UpdateStatus, ApiError } from '@/lib/api'
 
 export const useSkillsStore = defineStore('skills', () => {
   const skills = ref<Skill[]>([])
   const skillCapableAgents = ref<Agent[]>([])
   const unmanaged = ref<UnmanagedSkill[]>([])
+  const conflicts = ref<ReconcileItem[]>([])
+  const conflictsLoading = ref(false)
   const loading = ref(false)
   const scanningUnmanaged = ref(false)
   const error = ref<string | null>(null)
@@ -227,10 +229,53 @@ async function updateAllSkills() {
     return updateStatusMap.value.get(skillId)
   }
 
+  async function scanConflicts() {
+    if (conflictsLoading.value) return
+    conflictsLoading.value = true
+    try {
+      conflicts.value = await api.skills.scanConflicts()
+    } catch (e) {
+      const apiError = ApiError.from(e)
+      error.value = apiError.message
+      // 扫描失败保留旧列表：让用户区分「扫描失败」与「结果为空」
+    } finally {
+      conflictsLoading.value = false
+    }
+  }
+
+  async function convertSkillCopy(skillId: string, sourcePath: string) {
+    await withApiError(() => api.skills.convertSkillCopy(skillId, sourcePath))
+    await scanConflicts()
+  }
+
+  async function overwriteSkillCopy(skillId: string, sourcePath: string) {
+    await withApiError(() => api.skills.overwriteSkillCopy(skillId, sourcePath))
+    await scanConflicts()
+  }
+
+  async function adoptSkillCopy(skillId: string, sourcePath: string) {
+    const skill = await withApiError(() => api.skills.adoptSkillCopy(skillId, sourcePath))
+    rebuildList(list => list.map(s => (s.id === skill.id ? skill : s)))
+    await scanConflicts()
+    return skill
+  }
+
+  async function keepSkillFork(skillId: string, sourcePath: string) {
+    await withApiError(() => api.skills.keepSkillFork(skillId, sourcePath))
+    await scanConflicts()
+  }
+
+  async function cleanOrphanLinks() {
+    const removed = await withApiError(() => api.skills.cleanOrphanLinks())
+    await scanConflicts()
+    return removed
+  }
+
   function clearCache() {
     skills.value = []
     skillCapableAgents.value = []
     unmanaged.value = []
+    conflicts.value = []
   }
 
   return {
@@ -253,6 +298,14 @@ async function updateAllSkills() {
     resync,
     migrateStorage,
     scanUnmanaged,
+    conflicts,
+    conflictsLoading,
+    scanConflicts,
+    convertSkillCopy,
+    overwriteSkillCopy,
+    adoptSkillCopy,
+    keepSkillFork,
+    cleanOrphanLinks,
     importUnmanaged,
     installFromZip,
     checkUpdates,
