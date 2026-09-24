@@ -729,6 +729,7 @@ async function scanSkills() {
               type="checkbox"
               :checked="selectedPaths.length === unmanagedList.length"
               :indeterminate="selectedPaths.length > 0 && selectedPaths.length < unmanagedList.length"
+              :disabled="importingUnmanaged"
               @change="(e: Event) => toggleImportSelectAll((e.target as HTMLInputElement).checked)"
               class="h-3.5 w-3.5"
             />
@@ -749,6 +750,7 @@ async function scanSkills() {
               <input
                 type="checkbox"
                 :checked="isPathSelected(u.path)"
+                :disabled="importingUnmanaged"
                 @change="toggleImportSelect(u.path, u.agentIds)"
                 class="mt-0.5 h-4 w-4 shrink-0"
               />
@@ -777,7 +779,7 @@ async function scanSkills() {
                   :agent-id="group.id"
                   :agent-name="group.ids.length > 1 ? group.name : agentDisplayName({ name: group.name, id: group.id })"
                   :model-value="group.ids.some(id => importConfig.get(u.path)?.has(id))"
-                  :disabled="group.status !== 'enabled'"
+                  :disabled="group.status !== 'enabled' || importingUnmanaged"
                   :badge="group.ids.length > 1 ? null : variantToBadge(normalizeVariant(undefined, group.id))"
                   @update:model-value="(v: boolean) => toggleImportGroup(u.path, group, v, u.agentIds)"
                 />
