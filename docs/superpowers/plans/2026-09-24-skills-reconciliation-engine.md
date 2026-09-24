@@ -839,7 +839,10 @@ func TestConvertSkillCopyToLink(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if info.Mode()&os.ModeSymlink == 0 {
+		// 形状断言按主机能力门控（Ruling 5）：无 symlink 权限的主机上
+		// createSymlink 走既有 copy fallback；下方内容断言（无条件）
+		// 仍然完整验证投影语义，可授权主机上形状仍严格断言。
+		if canCreateSymlinks(t) && info.Mode()&os.ModeSymlink == 0 {
 			t.Fatal("expected target to become a symlink")
 		}
 		before, _ := HashDir(ssot)
@@ -989,6 +992,19 @@ func TestKeepSkillFork(t *testing.T) {
 			t.Fatal("expected error for foreign path")
 		}
 	})
+}
+
+// canCreateSymlinks probes whether this host may create symlinks
+// (Windows: SeCreateSymbolicLinkPrivilege or Developer Mode).
+// 形状断言按其结果门控；内容/行为断言始终无条件执行（Ruling 5）。
+func canCreateSymlinks(t *testing.T) bool {
+	t.Helper()
+	probe := filepath.Join(t.TempDir(), "probe")
+	if err := os.Symlink("x", probe); err != nil {
+		t.Logf("symlink unavailable, shape assertion skipped: %v", err)
+		return false
+	}
+	return true
 }
 ```
 
@@ -1152,7 +1168,7 @@ func TestOverwriteSkillCopyFromSSOT(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if info.Mode()&os.ModeSymlink == 0 {
+		if canCreateSymlinks(t) && info.Mode()&os.ModeSymlink == 0 {
 			t.Fatal("expected projection after overwrite")
 		}
 		got, _ := HashDir(target)
@@ -1187,7 +1203,7 @@ func TestOverwriteSkillCopyFromSSOT(t *testing.T) {
 		if err := env.store.OverwriteSkillCopyFromSSOT("skill:same", target, env.reg); err != nil {
 			t.Fatal(err)
 		}
-		if info, _ := os.Lstat(target); info.Mode()&os.ModeSymlink == 0 {
+		if info, _ := os.Lstat(target); canCreateSymlinks(t) && info.Mode()&os.ModeSymlink == 0 {
 			t.Error("expected symlink projection")
 		}
 	})
@@ -1214,7 +1230,7 @@ func TestAdoptSkillCopy(t *testing.T) {
 		if string(got) != "local-sidecar\n" {
 			t.Errorf("SSOT must carry adopted local content, got %q", got)
 		}
-		if info, _ := os.Lstat(target); info.Mode()&os.ModeSymlink == 0 {
+		if info, _ := os.Lstat(target); canCreateSymlinks(t) && info.Mode()&os.ModeSymlink == 0 {
 			t.Error("source must become a projection after adopt")
 		}
 		fresh, _ := HashDir(ssot)
