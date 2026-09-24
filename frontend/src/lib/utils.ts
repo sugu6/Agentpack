@@ -5,47 +5,6 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs))
 }
 
-export function formatDate(timestamp: number | string | Date): string {
-  const date = new Date(timestamp)
-  return date.toLocaleDateString(undefined, {
-    year: 'numeric',
-    month: 'short',
-    day: 'numeric',
-  })
-}
-
-export function formatRelative(timestamp: number | string | Date): string {
-  const date = new Date(timestamp)
-  const now = Date.now()
-  const diff = now - date.getTime()
-  const sec = Math.floor(diff / 1000)
-  if (sec < 60) return 'just now'
-  const min = Math.floor(sec / 60)
-  if (min < 60) return `${min}m ago`
-  const hr = Math.floor(min / 60)
-  if (hr < 24) return `${hr}h ago`
-  const day = Math.floor(hr / 24)
-  if (day < 30) return `${day}d ago`
-  return formatDate(timestamp)
-}
-
-export function shortId(id: string, len = 8): string {
-  if (id.length <= len) return id
-  return id.slice(0, len)
-}
-
-export function debounce<T extends (...args: any[]) => any>(
-  fn: T, ms: number
-): ((...args: Parameters<T>) => void) & { cancel: () => void } {
-  let t: ReturnType<typeof setTimeout> | null = null
-  const debounced = (...args: Parameters<T>) => {
-    if (t) clearTimeout(t)
-    t = setTimeout(() => { t = null; fn(...args) }, ms)
-  }
-  debounced.cancel = () => { if (t) { clearTimeout(t); t = null } }
-  return debounced
-}
-
 export function transportLabel(transport?: string): string {
   if (!transport || transport === 'stdio') return 'Stdio'
   if (transport === 'sse') return 'SSE'
@@ -53,11 +12,8 @@ export function transportLabel(transport?: string): string {
   return transport
 }
 
-export function withTimeout<T>(promise: Promise<T>, ms: number, message?: string): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined
-  const timeout = new Promise<T>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(message || `Timed out after ${ms}ms`)), ms)
-  })
-  // promise 先 settle 时清理定时器，避免高频调用累积未触发的定时器引用
-  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer))
+// 判断是否为用户取消文件/目录选择
+export function isFilePickCancelled(e: unknown): boolean {
+  const msg = (e instanceof Error ? e.message : String(e ?? '')).toLowerCase()
+  return msg === '' || msg.includes('cancel')
 }
