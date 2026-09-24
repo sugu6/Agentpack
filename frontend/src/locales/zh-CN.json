@@ -417,6 +417,9 @@
       "cleanedCount": "已清理 {count} 条死链",
       "convertedCount": "已将 {count} 个来源目录转为映射"
     },
+    "importConvertTitle": "将来源转为映射？",
+    "importConvertMessage": "导入完成。是否把 {count} 个来源目录转换为指向 SSOT 的映射？转换后由 AgentPack 统一管理（卸载技能时会一并移除）；不转换会保留在原目录并在对账面板留下标记。",
+    "importConvertConfirm": "转为映射",
     "confirmUpdateAll": "确定要更新 {count} 个 Skill 吗？"
   },
   "market": {

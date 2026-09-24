@@ -264,7 +264,34 @@ async function confirmImportExisting() {
     if (failures.length > 0) {
       toast.warning(t('skills.toast.importFailedCount', { count: failures.length }))
     }
+    // D4：导入即询问——把来源目录转为指向 SSOT 的映射。
+    // 来源必然在 agent 目录内（unmanaged 列表只扫 agent 目录），且导入刚保证字节全同，
+    // 守卫必过；用户拒绝则留 plain_same 待对账面板处理，不静默。
+    const converted: { skillId: string; path: string }[] = []
+    results.forEach((r, i) => {
+      if (r.status === 'fulfilled') converted.push({ skillId: r.value.id, path: selectedPaths.value[i] })
+    })
+    if (converted.length > 0) {
+      const doConvert = await confirm.confirm({
+        title: t('skills.importConvertTitle'),
+        message: t('skills.importConvertMessage', { count: converted.length }),
+        confirmText: t('skills.importConvertConfirm'),
+      })
+      if (doConvert) {
+        let okCount = 0
+        for (const c of converted) {
+          try {
+            await skills.convertSkillCopy(c.skillId, c.path)
+            okCount++
+          } catch {
+            // 单个失败不阻断：残留会显示在对账面板
+          }
+        }
+        if (okCount > 0) toast.success(t('skills.toast.convertedCount', { count: okCount }))
+      }
+    }
     await skills.load()
+    await skills.scanConflicts()
     showImportExisting.value = false
   } catch (e: unknown) {
     toast.error(toast.fromError(e, t('skills.toast.importFailed')))

@@ -417,6 +417,9 @@
       "cleanedCount": "Removed {count} dead link(s)",
       "convertedCount": "Converted {count} source director(y/ies) to links"
     },
+    "importConvertTitle": "Convert source directories to links?",
+    "importConvertMessage": "Import finished. Convert {count} source directory(ies) into links pointing at SSOT? Linked copies are managed by AgentPack (removed together on uninstall); declining keeps them as plain copies and flags them in the reconciliation panel.",
+    "importConvertConfirm": "Convert to links",
     "confirmUpdateAll": "Update {count} skills?"
   },
   "market": {
