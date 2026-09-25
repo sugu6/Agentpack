@@ -46,22 +46,40 @@ func InstallServer(mcps *mcp.Store, reg *agents.Registry, server market.MarketSe
 }
 
 // InstallSkill 从远程仓库 tarball 安装 skill 到指定 agents。
-// 分支兜底枚举：{存储分支} ∪ {main, master} 去重，依次尝试直到成功，
-// 成功后以实际命中的分支写入 ~/.agents/.skill-lock.json。
+// 等价于 PrepareSkillInstall + CommitSkillInstall 的组合（自建 5 分钟总预算），
+// 保留签名供不关心锁编排的调用方使用。
 func InstallSkill(ss *skills.Store, reg *agents.Registry, skill market.MarketSkill, agentIDs []string) (skills.Skill, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	prepared, branch, err := PrepareSkillInstall(ctx, skill)
+	if err != nil {
+		return skills.Skill{}, err
+	}
+	defer prepared.Cleanup()
+	return CommitSkillInstall(ss, prepared, branch, skill, agentIDs, reg)
+}
+
+// PrepareSkillInstall 执行远程 tarball 安装的"下载 + 解压 + 定位"阶段，
+// 不触碰本地 store，故调用方无需持有 store 锁（这是把分钟级网络 IO 移出
+// storeOpMu 的关键）。
+//
+// 分支兜底枚举语义与原 InstallSkill 一致：{存储分支} ∪ {main, master} 去重，
+// 依次尝试直到某个候选下载成功；每候选派生 90 秒子预算，共享调用方传入 ctx
+// 的总预算（生产通常为 5 分钟）。
+//
+// 行为差异（刻意）：兜底重试只覆盖下载阶段——本函数成功返回后进入 commit
+// 阶段，该阶段失败不再换分支，避免为本地纳管失败重复下载整个 tarball。
+func PrepareSkillInstall(ctx context.Context, skill market.MarketSkill) (*skills.PreparedTarball, string, error) {
 	if skill.Directory == "" {
-		return skills.Skill{}, fmt.Errorf("skill directory required")
+		return nil, "", fmt.Errorf("skill directory required")
 	}
 	if skill.RepoOwner == "" || skill.RepoName == "" {
-		return skills.Skill{}, fmt.Errorf("skill repo owner/name required")
+		return nil, "", fmt.Errorf("skill repo owner/name required")
 	}
 	branch := skill.RepoBranch
 	if branch == "" {
 		branch = "main"
 	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer cancel()
 
 	// 分支兜底枚举：{存储分支} ∪ {main, master} 去重。
 	// 场景：扫描侧通过 jsDelivr @master 别名（=仓库默认分支）解析出的分支
@@ -69,7 +87,7 @@ func InstallSkill(ss *skills.Store, reg *agents.Registry, skill market.MarketSki
 	// 与仓库实际分支名一致）；反之 master-only 仓库在默认 main 404 时需重试。
 	attempts := []string{branch, "main", "master"}
 	seen := map[string]bool{}
-	var installed skills.Skill
+	var prepared *skills.PreparedTarball
 	var lastErr error
 	for _, cand := range attempts {
 		if cand == "" || seen[cand] {
@@ -90,19 +108,29 @@ func InstallSkill(ss *skills.Store, reg *agents.Registry, skill market.MarketSki
 		// 预算，后续候选直接因 ctx 超时失败。为每个候选派生独立子预算
 		// （90 秒/候选，3 候选共 270 秒，不超过 5 分钟总预算）。
 		childCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
-		installed, lastErr = ss.InstallFromTarball(childCtx, input, agentIDs, reg)
+		prepared, lastErr = skills.PrepareTarballInstall(childCtx, input)
 		cancel()
 		if lastErr == nil {
 			branch = cand
-			skill.RepoBranch = cand
 			break
 		}
 	}
 	if lastErr != nil {
-		return skills.Skill{}, lastErr
+		return nil, "", lastErr
+	}
+	return prepared, branch, nil
+}
+
+// CommitSkillInstall 把 PrepareSkillInstall 的产物纳管到 SSOT，并写入
+// ~/.agents/.skill-lock.json（兼容 CC Switch 等工具）。
+// 本函数只做本地文件 I/O，不含网络，调用方应使用 storeOpMu 包住它。
+// 锁文件写入失败只记日志、不阻断安装（保持原有语义）。
+func CommitSkillInstall(ss *skills.Store, prepared *skills.PreparedTarball, branch string, skill market.MarketSkill, agentIDs []string, reg *agents.Registry) (skills.Skill, error) {
+	installed, err := ss.CommitPreparedTarball(prepared, agentIDs, reg)
+	if err != nil {
+		return skills.Skill{}, err
 	}
 
-	// 写入 ~/.agents/.skill-lock.json（兼容 CC Switch 等工具）
 	lockEntry := skills.AgentsLockEntry{
 		Directory:  skill.Directory,
 		Source:     skill.RepoOwner + "/" + skill.RepoName,

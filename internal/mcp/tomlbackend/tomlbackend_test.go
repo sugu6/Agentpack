@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // writeFile 是原 mcp 包测试 helper 的本地副本（独立包无法共享）。
@@ -536,4 +537,120 @@ timeout = 45
 // containsStr 是原 mcp 包测试 helper 的本地副本（独立包无法共享）。
 func containsStr(s, sub string) bool {
 	return strings.Contains(s, sub)
+}
+
+// 回归测试：Extra 中的 datetime（time.Time）与数组表（[]map[string]any）必须
+// 按 TOML 原生形态写出，不能被 json.Marshal 兜底降级为 JSON 字符串。
+func TestTomlBackend_DatetimeAndArrayOfTablesRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	writeFile(t, path, `
+[mcp_servers.app]
+command = "uvx"
+expires_at = 2024-01-02T03:04:05Z
+
+[[mcp_servers.app.roots]]
+name = "r1"
+
+[[mcp_servers.app.roots]]
+name = "r2"
+`)
+
+	backend := NewBackend()
+	out, err := backend.Read(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := out["app"]
+	if _, ok := srv.Extra["expires_at"].(time.Time); !ok {
+		t.Fatalf("expires_at 应解码为 time.Time, got %T", srv.Extra["expires_at"])
+	}
+	if _, ok := srv.Extra["roots"].([]map[string]any); !ok {
+		t.Fatalf("roots 应解码为 []map[string]any, got %T", srv.Extra["roots"])
+	}
+
+	if err := backend.Write(path, out); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(data)
+	if containsStr(body, `expires_at = "`) {
+		t.Errorf("datetime 被降级为 JSON 字符串:\n%s", body)
+	}
+	if !containsStr(body, "2024-01-02T03:04:05") {
+		t.Errorf("datetime 未按 TOML 原生形态写出:\n%s", body)
+	}
+	if containsStr(body, `roots = "`) {
+		t.Errorf("数组表被降级为 JSON 字符串:\n%s", body)
+	}
+
+	// 二次读取：文件仍是合法 TOML，且类型保持
+	out2, err := backend.Read(path)
+	if err != nil {
+		t.Fatalf("重写后的 TOML 无法解析: %v\n%s", err, body)
+	}
+	if _, ok := out2["app"].Extra["expires_at"].(time.Time); !ok {
+		t.Errorf("round-trip 后 expires_at 类型变化: %T", out2["app"].Extra["expires_at"])
+	}
+	// 写回为内联表数组（`[{...}, {...}]`），语义仍是"表数组"，但 BurntSushi
+	// 对 [[...]] 与内联表数组解码出的 Go 类型不同（[]map[string]any vs []any），
+	// 因此这里校验语义与内容而非精确类型。
+	roots, ok := out2["app"].Extra["roots"].([]any)
+	if !ok || len(roots) != 2 {
+		t.Fatalf("round-trip 后 roots 应仍为含 2 个元素的表数组, got %T %#v", out2["app"].Extra["roots"], out2["app"].Extra["roots"])
+	}
+	if m, ok := roots[0].(map[string]any); !ok || m["name"] != "r1" {
+		t.Errorf("roots 内容变化: %#v", roots)
+	}
+}
+
+// 回归测试：带非本地 UTC offset（+08:00）的 datetime 经 BurntSushi 解码后
+// 保留原 offset 的 Location，RFC3339Nano 回写不得被改写为本机时区。
+func TestTomlBackend_DatetimeNonLocalOffsetRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	writeFile(t, path, `
+[mcp_servers.app]
+command = "uvx"
+expires_at = 2024-01-02T03:04:05+08:00
+`)
+
+	backend := NewBackend()
+	out, err := backend.Read(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, ok := out["app"].Extra["expires_at"].(time.Time)
+	if !ok {
+		t.Fatalf("expires_at 应解码为 time.Time, got %T", out["app"].Extra["expires_at"])
+	}
+	if _, off := v.Zone(); off != 8*3600 {
+		t.Fatalf("解码后 offset 应保持 +08:00, got %d", off)
+	}
+
+	if err := backend.Write(path, out); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(data)
+	if !containsStr(body, "2024-01-02T03:04:05+08:00") {
+		t.Errorf("datetime 未按原 offset 回写（可能被改为本机时区）:\n%s", body)
+	}
+
+	// 二次读取：类型与 offset 均保持
+	out2, err := backend.Read(path)
+	if err != nil {
+		t.Fatalf("重写后的 TOML 无法解析: %v\n%s", err, body)
+	}
+	v2, ok := out2["app"].Extra["expires_at"].(time.Time)
+	if !ok {
+		t.Fatalf("round-trip 后 expires_at 类型变化: %T", out2["app"].Extra["expires_at"])
+	}
+	if _, off := v2.Zone(); off != 8*3600 || !v2.Equal(v) {
+		t.Errorf("round-trip 后时间偏移或值变化: %s (offset %d)", v2, off)
+	}
 }

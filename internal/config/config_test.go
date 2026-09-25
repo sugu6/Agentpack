@@ -24,6 +24,35 @@ func TestAgentPackDir(t *testing.T) {
 	}
 }
 
+// TestProxyJoin 固化统一代理拼接契约（保留目标 URL 的 scheme），
+// 并覆盖尾斜杠/缺斜杠/空白/已前缀等边界。
+func TestProxyJoin(t *testing.T) {
+	cases := []struct {
+		proxy, target, want string
+	}{
+		// 默认代理 + GitHub API：保留内层 scheme
+		{"https://gh-proxy.com/", "https://api.github.com/repos/o/r",
+			"https://gh-proxy.com/https://api.github.com/repos/o/r"},
+		// 用户漏配尾斜杠：补齐单个 "/"，不得出现 "gh-proxy.comgithub.com"
+		{"https://gh-proxy.com", "https://github.com/o/r/releases/download/v1/a.exe",
+			"https://gh-proxy.com/https://github.com/o/r/releases/download/v1/a.exe"},
+		// 已带代理前缀：原样返回（防重入）
+		{"https://gh-proxy.com/", "https://gh-proxy.com/https://github.com/o/r.git",
+			"https://gh-proxy.com/https://github.com/o/r.git"},
+		// 空白代理 / 纯空白：直连语义不变
+		{"", "https://github.com/o/r.git", "https://github.com/o/r.git"},
+		{"   ", "https://github.com/o/r.git", "https://github.com/o/r.git"},
+		// 代理前含空白：归一化
+		{"  https://gh-proxy.com/  ", "https://codeload.github.com/o/r/tar.gz/main",
+			"https://gh-proxy.com/https://codeload.github.com/o/r/tar.gz/main"},
+	}
+	for _, c := range cases {
+		if got := ProxyJoin(c.proxy, c.target); got != c.want {
+			t.Errorf("ProxyJoin(%q, %q) = %q, want %q", c.proxy, c.target, got, c.want)
+		}
+	}
+}
+
 func TestConfigRoundTrip(t *testing.T) {
 	setTempHome(t)
 

@@ -1,6 +1,7 @@
 package skills
 
 import (
+	"agentpack/internal/iowriter"
 	"encoding/json"
 	"log"
 	"os"
@@ -47,7 +48,9 @@ func writeConflictAcks(ssotDir string, acks map[string]ConflictAck) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(conflictAckPath(ssotDir), data, 0644)
+	// 原子写：避免进程中断/并发写留下半截 JSON，导致下次读取"损坏即视为空表"
+	// 而静默丢失全部保留决定。与 lockfile.go / update.go 的写路径保持一致。
+	return iowriter.WriteAtomic(conflictAckPath(ssotDir), data, 0644)
 }
 
 // WriteConflictAck 记录（或覆盖）一条保留决定。

@@ -41,15 +41,18 @@ type Service struct {
 	file           string        // 下载完成的安装包路径（供 Install 使用）
 	dlTmpPath      string        // 当前下载的临时文件路径（.downloading），用于 Shutdown 兜底清理
 	expectedDigest string        // 发布页 sha256 摘要（hex）；与 s.file 同周期设置，Install 前 exec 复核
-	// tmpRemoved 记录 dlTmpPath 是否已被 Cleanup/Shutdown 移除。
-	// 用 int32 而非 bool：Go 对 struct 中 bool 字段不能直接原子读写，
-	// 用 int32 配合 atomic 操作保证 Shutdown 与下载 goroutine 的 os.Remove 互斥，
-	// 避免并发两次 Remove 同一文件产生多余的 ErrNotExist 系统调用。
+	// tmpRemoved 记录 dlTmpPath 是否已被 Shutdown/下载 goroutine 移除（0=未移除，1=已移除）。
+	// 用 int32 而非 bool：Go 对 struct 中 bool 字段不能直接原子读写。协议为
+	// "删除成功才置 1"：任一侧 os.Remove 失败（如 Windows 句柄占用）都不置位，
+	// 使另一侧仍可重试删除，避免两侧都跳过、临时文件永久残留。
 	tmpRemoved int32 // atomic: 0=未移除，1=已移除
 
 	// CheckUpdate 的 singleflight + 结果缓存状态（checkMu 保护）。
+	// checkCh 为 singleflight 广播通道：leader 完成/panic 后 close，任意数量
+	// 的并发 waiter 在 <-checkCh 返回后按存储字段重建结果（非单值传递，
+	// 避免第 3 个并发调用永久阻塞）。
 	checkMu      sync.Mutex
-	checkCh      chan checkRes
+	checkCh      chan struct{}
 	checkAt      time.Time
 	checkRateLtd bool
 	checkResult  *UpdateCheckResult
@@ -88,14 +91,23 @@ func (s *Service) Shutdown() {
 		dlDone = s.done
 	}
 	// 兜底清理：进程退出前无法等待 goroutine 完成时，直接删除临时文件。
-	// 用 atomic 标志与 goroutine 内的 removeTmp 互斥：已标记则跳过，
-	// 避免 goroutine 后续也 Remove 已删除的文件产生无意义的 ErrNotExist。
+	// 与 goroutine 内的 removeTmp 通过 tmpRemoved 标志协调，且"先删后置位"：
+	// Windows 上下载 goroutine 仍持有文件句柄时这里会删除失败，此时必须保持
+	// 标志为 0，让 goroutine 关闭句柄后的 removeTmp 重试删除；若先 CAS 置 1，
+	// goroutine 会因 CAS 失败直接返回，文件将永久残留。
 	tmpPath := s.dlTmpPath
 	if tmpPath != "" {
 		s.mu.Unlock()
-		if atomic.CompareAndSwapInt32(&s.tmpRemoved, 0, 1) {
-			if err := os.Remove(tmpPath); err != nil && !os.IsNotExist(err) {
-				log.Printf("update: remove stale tmp on shutdown %s: %v", tmpPath, err)
+		// 仅在无人认领时尝试；Load 为非 0 说明已被删除（或删过，重来一次只会
+		// 得到 ErrNotExist），跳过以避免与 goroutine 并发双删。
+		if atomic.LoadInt32(&s.tmpRemoved) == 0 {
+			if err := os.Remove(tmpPath); err != nil {
+				if !os.IsNotExist(err) {
+					// 删除失败（句柄占用等）：保持 tmpRemoved=0，留给下载 goroutine 重试
+					log.Printf("update: remove stale tmp on shutdown %s: %v", tmpPath, err)
+				}
+			} else {
+				atomic.StoreInt32(&s.tmpRemoved, 1)
 			}
 		}
 	} else {
@@ -110,7 +122,7 @@ func (s *Service) Shutdown() {
 	}
 }
 
-// downloadDir 返回默认下载目录（优先系统 Downloads，失败回退临时目录）。
+// downloadDir 返回默认下载目录（优先系统 Downloads，失败回退应用专用临时子目录）。
 func downloadDir() string {
 	switch runtime.GOOS {
 	case "windows":
@@ -138,7 +150,12 @@ func downloadDir() string {
 			}
 		}
 	}
-	return os.TempDir()
+	// 回退到应用专用子目录而非裸 os.TempDir()：cleanStaleDownloads 按
+	// ".downloading" 后缀清理该目录，若直接用共享临时目录会误删其他程序的
+	// 同名临时文件。限定在 AgentPack 子目录下，并先建目录以便后续写入。
+	fallback := filepath.Join(os.TempDir(), "AgentPack")
+	_ = os.MkdirAll(fallback, 0o755)
+	return fallback
 }
 
 // CleanStaleDownloads 清理 Downloads 目录中残留的 .downloading 临时文件。

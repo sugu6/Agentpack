@@ -125,10 +125,8 @@ func fetchWithBranchFallback(ctx context.Context, owner, repo, branch, fallback 
 // 不受 GitHub REST API rate limit 限制
 func fetchSkillCommitSHAImpl(ctx context.Context, owner, repo, branch string) (string, error) {
 	repoURL := fmt.Sprintf("https://github.com/%s/%s.git", owner, repo)
-	// 如果配置了 gh-proxy，使用代理 URL
-	if proxy := config.DefaultGitHubProxy; proxy != "" {
-		repoURL = proxy + repoURL
-	}
+	// 如果配置了 gh-proxy，使用代理 URL（拼接契约统一走 config.ProxyJoin）
+	repoURL = config.ProxyJoin(config.DefaultGitHubProxy, repoURL)
 	ref := fmt.Sprintf("refs/heads/%s", branch)
 
 	cmd := exec.CommandContext(ctx, "git", "ls-remote", repoURL, ref)
@@ -328,36 +326,15 @@ func (s *Store) CheckUpdates(reg *agents.Registry) []UpdateStatus {
 						continue
 					}
 					if fullPath == "" {
-						if truncated {
-							// 候选被限量截断（仓库含 SKILL.md 的目录过多）：本次
-							// 无法判定"来源无效"，保守跳过并保留来源关联——
-							// 删除关联是破坏性操作，且截断场景下目标目录可能
-							// 恰好排在候选之外。
-							log.Printf("CheckUpdates: %s: skill dir scan truncated, keeping source association",
-								sk.Directory)
-							results[i] = status
-							continue
-						}
-						// 名字与内容都定位不到：来源关联无效（如 skills.sh 元数据
-						// 与仓库实际不符），移除错误关联并静默跳过，不显示失败。
-						log.Printf("CheckUpdates: %s: source %s/%s has no matching skill, removing lock entry",
-							sk.Directory, sk.RepoOwner, sk.RepoName)
-						if rerr := RemoveAgentsLockEntry(sk.Directory); rerr != nil {
-							log.Printf("CheckUpdates: remove invalid lock entry for %s: %v", sk.Directory, rerr)
-						}
-						// 内存同步清理：仅删 lock 条目时，List 优先读内存，UI 仍
-						// 显示旧来源、UpdateSkill 仍用无效来源走完整失败链路，
-						// 直到下次 Load 才一致。清内存后 UI 立即回到"无来源"状态，
-						// 更新按钮随 RepoOwner 判空禁用，行为与 lock 文件一致。
-						s.mu.Lock()
-						if cur, ok := s.skills[sk.ID]; ok {
-							cur.RepoOwner = ""
-							cur.RepoName = ""
-							cur.RepoBranch = ""
-							cur.FullPath = ""
-							s.skills[sk.ID] = cur
-						}
-						s.mu.Unlock()
+						// 名字与内容都定位不到，不能据此判定"来源无效"：内容比对
+						// 基于本地 SKILL.md 字节，用户本地编辑即会失配；仓库结构/
+						// 路径变化也可能导致按名定位失败。删除 lock 条目并清空内存
+						// 来源是破坏性操作，会让合法来源关联被永久丢弃。因此保守
+						// 保留来源、记录日志并跳过本次更新判断（不显示失败）；仅当
+						// 远端树已成功获取且能确认该技能确实不存在时才允许清理
+						//（truncated 场景下更无法确认）。
+						log.Printf("CheckUpdates: %s: cannot locate skill dir in %s/%s (truncated=%v), keeping source association",
+							sk.Directory, sk.RepoOwner, sk.RepoName, truncated)
 						results[i] = status
 						continue
 					}
@@ -390,10 +367,10 @@ func (s *Store) CheckUpdates(reg *agents.Registry) []UpdateStatus {
 				cancelVerify()
 				if verr != nil {
 					ghCtx, cancelGH := context.WithTimeout(context.Background(), 30*time.Second)
-					ghTree, gerr := fetchGitHubFileTree(ghCtx, sk.RepoOwner, sk.RepoName, branch)
+					ghTree, ghModes, gerr := fetchGitHubFileTree(ghCtx, sk.RepoOwner, sk.RepoName, branch)
 					cancelGH()
 					if gerr == nil {
-						ghRT := remoteTree{files: ghTree, source: treeSourceGitHub, hashFn: gitBlobSHA1Hex}
+						ghRT := remoteTree{files: ghTree, modes: ghModes, source: treeSourceGitHub, hashFn: gitBlobSHA1Hex}
 						ghChanged, ghDiff := skillRemoteDiffWith(ghRT, fullPath, localDir)
 						if !ghDiff {
 							hasDiff = false
@@ -785,11 +762,11 @@ func (s *Store) updateSkillViaJsDelivr(ctx context.Context, sk Skill, fullPath, 
 // 用于 jsDelivr 树过时（CDN 缓存旧路径）的场景。GitHub 树是权威来源，
 // 下载 404 视为远端文件已删除/移动，跳过而不是整体失败。
 func (s *Store) updateSkillViaGitHubTree(ctx context.Context, sk Skill, fullPath, branch, ssotDir string, boundAgents []string, reg *agents.Registry, syncMethod SyncMethod) (Skill, error) {
-	tree, err := fetchGitHubFileTree(ctx, sk.RepoOwner, sk.RepoName, branch)
+	tree, modes, err := fetchGitHubFileTree(ctx, sk.RepoOwner, sk.RepoName, branch)
 	if err != nil {
 		return Skill{}, fmt.Errorf("fetch github file tree: %w", err)
 	}
-	rt := remoteTree{files: tree, source: treeSourceGitHub, hashFn: gitBlobSHA1Hex}
+	rt := remoteTree{files: tree, modes: modes, source: treeSourceGitHub, hashFn: gitBlobSHA1Hex}
 	return s.updateSkillViaTree(ctx, sk, fullPath, branch, ssotDir, boundAgents, reg, syncMethod, rt, true)
 }
 
@@ -864,6 +841,9 @@ func (s *Store) updateSkillViaTree(ctx context.Context, sk Skill, fullPath, bran
 				return
 			}
 			rel = safeRel
+			// 该文件在远程树中声明的权限位（GitHub tree 100755 → 0755）；
+			// jsDelivr 树无 mode 信息时为 0，writeTmpFile 回退 0644。
+			perm := remoteFilePerm(tree, fullPath, rel)
 
 			target := filepath.Join(ssotPath, filepath.FromSlash(rel))
 			if localHashEqual(target, rh, tree.hashFn) {
@@ -884,7 +864,7 @@ func (s *Store) updateSkillViaTree(ctx context.Context, sk Skill, fullPath, bran
 					// 先用 raw/代理重试一次；raw 也 404 才判定树过时切 GitHub 树。
 					data2, derr2 := downloadRemoteFile(downloadCtx, sk.RepoOwner, sk.RepoName, branch, remotePath, false)
 					if derr2 == nil {
-						if werr := writeTmpFile(tmpDir, rel, data2); werr != nil {
+						if werr := writeTmpFile(tmpDir, rel, data2, perm); werr != nil {
 							mu.Lock()
 							if firstErr == nil {
 								firstErr = werr
@@ -919,7 +899,7 @@ func (s *Store) updateSkillViaTree(ctx context.Context, sk Skill, fullPath, bran
 				cancelDownload()
 				return
 			}
-			if werr := writeTmpFile(tmpDir, rel, data); werr != nil {
+			if werr := writeTmpFile(tmpDir, rel, data, perm); werr != nil {
 				mu.Lock()
 				if firstErr == nil {
 					firstErr = werr
@@ -1096,7 +1076,10 @@ func safeRelPath(rel string) (string, error) {
 }
 
 // writeTmpFile 将下载内容写入临时目录中对应的相对路径。
-func writeTmpFile(tmpDir, rel string, data []byte) error {
+// perm 为远程树声明的权限位（GitHub tree 100755 → 0755）；为 0 时回退 0644。
+// 与 zip/tar 解压一致去除 group/other 写位（&^ 0022），保留可执行位——
+// mergeDirOverwrite 新建文件时会沿用该临时文件的权限位。
+func writeTmpFile(tmpDir, rel string, data []byte, perm os.FileMode) error {
 	safeRel, err := safeRelPath(rel)
 	if err != nil {
 		return err
@@ -1105,7 +1088,10 @@ func writeTmpFile(tmpDir, rel string, data []byte) error {
 	if err := os.MkdirAll(filepath.Dir(tmpTarget), 0755); err != nil {
 		return err
 	}
-	return os.WriteFile(tmpTarget, data, 0644)
+	if perm == 0 {
+		perm = 0644
+	}
+	return os.WriteFile(tmpTarget, data, perm&^0022)
 }
 
 // refreshSkillAfterFileUpdate 重新计算技能内容 hash 并刷新内存中的

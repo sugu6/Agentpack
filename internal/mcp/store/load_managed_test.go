@@ -3,8 +3,10 @@ package store
 import (
 	"path/filepath"
 	"testing"
+	"time"
 
 	"agentpack/internal/agents"
+	"agentpack/internal/database"
 	"agentpack/internal/dbutil"
 	"agentpack/internal/mcp/types"
 )
@@ -168,5 +170,32 @@ func TestLoad_KeepsServerWhenCommandChanged(t *testing.T) {
 	}
 	if list[0].Args[0] != "-y" || len(list[0].Args) < 2 || list[0].Args[1] != "alpha-pkg-v2" {
 		t.Errorf("server content should reflect new config, got %+v", list[0].Args)
+	}
+}
+
+// 回归测试：DB 中 args 损坏（非法 JSON）的行必须保留在基线中（args 置 nil），
+// 否则该服务器不进入基线，下一轮 syncDB 会把它的管理状态与绑定静默删除。
+func TestLoadManagedBaseline_KeepsCorruptArgsRow(t *testing.T) {
+	resetTestDB(t)
+	reg, _ := managedRegistry(t, twoServersConfig)
+
+	db := database.GetDB()
+	now := time.Now().Unix()
+	if _, err := db.Exec(`INSERT OR REPLACE INTO mcp_servers
+		(id, name, description, command, args, env, transport, config_type, url, timeout, source, source_id, installed_at, updated_at)
+		VALUES ('corrupt','alpha','','npx','{not-json','','stdio','','',0,'','',?,?)`, now, now); err != nil {
+		t.Fatal(err)
+	}
+
+	bl, err := NewStore().loadManagedBaseline(reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv, ok := bl.byID["corrupt"]
+	if !ok {
+		t.Fatal("args 损坏的行应从基线中保留，而不是被静默丢弃")
+	}
+	if srv.Args != nil {
+		t.Errorf("损坏的 args 应置 nil，got %v", srv.Args)
 	}
 }

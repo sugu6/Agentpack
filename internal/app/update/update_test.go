@@ -3,8 +3,12 @@ package update
 import (
 	"encoding/xml"
 	"html"
+	"io"
+	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // sampleAtomFeed 模拟 GitHub releases.atom 输出：首条为预发布，第二条为正式版。
@@ -161,5 +165,59 @@ func TestValidateDownloadURL(t *testing.T) {
 		if !c.wantOK && err == nil {
 			t.Errorf("ValidateDownloadURL(%q) = nil, want error", c.url)
 		}
+	}
+}
+
+// atomRoundTripper 拦截全部请求返回固定 atom 订阅源，并统计请求次数与注入延迟，
+// 用于把 CheckUpdate 的 GitHub 请求隔离到本地（不改 Repo/URL 常量）。
+type atomRoundTripper struct {
+	body  string
+	delay time.Duration
+	hits  int32
+}
+
+func (rt *atomRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	atomic.AddInt32(&rt.hits, 1)
+	if rt.delay > 0 {
+		time.Sleep(rt.delay)
+	}
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{},
+		Body:       io.NopCloser(strings.NewReader(rt.body)),
+		Request:    req,
+	}, nil
+}
+
+// TestCheckUpdate_SingleflightBroadcastsToAllWaiters 钉住 singleflight 的广播语义：
+// 任意数量的并发 CheckUpdate 都必须返回，且只产生一次网络请求。
+// 旧实现用带缓冲的单值通道传递结果，第 3 个及之后的 waiter 会永久阻塞。
+func TestCheckUpdate_SingleflightBroadcastsToAllWaiters(t *testing.T) {
+	rt := &atomRoundTripper{body: sampleAtomFeed, delay: 100 * time.Millisecond}
+	orig := downloadHTTPClient
+	downloadHTTPClient = &http.Client{Transport: rt}
+	t.Cleanup(func() { downloadHTTPClient = orig })
+
+	svc := NewService(nil, func() string { return "en" }, nil, nil, nil)
+
+	const n = 5
+	done := make(chan struct{}, n)
+	for i := 0; i < n; i++ {
+		go func() {
+			if _, err := svc.CheckUpdate(); err != nil {
+				t.Errorf("CheckUpdate: %v", err)
+			}
+			done <- struct{}{}
+		}()
+	}
+	for i := 0; i < n; i++ {
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("concurrent CheckUpdate #%d blocked: singleflight must broadcast to all waiters", i+1)
+		}
+	}
+	if h := atomic.LoadInt32(&rt.hits); h != 1 {
+		t.Errorf("network requests = %d, want 1 (singleflight must coalesce concurrent checks)", h)
 	}
 }

@@ -401,7 +401,7 @@ func TestFetchGitHubFileTree_ParsesBlobs(t *testing.T) {
 	gitHubAPIBases = []string{server.URL}
 	defer func() { gitHubAPIBases = orig }()
 
-	files, err := fetchGitHubFileTree(context.Background(), "owner", "repo", "main")
+	files, _, err := fetchGitHubFileTree(context.Background(), "owner", "repo", "main")
 	if err != nil {
 		t.Fatalf("fetchGitHubFileTree: %v", err)
 	}
@@ -880,10 +880,11 @@ func TestCheckUpdates_LocatesByContentWhenNameMismatch(t *testing.T) {
 	}
 }
 
-// TestCheckUpdates_RemovesInvalidSourceWhenNotLocatable 验证：回填关联的仓库
-// 中实际不存在该技能（名字与内容都定位不到）时，检查更新静默跳过（不显示失败）
-// 并移除错误的 lock 来源，避免反复失败。
-func TestCheckUpdates_RemovesInvalidSourceWhenNotLocatable(t *testing.T) {
+// TestCheckUpdates_KeepsSourceWhenNotLocatable 验证：仓库中名字与内容都定位不到
+// 时不再删除来源关联——内容比对基于本地 SKILL.md 字节，用户本地编辑即会失配，
+// 删除来源会让合法关联被永久丢弃。因此保守保留 lock 与内存来源并静默跳过
+//（不显示失败）。
+func TestCheckUpdates_KeepsSourceWhenNotLocatable(t *testing.T) {
 	setupTestHome(t)
 	tmp := t.TempDir()
 	ssotDir := filepath.Join(tmp, "ssot")
@@ -921,13 +922,16 @@ func TestCheckUpdates_RemovesInvalidSourceWhenNotLocatable(t *testing.T) {
 		t.Fatalf("expected 1 result, got %d", len(results))
 	}
 	if results[0].Error != "" {
-		t.Fatalf("expected no error for invalid source, got %s", results[0].Error)
+		t.Fatalf("expected no error when source not locatable, got %s", results[0].Error)
 	}
 	if results[0].HasUpdate {
-		t.Fatalf("expected no update for invalid source, got %+v", results[0])
+		t.Fatalf("expected no update when source not locatable, got %+v", results[0])
 	}
-	if _, ok := ParseAgentsLock()["demo"]; ok {
-		t.Fatal("expected invalid lock entry to be removed")
+	if _, ok := ParseAgentsLock()["demo"]; !ok {
+		t.Fatal("expected lock source association to be preserved, not removed")
+	}
+	if sk, ok := store.Get("skill:demo"); !ok || sk.RepoOwner != "owner" || sk.RepoName != "repo" {
+		t.Fatalf("expected in-memory source preserved, got %+v", sk)
 	}
 }
 

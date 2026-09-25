@@ -49,17 +49,18 @@ var (
 const jsDelivrDefaultBranchAlias = "master"
 
 // githubURL 构造 GitHub API URL，按需套用应用层代理 DefaultGitHubProxy。
-// 与 update.go/skills 的代理策略一致；仅在 https URL 上套用，测试中
-// 覆盖 githubAPIBase 为本地 http:// 服务器时不受影响。
+// 仅在 https URL 上套用，测试中覆盖 githubAPIBase 为本地 http:// 服务器时
+// 不受影响。拼接契约统一走 config.ProxyJoin（保留目标 URL 的 scheme，
+// 与 skills/tarball、update/download、skills/update 的 git ls-remote 一致）。
+//
+// 注意：本仓库 internal/skills/remote.go:61-62 记录 gh-proxy 这类代理对
+// api.github.com 路径普遍返回 403（仅放行 raw/codeload）。因此本函数套代理
+// 属"尽力而为"的回退——直连优先的编排在 remote.go 的 gitHubAPIBases 候选
+// 列表中（direct 在前，代理在后），本函数只在已选定带代理的 base 时才生效。
 func githubURL(path string) string {
 	u := githubAPIBase + path
 	if strings.HasPrefix(u, "https://") {
-		if p := strings.TrimSpace(config.DefaultGitHubProxy); p != "" && !strings.HasPrefix(u, p) {
-			// TrimSuffix 防尾斜杠代理配置拼出 // 双斜杠路径，
-			// 部分代理服务器对双斜杠返回 404
-			p = strings.TrimSuffix(p, "/")
-			u = p + strings.TrimPrefix(strings.TrimPrefix(u, "https://"), "http://")
-		}
+		u = config.ProxyJoin(config.DefaultGitHubProxy, u)
 	}
 	return u
 }

@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/BurntSushi/toml"
 )
@@ -557,6 +558,24 @@ func writeTomlValue(buf *bytes.Buffer, val any) {
 			writeTomlValue(buf, v[k])
 		}
 		buf.WriteByte('}')
+	case time.Time:
+		// BurntSushi 把 TOML datetime 解码为 time.Time（本地日期/时间分别带
+		// "date-local"/"time-local" 的 Location）。若走 json.Marshal 兜底会写成
+		// JSON 字符串，整表重写后该键的类型改变（如 Codex 的 oauth 过期时间等），
+		// 必须按其原生 TOML 形态写出。
+		buf.WriteString(formatTomlTime(v))
+	case []map[string]any:
+		// TOML 数组表（[[key]]）在 map[string]any 中解码为 []map[string]any；
+		// json.Marshal 兜底会把它降级为 JSON 字符串。按 TOML 内联表数组原生
+		// 写出，保持"表数组"语义与类型。
+		buf.WriteByte('[')
+		for i, item := range v {
+			if i > 0 {
+				buf.WriteString(", ")
+			}
+			writeTomlValue(buf, item)
+		}
+		buf.WriteByte(']')
 	default:
 		// 未知类型无法直接映射为合法 TOML，尝试 JSON 序列化作为字符串值兜底，
 		// 避免产生无效 TOML 导致整个配置文件不可解析
@@ -567,6 +586,20 @@ func writeTomlValue(buf *bytes.Buffer, val any) {
 			return
 		}
 		buf.WriteString(tomlQuoteValue(string(b)))
+	}
+}
+
+// formatTomlTime 把 BurntSushi 解码出的 time.Time 还原为 TOML datetime 字面量。
+// v1.6 对本地日期/时间用特殊 Location 标记（"date-local"/"time-local"），
+// 需按对应精度输出，否则纯日期会被写成带时间的 offset datetime（类型改变）。
+func formatTomlTime(t time.Time) string {
+	switch t.Location().String() {
+	case "date-local":
+		return t.Format("2006-01-02")
+	case "time-local":
+		return t.Format("15:04:05.999999999")
+	default:
+		return t.Format(time.RFC3339Nano)
 	}
 }
 

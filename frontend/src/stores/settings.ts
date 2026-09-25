@@ -151,18 +151,37 @@ export const useSettingsStore = defineStore('settings', () => {
 
   async function update(next: AppSettings) {
     pendingWrite++
+    // 发起保存时的本地状态快照：用于识别"保存期间又被用户改动"的字段。
+    // 深拷贝，否则嵌套对象（marketSources）的就地修改会因引用相同而漏判。
+    const callTime: AppSettings = JSON.parse(JSON.stringify(config.value))
     try {
       await api.settings.update(next)
       writeVersion++
-      // 合并保留旁路字段：SettingsView 的 refreshSkillRepos 会直接更新
-      // config.skillRepos（跳过本 store 方法），在途 update() 的整体覆盖
-      // （config.value = next）会抹掉这些变更，导致 UI 仓库列表凭空消失。
-      // 以当前 config 中的 skillRepos 为准（它可能比 next 快照更新）。
-      config.value = { ...next, skillRepos: config.value.skillRepos }
+      // 保存成功后的回写必须合并"保存期间产生的本地修改"：next 是发起保存前
+      // 的快照，直接 config.value = next 会把保存期间用户的新改动（如再切换
+      // 主题/语言）静默丢弃并回滚成旧值。
+      // 逐字段比对"发起时"与"现在"的本地状态：仅当该字段在保存期间被改过
+      // （值已变）时才保留当前值，其余字段以本次提交的 next 为准。
+      const current = config.value
+      const merged: AppSettings = { ...next }
+      for (const key of Object.keys(next) as Array<keyof AppSettings>) {
+        // skillRepos 单独处理：SettingsView 的 refreshSkillRepos 会旁路写入
+        // config.skillRepos（跳过本 store 方法），它可能比 next 快照更新。
+        if (key === 'skillRepos') continue
+        if (JSON.stringify(current[key]) !== JSON.stringify(callTime[key])) {
+          // 保存期间该字段又被本地修改：保留本地新值，避免被旧快照回滚
+          ;(merged as unknown as Record<string, unknown>)[key as string] = current[key]
+        }
+      }
+      // 以当前 config 中的 skillRepos 为准（可能比 next 快照更新）
+      merged.skillRepos = current.skillRepos
+      config.value = merged
       loaded.value = true
-      await applyTheme(next.theme)
+      // 应用"合并后"的主题/语言：若保存期间用户改过主题，直接应用 next.theme
+      // 会把界面回滚成旧主题
+      await applyTheme(merged.theme)
       // 同步 i18n 语言(立即生效,不等 settings:changed 事件回环)
-      setLanguage(resolveLanguage(next.language))
+      setLanguage(resolveLanguage(merged.language))
     } catch (e) {
       const apiError = ApiError.from(e)
       error.value = apiError.message

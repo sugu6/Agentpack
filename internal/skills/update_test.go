@@ -941,7 +941,7 @@ func TestSafeRelPath(t *testing.T) {
 func TestWriteTmpFile_RejectsTraversal(t *testing.T) {
 	tmpDir := t.TempDir()
 	evil := "..\\..\\..\\..\\..\\Windows\\System32\\evil.txt"
-	if err := writeTmpFile(tmpDir, evil, []byte("x")); err == nil {
+	if err := writeTmpFile(tmpDir, evil, []byte("x"), 0); err == nil {
 		t.Fatalf("writeTmpFile should reject path traversal %q", evil)
 	}
 	if _, err := os.Stat(filepath.Join(tmpDir, "..", "..", "..", "..", "..", "Windows", "System32", "evil.txt")); err == nil {

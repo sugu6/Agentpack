@@ -6,7 +6,7 @@ import { useAgentsStore } from '@/stores/agents'
 import { useSettingsStore } from '@/stores/settings'
 import { useMcpStore } from '@/stores/mcp'
 import { useSkillsStore } from '@/stores/skills'
-import { api, events, type UpdateCheckResult, type SkillSourceBackfillResult } from '@/lib/api'
+import { api, events, type SkillSourceBackfillResult } from '@/lib/api'
 import { TooltipProvider, Toaster } from '@/components/ui'
 import { useToast } from '@/composables/useToast'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
@@ -143,36 +143,8 @@ onMounted(async () => {
 
   // 兜底查询自动来源回填结果（事件监听可能晚于回填完成；无结果时静默）
   api.skills.lastBackfillResult().then(handleBackfillResult).catch(() => {})
-
-  // 首次启动时静默检查更新：使用 sessionStorage 记录检测状态。
-  // 用 sessionStorage 而非 localStorage：每次应用启动都应检查一次最新版本，
-  // 但同一会话内（HMR/组件重挂载）不重复检测。
-  const UPDATE_CHECK_KEY = 'agentpack_update_checked_session'
-  // sessionStorage 在禁用 Cookie 的 WebView2 环境可能抛 SecurityError
-  //（如隐私模式），未捕获异常会使 onMounted 的 Promise 链整体拒绝
-  let updateChecked = false
-  try {
-    updateChecked = !!sessionStorage.getItem(UPDATE_CHECK_KEY)
-    if (!updateChecked) sessionStorage.setItem(UPDATE_CHECK_KEY, '1')
-  } catch {
-    // 存取失败按"未检测"处理（多检测一次无害）
-  }
-  if (!updateChecked) {
-    // 后台静默执行，不干扰用户操作
-    api.system.checkUpdate().then((result: UpdateCheckResult) => {
-      if (!mounted.value) return
-      if (result.hasUpdate) {
-        // 有更新时按现有提示机制处理（toast + UpdateDialog）
-        toast.success(t('settings.toast.foundNewVersion', { latest: result.latestVersion, current: result.currentVersion }), {
-          duration: 5000,
-        })
-        events.emit('app:update-available', result)
-      }
-      // 无更新时不显示任何提示，静默处理
-    }).catch(() => {
-      // 检测失败静默忽略，不打扰用户
-    })
-  }
+  // 注：更新检查已按项目约定移到"进入设置页时触发一次"（见 SettingsView），
+  // 避免刚开软件就弹更新提示。
 })
 
 onBeforeUnmount(() => {

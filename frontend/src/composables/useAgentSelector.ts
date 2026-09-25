@@ -16,8 +16,18 @@ export function useAgentSelector(options?: { defaultAllSelected?: boolean }) {
   const allAgentIds = computed(() =>
     activeGroups.value.flatMap(g => g.ids.filter(id => agentsStore.activeIds.get(id)))
   )
-  const allSelected = computed(() => allAgentIds.value.length > 0 && selectedAgentIds.value.size === allAgentIds.value.length)
-  const someSelected = computed(() => selectedAgentIds.value.size > 0 && selectedAgentIds.value.size < allAgentIds.value.length)
+  const allSelected = computed(() =>
+    allAgentIds.value.length > 0 && allAgentIds.value.every(id => selectedAgentIds.value.has(id)),
+  )
+  // 按成员判定而非比较数量：选择集可能残留已失活 id，
+  // 用 size === allAgentIds.length 会误判为"全选"（与组级
+  // isGroupFullySelected 的语义保持一致）
+  const someSelected = computed(() => {
+    const total = allAgentIds.value.length
+    if (total === 0) return false
+    const selectedCount = allAgentIds.value.filter(id => selectedAgentIds.value.has(id)).length
+    return selectedCount > 0 && selectedCount < total
+  })
 
   function isGroupSelected(group: { ids: string[] }): boolean {
     // 只按组内 active 成员判断：disabled 成员不可选、不计入选中状态

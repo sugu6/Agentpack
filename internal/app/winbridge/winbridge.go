@@ -26,6 +26,8 @@ var (
 	procGetStockObject   = gdi32Proc.NewProc("GetStockObject")
 	procDeleteObject     = gdi32Proc.NewProc("DeleteObject")
 	procSetWindowPos     = user32Proc.NewProc("SetWindowPos")
+	procGetAncestor      = user32Proc.NewProc("GetAncestor")
+	procIsWindowVisible  = user32Proc.NewProc("IsWindowVisible")
 	procDwmSetWindowAttr = dwmapiProc.NewProc("DwmSetWindowAttribute")
 	procDefWindowProc    = user32Proc.NewProc("DefWindowProcW")
 )
@@ -55,6 +57,8 @@ const (
 	swpNoActivate             = 0x0010
 	swpShowWindow             = 0x0040
 	dwmwaUseImmersiveDarkMode = 20
+	// GA_ROOT：GetAncestor 取值，返回 HWND 所属的顶层（根）窗口
+	gaRoot = 2
 )
 
 // hwndCache 缓存已处理的窗口句柄
@@ -70,6 +74,23 @@ var (
 
 func init() {
 	hwndCache.set = make(map[uintptr]struct{})
+}
+
+// isTopLevelVisibleWindow 判断 hwnd 是否为顶层且可见的窗口。
+// WM_ACTIVATE 也会送达各辅助/子窗口，首个到达者未必是主窗口；保守收紧为
+// GetAncestor(GA_ROOT)==hwnd（排除子窗口）且 IsWindowVisible（排除隐藏的
+// 辅助窗口）。若无法判定则返回 false，主窗口 HWND 保持为 0，等待真正的
+// 主窗口激活后再记录——不影响 fixBackground 与 WM_NCACTIVATE 的 Mica 修补。
+func isTopLevelVisibleWindow(hwnd uintptr) bool {
+	if hwnd == 0 {
+		return false
+	}
+	root, _, _ := procGetAncestor.Call(hwnd, gaRoot)
+	if root != hwnd {
+		return false
+	}
+	visible, _, _ := procIsWindowVisible.Call(hwnd)
+	return visible != 0
 }
 
 // GetMainWindowHWND 返回主窗口句柄。
@@ -103,12 +124,15 @@ func WndProcHook(hwnd uintptr, msg uint32, wParam, lParam uintptr) (uintptr, boo
 		hwndCache.mu.Unlock()
 		if !done {
 			fixBackground(hwnd)
-			// 缓存主窗口 HWND 供 SetTheme 使用
-			hwndMu.Lock()
-			if mainWindowHWND == 0 {
-				mainWindowHWND = hwnd
+			// 仅接受"顶层且可见"的窗口作为主窗口（见 isTopLevelVisibleWindow），
+			// 避免把隐藏的辅助窗口误认作主窗口导致 SetTheme 应用到错误 HWND。
+			if isTopLevelVisibleWindow(hwnd) {
+				hwndMu.Lock()
+				if mainWindowHWND == 0 {
+					mainWindowHWND = hwnd
+				}
+				hwndMu.Unlock()
 			}
-			hwndMu.Unlock()
 		}
 		// 系统主题切换（WM_SETTINGCHANGE/ImmersiveColorSet）由 wails 内置的
 		// events.Windows.SystemThemeChanged 事件处理，见 RegisterSystemThemeHook。

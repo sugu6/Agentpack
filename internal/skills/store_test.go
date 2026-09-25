@@ -328,6 +328,79 @@ func TestUninstall_ClearsAgentsLockEntry(t *testing.T) {
 	}
 }
 
+// TestLoad_PrunesStaleLockEntriesAndPreventsSourceInheritance 验证：
+// 技能目录被外部删除后，Load 剪除其失效的 lock 条目（SkillPath 指向的目录不存在）；
+// 重新导入同名技能（repo 参数为空）不再继承旧仓库来源。
+// 同时验证安全边界：SkillPath 指向 SSOT 之外、或 SkillPath 为空的条目必须保留
+//（lock 文件可能与 CC Switch 等工具共用）。
+func TestLoad_PrunesStaleLockEntriesAndPreventsSourceInheritance(t *testing.T) {
+	setupSkillCapableAgentHome(t)
+	tmp := t.TempDir()
+	ssotDir := filepath.Join(tmp, "ssot")
+
+	// 失效条目：曾安装 foo 后目录被外部删除（SSOT 内目录不存在）
+	if err := WriteAgentsLock(AgentsLockEntry{
+		Directory:  "foo",
+		Source:     "old/repo",
+		SourceType: "github",
+		SourceURL:  "https://github.com/old/repo",
+		SkillPath:  filepath.Join(ssotDir, "foo"),
+		Branch:     "main",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// 其他工具的条目：SkillPath 指向 SSOT 之外 → 必须保留
+	if err := WriteAgentsLock(AgentsLockEntry{
+		Directory:  "other-tool",
+		Source:     "other/repo",
+		SourceType: "github",
+		SourceURL:  "https://github.com/other/repo",
+		SkillPath:  filepath.Join(tmp, "elsewhere", "other-tool"),
+		Branch:     "main",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// SkillPath 为空的条目（无归属证据）→ 必须保留
+	if err := WriteAgentsLock(AgentsLockEntry{
+		Directory:  "no-path",
+		Source:     "nobody/repo",
+		SourceType: "github",
+		SourceURL:  "https://github.com/nobody/repo",
+		Branch:     "main",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	store := NewStore(ssotDir, SyncMethodCopy)
+	reg := newSkillTestRegistry()
+	if err := store.Load(reg); err != nil {
+		t.Fatal(err)
+	}
+
+	lockData := ParseAgentsLock()
+	if _, ok := lockData["foo"]; ok {
+		t.Fatal("stale lock entry (dir removed externally) must be pruned on Load")
+	}
+	if _, ok := lockData["other-tool"]; !ok {
+		t.Fatal("lock entry outside SSOT must be preserved")
+	}
+	if _, ok := lockData["no-path"]; !ok {
+		t.Fatal("lock entry without skillPath must be preserved")
+	}
+
+	// 重新导入同名技能（zip/本地导入路径，repo 参数为空）：不得继承旧来源
+	src := filepath.Join(tmp, "src")
+	makeSkillDir(t, src, "foo", "---\nname: foo\n---\n# new content")
+	sk, err := store.Import(filepath.Join(src, "foo"), []string{"claude-code"}, reg, "", "")
+	if err != nil {
+		t.Fatalf("re-import: %v", err)
+	}
+	if sk.RepoOwner != "" || sk.RepoName != "" || sk.RepoBranch != "" {
+		t.Fatalf("re-imported skill must not inherit stale source, got owner=%q repo=%q branch=%q",
+			sk.RepoOwner, sk.RepoName, sk.RepoBranch)
+	}
+}
+
 func TestMigrateStorage_ResyncErrorsAreReturned(t *testing.T) {
 	setupSkillCapableAgentHome(t)
 	tmp := t.TempDir()

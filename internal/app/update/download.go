@@ -64,16 +64,18 @@ var downloadHTTPClient = &http.Client{
 	Transport: &http.Transport{
 		ResponseHeaderTimeout: 30 * time.Second,
 	},
-	CheckRedirect: func(req *http.Request, via []*http.Request) error {
-		// 保留默认策略的10跳上限
-		if len(via) >= 10 {
-			return fmt.Errorf("stopped after 10 redirects")
-		}
-		if !allowedRedirectHost(req.URL.Hostname()) {
-			return fmt.Errorf("refuse redirect to untrusted host: %s", req.URL.Hostname())
-		}
-		return nil
-	},
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			// 保留默认策略的10跳上限
+			if len(via) >= 10 {
+				return fmt.Errorf("stopped after 10 redirects")
+			}
+			// 重定向跳逐跳校验（P2-3）。首跳 URL 由 ValidateDownloadURL 白名单
+			// + 代理改写确定性构造，不走此校验（测试中 httptest 代理亦依赖此）。
+			if !allowedRedirectHost(req.URL.Hostname()) {
+				return fmt.Errorf("refuse redirect to untrusted host: %s", req.URL.Hostname())
+			}
+			return nil
+		},
 }
 
 // ---------- 下载 ----------
@@ -267,10 +269,10 @@ func (s *Service) startDownload(url string, offset int64, resume bool) error {
 		}
 	}
 	// 仅非续传且配置了代理时改写（空代理 = 直连，与 market/skills 的空值语义一致）。
-	// 原 !HasPrefix(url, proxy) 对已过 github.com 白名单的 url 恒真，唯一真实
-	// 判别的是空串前缀特例，故显式表达为 != ""。
-	if !resume && config.DefaultGitHubProxy != "" {
-		url = config.DefaultGitHubProxy + strings.TrimPrefix(strings.TrimPrefix(url, "https://"), "http://")
+	// 拼接契约统一走 config.ProxyJoin（保留目标 URL 的 scheme，与 skills 链路一致），
+	// 同时避免用户配置不带尾斜杠时拼出 "gh-proxy.comgithub.com/..." 缺斜杠畸形。
+	if !resume {
+		url = config.ProxyJoin(config.DefaultGitHubProxy, url)
 	}
 
 	// 总时长限制：防止服务器接受连接后不发送数据导致 goroutine 永久阻塞
@@ -361,12 +363,16 @@ func (s *Service) startDownload(url string, offset int64, resume bool) error {
 				f.Close()
 				f = nil
 			}
-			// 与 Shutdown 的 tmpRemoved 原子标志互斥：已移除则跳过，
-			// 避免与 Shutdown 并发调用 os.Remove 产生多余的 ErrNotExist。
+			// 与 Shutdown 的 tmpRemoved 标志互斥：CAS 认领，已认领则跳过，
+			// 避免与 Shutdown 并发调用 os.Remove。
 			if !atomic.CompareAndSwapInt32(&s.tmpRemoved, 0, 1) {
 				return
 			}
-			os.Remove(dlTmpPath)
+			// 句柄已关闭后 Remove 仍失败（权限/占用）：回滚标志，使标志如实
+			// 反映"未删除"，避免 Shutdown 的兜底路径看到 1 而跳过删除。
+			if err := os.Remove(dlTmpPath); err != nil && !os.IsNotExist(err) {
+				atomic.StoreInt32(&s.tmpRemoved, 0)
+			}
 		}
 
 		// fail 统一错误收尾：清理临时文件（含句柄关闭）+ 状态置 Error + 错误事件；

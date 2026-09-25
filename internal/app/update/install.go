@@ -15,12 +15,19 @@ import (
 
 // execInstaller 创建并启动安装器进程（按平台选择打开方式）。
 // 提取为包级变量作为测试注入点：测试替换它以断言 Install 的启动行为而不真执行。
-// 注意：Windows 下直接使用 CreateProcess（exec.Command(path)）启动。
+// 注意：Windows 下 .exe 直接使用 CreateProcess（exec.Command(path)）启动；
+// .msi 本身不是可执行体，必须交给 msiexec /i 由 Windows Installer 服务处理。
 // 安装器为 machine 级，launch 时会触发提权、以全新 STARTUPINFO 重新拉起，
-// 故不压制安装器窗口。不经 cmd.exe，避免文件名中的 & 等元字符导致命令注入。
+// 故不压制安装器窗口。路径作为独立 argv 传入、不经 cmd.exe，
+// 避免文件名中的 & 等元字符导致命令注入。
 var execInstaller = func(path string) error {
 	switch runtime.GOOS {
 	case "windows":
+		// .msi 双击/直接 CreateProcess 都无法执行（无关联可执行入口），
+		// 放行却启动失败会让用户只看到笼统的"启动安装程序失败"，故显式走 msiexec。
+		if strings.EqualFold(filepath.Ext(path), ".msi") {
+			return exec.Command("msiexec", "/i", path).Start()
+		}
 		return exec.Command(path).Start()
 	case "darwin":
 		return exec.Command("open", path).Start()
@@ -94,7 +101,12 @@ func validateUpdateInstaller(path string) error {
 			return fmt.Errorf("invalid installer type for macos: %s (expected .dmg)", ext)
 		}
 	case "linux":
-		if ext := strings.ToLower(filepath.Ext(path)); ext != ".tar.gz" && ext != ".tgz" {
+		// filepath.Ext("x.tar.gz") 只返回 ".gz"，故不能拿 Ext 比对 ".tar.gz"
+		// （该比较恒不相等、所有 Linux 资产都会被判 invalid）。改用小写全路径
+		// 后缀判定 .tar.gz，.tgz 则用 Ext 精确匹配。
+		lower := strings.ToLower(path)
+		ext := filepath.Ext(lower)
+		if !strings.HasSuffix(lower, ".tar.gz") && ext != ".tgz" {
 			return fmt.Errorf("invalid installer type for linux: %s (expected .tar.gz or .tgz)", ext)
 		}
 	}

@@ -67,6 +67,22 @@ const githubEnabled = isSourceEnabled('github')
 const skillsSourceEnabled = computed(() => skillsShEnabled.value || githubEnabled.value)
 const mcpSourceAvailable = registryEnabled
 
+// 重校 skillSource，保证其始终指向可用来源。
+// 场景：从设置页关闭当前来源（如 GitHub）后返回本页，skillSource 仍停留在
+// 'github'，会导致两个来源按钮都未选中、文案与请求来源错位。
+// 返回 true 表示已发生修正。
+function correctSkillSource(): boolean {
+  if (skillSource.value === 'github' && !githubEnabled.value && skillsShEnabled.value) {
+    skillSource.value = 'skills-sh'
+    return true
+  }
+  if (skillSource.value === 'skills-sh' && !skillsShEnabled.value && githubEnabled.value) {
+    skillSource.value = 'github'
+    return true
+  }
+  return false
+}
+
 // 已加载条数(用于 LoadMore 进度显示)
 // serversLoaded 显示筛选后的数量(用户实际看到的),total 是 API 返回的总数
 const serversLoaded = computed(() => filteredServers.value.length)
@@ -81,6 +97,12 @@ onActivated(() => {
   mounted.value = true
   unsubscribeReposChanged = events.on('skills:repos-changed', onReposChanged)
   unsubscribeMcpChanged = events.on('mcp:changed', onMcpChanged)
+  // 已初始化后来源开关可能被设置页改动：重校 skillSource（见 correctSkillSource）。
+  // 若修正了来源且当前已有搜索结果，则清空旧来源结果，避免结果与来源/文案错位。
+  if (initialized.value && correctSkillSource() && skillsSearched.value) {
+    skillsSearched.value = false
+    market.clearSkills()
+  }
   // 若首次初始化在异步等待中被 deactivate 打断，这里补跑，避免列表一直为空
   ensureInit()
   // 已初始化后再次激活也要检查版本号：在 Settings 页改仓库期间发出的
@@ -115,9 +137,7 @@ async function initView(): Promise<void> {
   // 先修正源、再检查仓库变化：onReposChanged 会以 skillSource 发起搜索，
   // 若 github 禁用、skills-sh 启用，默认 'github' 会请求已禁用源，
   // 且该请求发起于源修正之前不会被丢弃（守卫只看 skillSource 与开关）
-  if (!githubEnabled.value && skillsShEnabled.value) {
-    skillSource.value = 'skills-sh'
-  }
+  correctSkillSource()
   if (settings.isSkillReposChanged()) {
     await onReposChanged()
   }

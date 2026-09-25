@@ -12,8 +12,6 @@ import (
 	"strings"
 	"time"
 	"unicode"
-
-	"agentpack/internal/iowriter"
 )
 
 // machineKey 从机器特定标识符派生 AES-256 密钥
@@ -54,21 +52,40 @@ func deriveMachineKey() ([]byte, error) {
 	}
 	keyDir := filepath.Join(home, ".agentpack")
 	keyFile := filepath.Join(keyDir, ".machine_key")
+	return loadOrCreateMachineKey(keyFile)
+}
 
-	// 1. 优先读取已持久化的密钥
-	if data, err := os.ReadFile(keyFile); err == nil {
-		if len(data) == 32 {
-			return data, nil
+// loadOrCreateMachineKey 读取持久化密钥；不存在时生成新密钥并用
+// O_CREATE|O_EXCL 独占创建。两个实例同时首启时只有一个能创建成功并写入
+// 新密钥，落败方（err 为 IsExist）读取现有密钥使用，绝不覆盖——避免各自
+// WriteAtomic 互相覆盖导致落败方加密的数据重启后无法解密。
+func loadOrCreateMachineKey(keyFile string) ([]byte, error) {
+	// 1. 优先读取已持久化的密钥。
+	// 长度不对时短暂重试：并发首启的另一实例可能刚用 O_EXCL 建好文件、
+	// 尚未写完（此刻读到 0/短文件），立即判定"损坏"会把对方正在写入的
+	// 密钥误隔离。重试后仍不完整才按损坏处理。
+	for attempt := 0; ; attempt++ {
+		data, err := os.ReadFile(keyFile)
+		if err == nil {
+			if len(data) == 32 {
+				return data, nil
+			}
+			if attempt < 20 {
+				time.Sleep(2 * time.Millisecond)
+				continue
+			}
+			// 密钥文件存在但损坏：隔离损坏文件并返回错误，避免静默换新密钥导致旧数据永久无法解密。
+			// 隔离名带纳秒时间戳：Windows 上 os.Rename 不覆盖已存在文件，若上次事故已留下
+			// .corrupt 文件，无时间戳的固定名会导致本次隔离永远失败。
+			corrupt := fmt.Sprintf("%s.corrupt.%d", keyFile, time.Now().UnixNano())
+			if rerr := os.Rename(keyFile, corrupt); rerr != nil {
+				return nil, fmt.Errorf("derive machine key: key file corrupt (%d bytes) and isolate failed: %w", len(data), rerr)
+			}
+			return nil, fmt.Errorf("derive machine key: key file corrupt (%d bytes), isolated to %s; previously encrypted data cannot be decrypted", len(data), corrupt)
 		}
-		// 密钥文件存在但损坏：隔离损坏文件并返回错误，避免静默换新密钥导致旧数据永久无法解密。
-		// 隔离名带纳秒时间戳：Windows 上 os.Rename 不覆盖已存在文件，若上次事故已留下
-		// .corrupt 文件，无时间戳的固定名会导致本次隔离永远失败。
-		corrupt := fmt.Sprintf("%s.corrupt.%d", keyFile, time.Now().UnixNano())
-		if rerr := os.Rename(keyFile, corrupt); rerr != nil {
-			return nil, fmt.Errorf("derive machine key: key file corrupt (%d bytes) and isolate failed: %w", len(data), rerr)
+		if os.IsNotExist(err) {
+			break // 不存在 → 进入创建流程
 		}
-		return nil, fmt.Errorf("derive machine key: key file corrupt (%d bytes), isolated to %s; previously encrypted data cannot be decrypted", len(data), corrupt)
-	} else if !os.IsNotExist(err) {
 		return nil, fmt.Errorf("derive machine key: read key file: %w", err)
 	}
 
@@ -79,14 +96,52 @@ func deriveMachineKey() ([]byte, error) {
 		panic(fmt.Sprintf("crypto/rand unavailable: %v (encryption key cannot be safely generated)", err))
 	}
 
-	// 3. 原子持久化密钥供后续使用，避免写入中途崩溃留下残缺密钥文件
-	if err := os.MkdirAll(keyDir, 0700); err != nil {
+	// 3. 独占创建：只有创建成功的实例写入新密钥；已存在（err 为 IsExist）时
+	//    读取现有密钥使用，绝不覆盖。
+	if err := os.MkdirAll(filepath.Dir(keyFile), 0700); err != nil {
 		return nil, fmt.Errorf("persist machine key: mkdir: %w", err)
 	}
-	if err := iowriter.WriteAtomic(keyFile, key, 0600); err != nil {
-		return nil, fmt.Errorf("persist machine key: writefile: %w", err)
+	f, err := os.OpenFile(keyFile, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	if err != nil {
+		if os.IsExist(err) {
+			// 竞态：另一实例已创建密钥文件并正在写入，读取方可能读到尚未写完的
+			// 文件，做有限次重试直到拿到完整 32 字节。
+			return readPersistedKey(keyFile)
+		}
+		return nil, fmt.Errorf("persist machine key: open: %w", err)
+	}
+	if _, werr := f.Write(key); werr != nil {
+		f.Close()
+		_ = os.Remove(keyFile)
+		return nil, fmt.Errorf("persist machine key: write: %w", werr)
+	}
+	if serr := f.Sync(); serr != nil {
+		f.Close()
+		_ = os.Remove(keyFile)
+		return nil, fmt.Errorf("persist machine key: fsync: %w", serr)
+	}
+	if cerr := f.Close(); cerr != nil {
+		_ = os.Remove(keyFile)
+		return nil, fmt.Errorf("persist machine key: close: %w", cerr)
 	}
 	return key, nil
+}
+
+// readPersistedKey 读取落败方应采用的既有密钥。创建方是"创建后立即写入"，
+// 期间文件可能短暂为空/不完整，做有限次短重试。
+func readPersistedKey(keyFile string) ([]byte, error) {
+	const attempts = 50
+	for i := 0; i < attempts; i++ {
+		data, err := os.ReadFile(keyFile)
+		if err == nil && len(data) == 32 {
+			return data, nil
+		}
+		if err != nil && !os.IsNotExist(err) {
+			return nil, fmt.Errorf("derive machine key: read existing key file: %w", err)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	return nil, fmt.Errorf("derive machine key: existing key file %s incomplete after retries", keyFile)
 }
 
 // Encrypt 加密字符串，返回 base64 编码的密文

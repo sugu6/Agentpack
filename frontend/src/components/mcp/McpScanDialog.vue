@@ -22,7 +22,15 @@ const scanning = ref(false)
 const scanError = ref<string | null>(null)
 const importing = ref(false)
 
-const newItems = computed(() => (mcp.scanResult?.items ?? []).filter(i => !i.managed))
+// 已成功导入的条目 key：从可重选数据源中排除。
+// 批量添加部分成功后若不移除，"全选"会按 newItems 重建映射把已成功项
+// 再次加入，重试时重复提交（后端按归一化 key 判重报 already exists）
+// 被误计为失败，且真实失败项被淹没。
+const importedKeys = ref<Set<string>>(new Set())
+
+const newItems = computed(() =>
+  (mcp.scanResult?.items ?? []).filter(i => !i.managed && !importedKeys.value.has(itemKey(i)))
+)
 
 const enabledAgentGroups = computed(() =>
   agents.mergedGroups.filter(g => g.status === 'enabled')
@@ -75,12 +83,18 @@ function resolveSourceAgentIds(item: ScanItem): Set<string> {
 
 async function handleScan() {
   if (scanning.value) return
+  // 批量添加进行中禁止重扫：handleScan 会复位 importedKeys，若与 handleAdd
+  // 的 mcp.fetch() 回填竞态，已成功项会从 newItems 复活、被"全选"再次纳入
+  // 重试（后端按归一化 key 判重报 already exists，失败统计失真）。
+  if (importing.value) return
   scanning.value = true
   scanError.value = null
   try {
     await mcp.scan()
     // 只发现、不管理：新发现的服务器默认不勾选，由用户显式勾选后再"加入管理"
     importConfig.value = new Map()
+    // 新扫描结果重置已导入标记，避免上一轮的成功项影响本轮可选项
+    importedKeys.value = new Set()
     open.value = true
   } catch {
     scanError.value = t('mcp.toast.scanFailed')
@@ -181,25 +195,26 @@ async function handleAdd() {
     const results = await Promise.allSettled(pending)
     const failures = results.filter(r => r.status === 'rejected')
     const successCount = results.length - failures.length
+    // 收集已成功项（无论是否有失败都要处理）：
+    // - 从 importConfig 移除（重试不再提交）
+    // - 记入 importedKeys，使其从 newItems 中消失，"全选"不会再次纳入
+    const succeededKeys = new Set<string>()
+    results.forEach((r, i) => {
+      if (r.status === 'fulfilled') {
+        succeededKeys.add(pendingKeys[i])
+      }
+    })
+    if (succeededKeys.size > 0) {
+      importedKeys.value = new Set([...importedKeys.value, ...succeededKeys])
+      const next = new Map(importConfig.value)
+      for (const key of succeededKeys) next.delete(key)
+      importConfig.value = next
+    }
     if (successCount > 0) {
       toast.success(t('mcp.toast.addedBatch', { count: successCount }))
     }
     if (failures.length > 0) {
       toast.warning(t('mcp.toast.batchAddFailed', { count: failures.length }))
-      // 从待提交集合中移除已成功项：对话框保持打开供用户重试失败项，
-      // 若不移除，重试会再次提交已成功项（后端按 key 归一化报
-      // "already exists"），被误计为失败且真实失败项被淹没
-      const succeededKeys = new Set<string>()
-      results.forEach((r, i) => {
-        if (r.status === 'fulfilled') {
-          succeededKeys.add(pendingKeys[i])
-        }
-      })
-      if (succeededKeys.size > 0) {
-        const next = new Map(importConfig.value)
-        for (const key of succeededKeys) next.delete(key)
-        importConfig.value = next
-      }
     }
     await mcp.fetch()
     // 有失败时不关闭对话框：失败项需要重试入口，直接关闭后用户只能
@@ -217,7 +232,7 @@ async function handleAdd() {
 
 <template>
   <Dialog v-model:open="open" @update:open="onOpenChange">
-    <Button size="sm" variant="outline" :disabled="scanning" @click="handleScan">
+    <Button size="sm" variant="outline" :disabled="scanning || importing" @click="handleScan">
       <PhMagnifyingGlass :size="14" :class="{ 'animate-pulse': scanning }" />
       <span>{{ scanning ? t('mcp.scanning') : t('mcp.scan') }}</span>
     </Button>

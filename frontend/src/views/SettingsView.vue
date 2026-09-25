@@ -17,8 +17,6 @@ const settings = useSettingsStore()
 const toast = useToast()
 const { t } = useI18n()
 
-const scrollContainer = ref<HTMLElement | null>(null)
-
 const saving = ref(false)
 const backupLoading = ref<'create' | 'export' | 'import' | null>(null)
 const updateChecking = ref(false)
@@ -41,6 +39,37 @@ const importDialog = ref({
   applySettings: false,
 })
 
+// 进入设置页时自动检查更新（每个会话仅一次）。
+// 项目约定（见 CHANGELOG）：不在应用启动时弹更新提示，改为进入设置页触发。
+// 与手动"检查更新"按钮区分：无更新时不显示任何提示（否则每次进设置页都会
+// 弹"已是最新版本"打扰用户），有更新时沿用既有 toast + 全局 UpdateDialog 流程。
+const AUTO_UPDATE_CHECK_KEY = 'agentpack_update_checked_session'
+async function autoCheckUpdate() {
+  // sessionStorage 在禁用 Cookie 的 WebView2 环境可能抛 SecurityError，
+  // 未捕获会中断 onMounted 后续逻辑，故整体 try 包裹
+  try {
+    if (sessionStorage.getItem(AUTO_UPDATE_CHECK_KEY)) return
+    // 先落标记再请求，避免在途期间重入导致重复检查
+    sessionStorage.setItem(AUTO_UPDATE_CHECK_KEY, '1')
+  } catch {
+    // 存取失败按"未检测"处理（多检测一次无害）
+  }
+  try {
+    const result = await api.system.checkUpdate()
+    if (result.hasUpdate) {
+      // 有更新时才提示，并复用全局 UpdateDialog 的打开事件
+      updateResult.value = result
+      toast.success(t('settings.toast.foundNewVersion', { latest: result.latestVersion, current: result.currentVersion }), {
+        duration: 5000,
+      })
+      events.emit('app:update-available', result)
+    }
+    // 无更新时静默处理，不打扰用户
+  } catch {
+    // 检测失败静默忽略，不打扰用户
+  }
+}
+
 // settings:changed 已由 App.vue 全局监听驱动 settings.fetch()，
 // 此处不再重复订阅（双订阅会产生两倍并发请求与无序覆盖窗口）。
 onMounted(() => {
@@ -48,6 +77,8 @@ onMounted(() => {
   void settings.fetch()
   // 从后端获取版本号；失败时用占位符，避免界面渲染成孤立的 "v"
   api.system.getAppVersion().then(v => { appVersion.value = v }).catch(() => { appVersion.value = '?' })
+  // 进入设置页触发一次自动检查更新（每个会话仅一次）
+  void autoCheckUpdate()
 })
 
 // 0 是合法值：后端 backupRetention=0 表示无限保留。MIN 取 0 而不是 1，
@@ -561,7 +592,7 @@ const marketSourceList = computed(() => {
     </div>
 
     <!-- 可滚动内容 -->
-    <div ref="scrollContainer" class="flex-1 overflow-y-auto">
+    <div class="flex-1 overflow-y-auto">
       <div class="mx-auto max-w-4xl space-y-6 px-8 py-4">
 
     <Card>
@@ -937,7 +968,7 @@ const marketSourceList = computed(() => {
     </Card>
 
     <!-- 导入确认弹窗 -->
-    <Dialog v-model:open="importDialog.open" :scroll-root="scrollContainer">
+    <Dialog v-model:open="importDialog.open">
       <DialogContent class="max-w-md">
         <DialogHeader>
           <DialogTitle>{{ t('settings.importDialog.title') }}</DialogTitle>
@@ -990,7 +1021,7 @@ const marketSourceList = computed(() => {
     <!-- 更新日志弹窗统一由全局 UpdateDialog 组件承载（App.vue 挂载） -->
 
     <!-- Skills 存储迁移确认弹窗 -->
-    <Dialog v-model:open="migrateDialog.open" :scroll-root="scrollContainer">
+    <Dialog v-model:open="migrateDialog.open">
       <DialogContent class="max-w-md">
         <DialogHeader>
           <DialogTitle>{{ t('settings.skills.migrateDialog.title') }}</DialogTitle>

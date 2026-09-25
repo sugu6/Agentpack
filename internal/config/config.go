@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -15,6 +16,31 @@ import (
 // DefaultGitHubProxy 是默认的 GitHub API/下载代理地址
 // 用于解决中国地区无法直接访问 GitHub 的问题
 var DefaultGitHubProxy = "https://gh-proxy.com/"
+
+// ProxyJoin 把"完整目标 URL"挂到代理前缀下，是全部代理拼接点（market
+// githubURL / update 下载 / skills tarball / skills git ls-remote）的唯一契约。
+//
+// 语义：保留目标 URL 的 scheme，产出 "{代理前缀}/{完整目标URL}"。
+// 这是 gh-proxy 这类 GitHub 加速代理的官方用法——代理把"含 scheme 的完整
+// URL"作为 path 解析（见 gh-proxy.com 站点 JS 的 normalize：scheme 缺失时补
+// https://）。剥离 scheme 的旧写法拼出的 "gh-proxy.com/github.com/..." 对
+// 代理是歧义路径，不可靠。
+//
+// 规则：
+//   - 代理为空/空白 → 原样返回目标 URL（直连语义不变）
+//   - 目标 URL 已以代理前缀开头 → 原样返回（防重入）
+//   - 代理前缀去掉尾斜杠后补一个 "/" 再接目标 URL，杜绝
+//     "gh-proxy.comgithub.com/..."（缺斜杠）与 "//"（双斜杠）两种畸形
+func ProxyJoin(proxy, target string) string {
+	p := strings.TrimSpace(proxy)
+	if p == "" {
+		return target
+	}
+	if strings.HasPrefix(target, p) {
+		return target
+	}
+	return strings.TrimSuffix(p, "/") + "/" + target
+}
 
 const (
 	currentVersion = 1

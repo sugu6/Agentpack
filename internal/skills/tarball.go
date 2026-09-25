@@ -70,21 +70,47 @@ func sameHostRedirectPolicy(req *http.Request, via []*http.Request) error {
 
 // InstallFromTarball 从 GitHub tarball URL 安装 skill 到 SSOT 并同步到 agents
 // 流程：下载 → 解压到临时目录 → 识别 skill 根目录 → 调用 Import 纳管
+//
+// 等价于 PrepareTarballInstall + CommitPreparedTarball 的组合（签名与行为保持
+// 不变，供既有调用方/测试使用）。需要在没有长锁的情况下执行分钟级网络 IO 的
+// 调用方应自行分两步调用，以把网络阶段移出锁外（见 internal/app/market）。
 func (s *Store) InstallFromTarball(ctx context.Context, input TarballInstallInput, agentIDs []string, reg *agents.Registry) (Skill, error) {
-	if err := validateTarballInput(input); err != nil {
+	prepared, err := PrepareTarballInstall(ctx, input)
+	if err != nil {
 		return Skill{}, err
 	}
+	defer prepared.Cleanup()
+	return s.CommitPreparedTarball(prepared, agentIDs, reg)
+}
 
-	// 1. 创建临时目录
+// PreparedTarball 是一次 tarball 安装的中间产物：已完成下载、解压并定位到
+// skill 根目录，但尚未纳管到 SSOT。它持有临时目录的所有权，调用方在用完后
+// 必须调用 Cleanup（成功或失败都要），否则临时目录会残留。
+type PreparedTarball struct {
+	tmpDir    string
+	skillRoot string
+	input     TarballInstallInput
+}
+
+// PrepareTarballInstall 执行 tarball 安装的前半程（步骤 1-3）：
+// 创建临时目录 → 下载并解压 tarball → 识别含 SKILL.md 的 skill 根目录。
+// 该阶段只做网络 IO 与磁盘写入，不触碰 store 内存状态，因此调用方无需持有
+// store 锁——这正是把分钟级网络 IO 移出长锁的关键。
+func PrepareTarballInstall(ctx context.Context, input TarballInstallInput) (*PreparedTarball, error) {
+	if err := validateTarballInput(input); err != nil {
+		return nil, err
+	}
+
+	// 1. 创建临时目录（所有权交给返回的 PreparedTarball）
 	tmpDir, err := os.MkdirTemp("", "skill-tarball-")
 	if err != nil {
-		return Skill{}, fmt.Errorf("create temp dir: %w", err)
+		return nil, fmt.Errorf("create temp dir: %w", err)
 	}
-	defer os.RemoveAll(tmpDir)
 
-	// 2. 下载并解压 tarball
+	// 2. 下载并解压 tarball；失败时立即清理临时目录
 	if err := downloadAndExtractTarball(ctx, input.TarballURL, tmpDir); err != nil {
-		return Skill{}, fmt.Errorf("download/extract tarball: %w", err)
+		os.RemoveAll(tmpDir)
+		return nil, fmt.Errorf("download/extract tarball: %w", err)
 	}
 
 	// 3. 识别 skill 根目录
@@ -92,17 +118,34 @@ func (s *Store) InstallFromTarball(ctx context.Context, input TarballInstallInpu
 	//    skill 可能在这个顶层目录的子目录中（input.FullPath 或 input.Directory 指定）
 	skillRoot, err := findSkillRootInTarball(tmpDir, input.Directory, input.FullPath)
 	if err != nil {
-		return Skill{}, err
+		os.RemoveAll(tmpDir)
+		return nil, err
 	}
 
-	// 4. 调用现有 Import 纳管到 SSOT。
-	// 显式传入 input.Directory：当仓库根目录本身就是 skill（SKILL.md 直接位于
-	// {repo}-{hash}/ 下）时，skillRoot 的目录名是随机 hash，不能作为 SSOT 目录名。
-	skill, err := s.ImportWithDirName(skillRoot, input.Directory, agentIDs, reg, input.RepoOwner, input.RepoName)
+	return &PreparedTarball{tmpDir: tmpDir, skillRoot: skillRoot, input: input}, nil
+}
+
+// Cleanup 删除 prepare 阶段占用的临时目录。幂等，可安全重复调用。
+func (p *PreparedTarball) Cleanup() {
+	if p == nil || p.tmpDir == "" {
+		return
+	}
+	os.RemoveAll(p.tmpDir) //nolint:errcheck
+	p.tmpDir = ""
+}
+
+// CommitPreparedTarball 执行 tarball 安装的后半程（步骤 4）：把已解压定位好的
+// skill 根目录纳管到 SSOT 并同步到 agents。
+// 显式传入 input.Directory：当仓库根目录本身就是 skill（SKILL.md 直接位于
+// {repo}-{hash}/ 下）时，skillRoot 的目录名是随机 hash，不能作为 SSOT 目录名。
+func (s *Store) CommitPreparedTarball(p *PreparedTarball, agentIDs []string, reg *agents.Registry) (Skill, error) {
+	if p == nil {
+		return Skill{}, fmt.Errorf("prepared tarball is nil")
+	}
+	skill, err := s.ImportWithDirName(p.skillRoot, p.input.Directory, agentIDs, reg, p.input.RepoOwner, p.input.RepoName)
 	if err != nil {
 		return Skill{}, fmt.Errorf("import skill from tarball: %w", err)
 	}
-
 	return skill, nil
 }
 
@@ -159,23 +202,33 @@ var tarballFallbackURLs = []string{"https://ghfast.top/", ""}
 
 // tarballCandidateURLs 生成 tarball 下载候选 URL：
 // 配置的代理优先，随后按 tarballFallbackURLs 补充备用代理，最后直连 codeload。
+// 代理拼接统一走 config.ProxyJoin（保留目标 URL 的 scheme）。
 func tarballCandidateURLs(tarballURL string) []string {
 	if !strings.HasPrefix(tarballURL, "https://codeload.github.com/") {
 		return []string{tarballURL}
 	}
-	rest := strings.TrimPrefix(tarballURL, "https://")
 	var urls []string
-	if p := strings.TrimSpace(config.DefaultGitHubProxy); p != "" {
-		urls = append(urls, strings.TrimSuffix(p, "/")+"/"+rest)
-	}
+	urls = append(urls, config.ProxyJoin(config.DefaultGitHubProxy, tarballURL))
 	for _, p := range tarballFallbackURLs {
 		if strings.TrimSpace(p) == "" {
-			urls = append(urls, "https://"+rest) // 直连兜底
 			continue
 		}
-		urls = append(urls, strings.TrimSuffix(p, "/")+"/"+rest)
+		// 备用代理走 ghfast 式"裸路径"格式（无内层 scheme）——ghfast.top
+		// 实测接受 "ghfast.top/codeload.github.com/..." 形式，与 ProxyJoin
+		// 的完整 URL 格式并存（两类代理各取所需，候选顺序由调用方兜底）。
+		urls = append(urls, strings.TrimSuffix(p, "/")+"/"+strings.TrimPrefix(tarballURL, "https://"))
 	}
-	return urls
+	// 直连兜底始终保留在末位；首条可能与之重合（配置代理为空时）。
+	urls = append(urls, tarballURL)
+	seen := make(map[string]bool, len(urls))
+	deduped := make([]string, 0, len(urls))
+	for _, u := range urls {
+		if !seen[u] {
+			seen[u] = true
+			deduped = append(deduped, u)
+		}
+	}
+	return deduped
 }
 
 // downloadAndExtractTarball 下载 tar.gz（多代理候选）并安全解压到目标目录

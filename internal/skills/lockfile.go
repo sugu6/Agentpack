@@ -296,6 +296,61 @@ func WriteAgentsLock(entry AgentsLockEntry) error {
 	return writeAgentsLock(lock)
 }
 
+// PruneStaleLockEntries 删除 ~/.agents/.skill-lock.json 中「SkillPath 指向的
+// 目录已不存在」的失效条目。用于技能目录被外部删除（绕过 Uninstall）后，
+// 避免重导入同名技能时回填残留的旧仓库来源（CheckUpdates/UpdateSkill
+// 会用旧仓库内容覆盖新内容）。
+//
+// 安全约束：lock 文件可能与 CC Switch 等工具共用，只允许删除能确认属于
+// 本应用 SSOT 的条目——要求 SkillPath 非空、位于 ssotDir 之内、且该目录
+// 当前确实不存在。SkillPath 为空或指向 SSOT 之外的条目一律保留，避免误删
+// 其他工具的记录。
+func PruneStaleLockEntries(ssotDir string) error {
+	if ssotDir == "" {
+		return nil
+	}
+	agentsLockMu.Lock()
+	defer agentsLockMu.Unlock()
+
+	lock, err := readAgentsLock()
+	if err != nil {
+		return err
+	}
+	ssotAbs, err := filepath.Abs(ssotDir)
+	if err != nil {
+		return fmt.Errorf("resolve ssot dir: %w", err)
+	}
+
+	changed := false
+	for name, skill := range lock.Skills {
+		if skill.SkillPath == "" {
+			continue // SkillPath 为空：无法确认归属，保守保留
+		}
+		p, aerr := filepath.Abs(skill.SkillPath)
+		if aerr != nil {
+			continue
+		}
+		rel, rerr := filepath.Rel(ssotAbs, p)
+		// 仅处理严格位于 SSOT 目录内的条目；ssotDir 自身与外部路径一律保留
+		if rerr != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			continue
+		}
+		if _, serr := os.Stat(p); serr == nil {
+			continue // 目录仍存在，保留
+		} else if !os.IsNotExist(serr) {
+			continue // 无法确认不存在（权限/IO 错误），保守保留
+		}
+		delete(lock.Skills, name)
+		changed = true
+	}
+
+	if !changed {
+		return nil
+	}
+	// 复用既有的原子写 helper，避免半写入损坏共用的 lock 文件
+	return writeAgentsLock(lock)
+}
+
 // RemoveAgentsLockEntry 从 ~/.agents/.skill-lock.json 中删除指定 skill 的记录。
 // 用于卸载技能后清理旧仓库来源，避免重新安装同名技能时被残留的
 // RepoOwner/RepoName 错误关联到已卸载来源的仓库。

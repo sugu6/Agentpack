@@ -1,8 +1,12 @@
 package crypto
 
 import (
+	"bytes"
 	"encoding/base64"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -139,5 +143,58 @@ func TestDecryptEnv_ForeignCiphertextReturnsError(t *testing.T) {
 	_, err := DecryptEnv(env)
 	if err == nil {
 		t.Fatal("expected error for ciphertext that cannot be decrypted with local key")
+	}
+}
+
+// TestLoadOrCreateMachineKey_ConcurrentFirstStart 验证首启并发：
+// 多个实例同时首启时不会各自覆盖密钥；全部采用同一密钥，且落盘密钥与之
+// 一致；再次调用复用既有密钥而不重新生成。
+func TestLoadOrCreateMachineKey_ConcurrentFirstStart(t *testing.T) {
+	keyFile := filepath.Join(t.TempDir(), ".agentpack", ".machine_key")
+
+	const n = 8
+	keys := make([][]byte, n)
+	errs := make([]error, n)
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			keys[idx], errs[idx] = loadOrCreateMachineKey(keyFile)
+		}(i)
+	}
+	wg.Wait()
+
+	var first []byte
+	for i := 0; i < n; i++ {
+		if errs[i] != nil {
+			t.Fatalf("instance %d: %v", i, errs[i])
+		}
+		if len(keys[i]) != 32 {
+			t.Fatalf("instance %d: key length %d, want 32", i, len(keys[i]))
+		}
+		if first == nil {
+			first = keys[i]
+		} else if !bytes.Equal(first, keys[i]) {
+			t.Fatal("all instances must use the same key, got divergence (a key was overwritten)")
+		}
+	}
+
+	// 落盘密钥必须等于所有实例采用的密钥（未被后续实例覆盖）
+	onDisk, err := os.ReadFile(keyFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(onDisk, first) {
+		t.Fatal("persisted key differs from the key in use (file was overwritten)")
+	}
+
+	// 再次调用应复用既有密钥
+	again, err := loadOrCreateMachineKey(keyFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(again, first) {
+		t.Fatal("existing key must be reused, not regenerated")
 	}
 }

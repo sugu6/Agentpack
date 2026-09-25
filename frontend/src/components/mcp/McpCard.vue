@@ -31,6 +31,9 @@ async function toggleGroup(group: { ids: string[]; id: string }, enabled: boolea
   // 广播 mcp:changed，卡片刷新读到未完成的绑定），串行保持一致性
   const failures: unknown[] = []
   for (const agentId of [...new Set(group.ids)]) {
+    // 合并组含 disabled 变体成员：后端 validateAgentIDs 只接受 enabled/detected，
+    // 不过滤会把不可用成员一并提交导致整次绑定失败
+    if (!agents.activeIds.get(agentId)) continue
     try {
       await mcp.toggleAgent(props.server.id, agentId, enabled)
     } catch (e) {

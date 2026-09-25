@@ -327,6 +327,12 @@ func (s *Store) AdoptSkillCopy(skillID, sourcePath string, reg *agents.Registry)
 // 只删死链：活链、普通目录、SSOT 同名条目一律不动。
 // 返回实际删除的路径（按路径排序）；部分失败时已删清单照常返回。
 func (s *Store) CleanOrphanSkillLinks(reg *agents.Registry) ([]string, error) {
+	// 与同文件其他改目录操作（ConvertSkillCopyToLink/KeepSkillFork/
+	// OverwriteSkillCopyFromSSOT/AdoptSkillCopy）一致：持 importMu 删除 agent
+	// 目录条目，避免与 Import/Uninstall/Sync 并发写互相逆转；锁序 importMu 先于 mu。
+	s.importMu.Lock()
+	defer s.importMu.Unlock()
+
 	s.mu.RLock()
 	ssotDirs := make(map[string]bool, len(s.skills))
 	for _, sk := range s.skills {

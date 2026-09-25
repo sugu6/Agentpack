@@ -105,7 +105,10 @@ export const useMarketStore = defineStore('market', () => {
 
   async function installServer(server: MarketServer, agents: string[]) {
     try {
-      return await api.market.installServer(server, agents)
+      const result = await api.market.installServer(server, agents)
+      // 成功后清除上次失败信息，避免 MarketView 显示过期错误
+      error.value = null
+      return result
     } catch (e) {
       const apiError = ApiError.from(e)
       error.value = apiError.message
@@ -180,7 +183,10 @@ export const useMarketStore = defineStore('market', () => {
 
   async function installSkill(skill: MarketSkill, agents: string[]) {
     try {
-      return await api.market.installSkill(skill, agents)
+      const result = await api.market.installSkill(skill, agents)
+      // 成功后清除上次失败信息，避免 MarketView 显示过期错误
+      error.value = null
+      return result
     } catch (e) {
       const apiError = ApiError.from(e)
       error.value = apiError.message

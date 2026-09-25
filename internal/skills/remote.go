@@ -19,6 +19,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -211,8 +212,11 @@ const (
 
 // remoteTree 是远程文件树（path → 文件内容 hash）及其来源。
 // hashFn 按来源计算本地文件的同算法 hash，用于内容对比。
+// modes 是 GitHub tree 携带的文件权限位（path → FileMode，如 100755 → 0755）；
+// jsDelivr 树不提供该信息，此时为 nil，调用方回退默认 0644。
 type remoteTree struct {
 	files  map[string]string
+	modes  map[string]os.FileMode
 	source treeSource
 	hashFn func([]byte) string
 }
@@ -224,18 +228,19 @@ func fetchRemoteTree(ctx context.Context, owner, repo, branch string) (remoteTre
 	if err == nil {
 		return remoteTree{files: files, source: treeSourceJsDelivr, hashFn: contentSHA256Hex}, nil
 	}
-	ghFiles, gerr := fetchGitHubFileTree(ctx, owner, repo, branch)
+	ghFiles, ghModes, gerr := fetchGitHubFileTree(ctx, owner, repo, branch)
 	if gerr == nil {
-		return remoteTree{files: ghFiles, source: treeSourceGitHub, hashFn: gitBlobSHA1Hex}, nil
+		return remoteTree{files: ghFiles, modes: ghModes, source: treeSourceGitHub, hashFn: gitBlobSHA1Hex}, nil
 	}
 	return remoteTree{}, fmt.Errorf("jsdelivr: %v; github: %w", err, gerr)
 }
 
 // fetchGitHubFileTree 使用 GitHub Trees API（recursive）获取仓库文件树：
-// path → git blob SHA-1。直连失败时尝试代理。
-func fetchGitHubFileTree(ctx context.Context, owner, repo, branch string) (map[string]string, error) {
+// path → git blob SHA-1，并返回 path → 文件权限位（mode 100755 → 0755）。
+// 直连失败时尝试代理。
+func fetchGitHubFileTree(ctx context.Context, owner, repo, branch string) (map[string]string, map[string]os.FileMode, error) {
 	if owner == "" || repo == "" {
-		return nil, fmt.Errorf("owner/repo required")
+		return nil, nil, fmt.Errorf("owner/repo required")
 	}
 	if branch == "" {
 		branch = "main"
@@ -248,7 +253,7 @@ func fetchGitHubFileTree(ctx context.Context, owner, repo, branch string) (map[s
 	}
 	data, _, err := httpGetBody(ctx, urls)
 	if err != nil {
-		return nil, fmt.Errorf("fetch github file tree: %w", err)
+		return nil, nil, fmt.Errorf("fetch github file tree: %w", err)
 	}
 	var resp struct {
 		Truncated bool `json:"truncated"`
@@ -256,24 +261,62 @@ func fetchGitHubFileTree(ctx context.Context, owner, repo, branch string) (map[s
 			Path string `json:"path"`
 			Type string `json:"type"`
 			SHA  string `json:"sha"`
+			Mode string `json:"mode"`
 		} `json:"tree"`
 	}
 	if err := json.Unmarshal(data, &resp); err != nil {
-		return nil, fmt.Errorf("decode github file tree: %w", err)
+		return nil, nil, fmt.Errorf("decode github file tree: %w", err)
 	}
 	if resp.Truncated {
-		return nil, fmt.Errorf("github file tree truncated (repo too large)")
+		return nil, nil, fmt.Errorf("github file tree truncated (repo too large)")
 	}
 	files := make(map[string]string)
+	modes := make(map[string]os.FileMode)
 	for _, item := range resp.Tree {
 		if item.Type == "blob" {
 			files[item.Path] = item.SHA
+			if perm, ok := parseGitHubFileMode(item.Mode); ok {
+				modes[item.Path] = perm
+			}
 		}
 	}
 	if len(files) == 0 {
-		return nil, fmt.Errorf("github file tree is empty for %s/%s@%s", owner, repo, branch)
+		return nil, nil, fmt.Errorf("github file tree is empty for %s/%s@%s", owner, repo, branch)
 	}
-	return files, nil
+	return files, modes, nil
+}
+
+// parseGitHubFileMode 解析 GitHub tree 的 mode（八进制字符串，如 "100644"/"100755"）。
+// 仅普通文件的权限位有意义（symlink 120000 / tree 040000 的权限位为 0），
+// 解析失败或非普通文件返回 ok=false，由调用方回退默认 0644。
+// 与 zip/tar 解压路径一致，去除 group/other 写位（&^ 0022），保留可执行位。
+func parseGitHubFileMode(mode string) (os.FileMode, bool) {
+	if mode == "" {
+		return 0, false
+	}
+	v, err := strconv.ParseUint(mode, 8, 32)
+	if err != nil {
+		return 0, false
+	}
+	perm := os.FileMode(v & 0o777)
+	if perm == 0 {
+		return 0, false
+	}
+	return perm &^ os.FileMode(0022), true
+}
+
+// remoteFilePerm 返回远程树中某文件声明的权限位（相对技能目录的 rel，
+// fullPath 为技能在仓库中的路径）。无 mode 信息（jsDelivr 树）时返回 0，
+// 由调用方回退默认 0644。
+func remoteFilePerm(tree remoteTree, fullPath, rel string) os.FileMode {
+	if tree.modes == nil {
+		return 0
+	}
+	key := rel
+	if prefix := strings.Trim(fullPath, "/"); prefix != "" {
+		key = prefix + "/" + rel
+	}
+	return tree.modes[key]
 }
 
 // filterTreeByPrefix 返回技能目录（fullPath，如 "skills/pdf"；空=仓库根）下的文件，
@@ -976,6 +1019,16 @@ func mergeDirOverwrite(src, dst string) error {
 		if rerr != nil {
 			return rerr
 		}
-		return os.WriteFile(target, data, 0644)
+		// 权限位语义：
+		//   - 覆盖已存在文件：沿用目标文件现有权限位（os.WriteFile 对已存在文件
+		//     不改权限），保留 zip/tar 解压路径设置的执行位；
+		//   - 新建文件：沿用源（下载临时文件）的权限位——它由 writeTmpFile 按
+		//     远程树 mode 写入（GitHub tree 100755 → 0755），无 mode 时为 0644。
+		// 与解压路径一致，去除 group/other 写位（&^ 0022）。
+		perm := os.FileMode(0644)
+		if sinfo, derr := d.Info(); derr == nil {
+			perm = sinfo.Mode().Perm()
+		}
+		return os.WriteFile(target, data, perm&^0022)
 	})
 }

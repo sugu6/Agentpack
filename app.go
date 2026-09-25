@@ -149,6 +149,15 @@ func (a *App) ServiceStartup(ctx context.Context, options application.ServiceOpt
 	defer a.mu.Unlock()
 	a.ctx = ctx
 
+	// AgentPackDir 返回空串（home 目录不可用）时，filepath.Join("", "agentpack.db")
+	// 会静默退化成相对路径，DB 与备份目录将落到进程 CWD。与 config.Save 的路径
+	// 守卫一致，此处快速失败返回明确错误（同时守卫下方 database.Init 与
+	// backup.NewManager 两处，避免写入进程 CWD）。
+	apDir := config.AgentPackDir()
+	if apDir == "" {
+		return fmt.Errorf("agentpack dir unavailable: home directory not determinable")
+	}
+
 	var errs []string
 	addErr := func(stage string, err error) {
 		if err != nil {
@@ -157,7 +166,7 @@ func (a *App) ServiceStartup(ctx context.Context, options application.ServiceOpt
 		}
 	}
 
-	if err := os.MkdirAll(config.AgentPackDir(), 0700); err != nil {
+	if err := os.MkdirAll(apDir, 0700); err != nil {
 		addErr("create agentpack dir", err)
 	}
 
@@ -172,7 +181,7 @@ func (a *App) ServiceStartup(ctx context.Context, options application.ServiceOpt
 		addErr("machine key", kerr)
 	}
 
-	dbPath := filepath.Join(config.AgentPackDir(), "agentpack.db")
+	dbPath := filepath.Join(apDir, "agentpack.db")
 	if err := database.Init(dbPath); err != nil {
 		addErr("database init", err)
 	}
@@ -238,10 +247,10 @@ func (a *App) ServiceStartup(ctx context.Context, options application.ServiceOpt
 	}))
 	a.marketStore.RegisterSkillFetcher(market.NewSkillsShFetcher())
 
-	a.backups = backup.NewManager(config.AgentPackDir(), a.cfg.Settings.BackupRetention, a.registry)
+	a.backups = backup.NewManager(apDir, a.cfg.Settings.BackupRetention, a.registry)
 	a.backups.Bind(a.registry, a.mcpStore)
 	a.exporter = backup.NewExporter(a.mcpStore, a.registry)
-	a.setConfigProviders()
+	a.setConfigProviders(a.backups, a.exporter)
 
 	a.refreshBackupHooksLocked()
 
@@ -327,8 +336,21 @@ func (a *App) ServiceShutdown() error {
 	// 写库前可能仍在途。database.Close 与它们的事务并发会让最后一次
 	// 写静默失败（回滚保证一致，但用户操作丢失）。取一次 storeOpMu
 	// 等队列排空，之后不会再有新操作进入（closed 已置位）。
-	a.storeOpMu.Lock()
-	a.storeOpMu.Unlock()
+	//
+	// 有界等待：storeOpMu 可能被跨分钟级网络 IO 的操作持有，直接 Lock 会让
+	// 退出挂起数分钟。超时仅记录日志并继续退出流程，与上方 inFlight/备份的
+	// 既有兜底等待风格一致（超时后残留事务由 database.Close 的回滚保证一致性）。
+	storeDrained := make(chan struct{})
+	go func() {
+		a.storeOpMu.Lock()
+		a.storeOpMu.Unlock()
+		close(storeDrained)
+	}()
+	select {
+	case <-storeDrained:
+	case <-time.After(10 * time.Second):
+		log.Printf("shutdown: timeout waiting for in-flight store operations (storeOpMu still held)")
+	}
 
 	if err := database.Close(); err != nil {
 		log.Printf("database close: %v", err)
@@ -375,6 +397,12 @@ func (a *App) beginInFlight() error {
 // 避免解锁后、登记前被 CancelDownload 介入造成状态撕裂。
 func (a *App) beginInFlightLocked() error {
 	if a.closed {
+		return fmt.Errorf("app is shutting down")
+	}
+	// allowClose 已被 Quit 置位（即将/正在退出）时同样拒绝登记：Quit 在
+	// 同一临界区内置位 allowClose，此处一并检查可彻底关闭"检查 inFlight 与
+	// 置位之间登记成功"的 TOCTOU 窗口。
+	if a.allowClose {
 		return fmt.Errorf("app is shutting down")
 	}
 	a.inFlight++
@@ -430,7 +458,12 @@ func (a *App) refreshBackupHooksLocked() {
 
 // setConfigProviders 为备份管理器和导出器设置应用设置的读取回调，
 // 使快照/导出包含完整的应用设置（主题、备份配置、技能仓库等）。
-func (a *App) setConfigProviders() {
+//
+// 目标对象由调用方以参数传入（而非在此读 a.backups/a.exporter 裸字段）：
+// 这两个字段会被 RescanAgents 写入，必须由调用方在 a.mu 临界区内取副本后
+// 传入，避免裸读与写入构成数据竞争；SetSettingsProvider 调用本身放到锁外
+// （其内部可能取 m.mu，需保持 a.mu→m.mu 的反向锁序规避）。
+func (a *App) setConfigProviders(backups *backup.Manager, exporter *backup.Exporter) {
 	provider := func() map[string]any {
 		a.mu.RLock()
 		defer a.mu.RUnlock()
@@ -447,11 +480,11 @@ func (a *App) setConfigProviders() {
 		}
 		return m
 	}
-	if a.backups != nil {
-		a.backups.SetSettingsProvider(provider)
+	if backups != nil {
+		backups.SetSettingsProvider(provider)
 	}
-	if a.exporter != nil {
-		a.exporter.SetSettingsProvider(provider)
+	if exporter != nil {
+		exporter.SetSettingsProvider(provider)
 	}
 }
 
@@ -595,7 +628,11 @@ func (a *App) saveConfigAndClearMarketCache() error {
 		return err
 	}
 	if a.marketStore != nil {
-		n, _ := a.marketStore.ClearAllCache()
+		n, err := a.marketStore.ClearAllCache()
+		if err != nil {
+			// 失败时缓存并未清空：必须如实记录，避免只看到 "cleared N" 误判已清理
+			log.Printf("saveConfigAndClearMarketCache: clear market cache failed (cache NOT cleared): %v", err)
+		}
 		log.Printf("saveConfigAndClearMarketCache: cleared %d cache files", n)
 	}
 	return nil
@@ -700,17 +737,18 @@ func isSafeURL(raw string) bool {
 // 超时后强杀任务 goroutine，下载残留 .downloading 文件、备份半写。
 func (a *App) Quit() error {
 	a.mu.Lock()
-	inFlight := a.inFlight
-	closed := a.closed
-	a.mu.Unlock()
-	if closed {
+	if a.closed {
+		a.mu.Unlock()
 		return nil
 	}
-	if inFlight > 0 {
+	if a.inFlight > 0 {
+		a.mu.Unlock()
 		a.emit("app:close-blocked")
 		return fmt.Errorf("tasks in progress, close blocked")
 	}
-	a.mu.Lock()
+	// closed 检查、inFlight 检查与 allowClose 置位必须在同一 a.mu 临界区内
+	// 完成，消除 TOCTOU：否则新下载可在检查与置位之间通过 beginInFlightLocked
+	// 登记成功，随后被放行退出（下载被强杀、残留 .downloading）。
 	a.allowClose = true
 	a.mu.Unlock()
 	a.wailsApp.Quit()
@@ -994,18 +1032,23 @@ func (a *App) RescanAgents() ([]*agents.Agent, error) {
 	a.mcpStoreReady = true
 	a.mcpStoreErr = ""
 	a.skillsStore = newSkillsStore
+	// exporter 构造不取 m.mu，在 a.mu 临界区内一并赋值：snapshot()/getMcp/
+	// prepareRestore 等都持 a.mu.RLock 读取该字段，锁外赋值构成数据竞争。
+	a.exporter = backup.NewExporter(newMcpStore, newReg)
 	a.refreshBackupHooksLocked()
 	a.emitLocked("agents:changed", all)
 	a.emitLocked("mcp:changed", a.mcpStore.List())
 	a.emitLocked("skills:changed", a.skillsStore.List())
+	// 在临界区内取 backups/exporter 副本供锁外的配置回调绑定使用
+	backups := a.backups
+	exporter := a.exporter
 	a.mu.Unlock()
 
-	// 重新绑定备份管理器/导出器（取 m.mu）。必须放在 a.mu 临界区之外：
+	// 重新绑定备份管理器/设置回调（取 m.mu）。必须放在 a.mu 临界区之外：
 	// 备份 Capture 持 m.mu 时会回调 cfgProvider 取 a.mu.RLock，若此处持 a.mu 再取
 	// m.mu 则构成 a.mu→m.mu 与 m.mu→a.mu 的反向锁序死锁。
-	a.backups.Bind(newReg, newMcpStore)
-	a.exporter = backup.NewExporter(newMcpStore, newReg)
-	a.setConfigProviders()
+	backups.Bind(newReg, newMcpStore)
+	a.setConfigProviders(backups, exporter)
 
 	return all, nil
 }
@@ -1253,25 +1296,44 @@ func (a *App) InstallMarketSkill(skill market.MarketSkill, agentIDs []string) (s
 		return skills.Skill{}, err
 	}
 	defer a.endInFlight()
-	a.storeOpMu.Lock()
-	defer a.storeOpMu.Unlock()
 
-	ss := a.getSkills()
+	// 单次 snapshot 取 skills store 与 registry 引用（getSkills/getRegistry
+	// 是两次独立 RLock，中间 RescanAgents 可整代替换）。
+	reg, _, _, ss, _, _ := a.snapshot()
 	if ss == nil {
 		return skills.Skill{}, fmt.Errorf("skills store not initialized")
 	}
-	installed, err := appmarket.InstallSkill(ss, a.registry, skill, agentIDs)
+
+	// prepare 阶段（下载 + 解压 + 定位，分钟级网络 IO）不持 storeOpMu：
+	// 否则会阻塞其它 store 写操作，并让退出流程的 storeOpMu 排空挂起数分钟。
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	prepared, branch, err := appmarket.PrepareSkillInstall(ctx, skill)
+	if err != nil {
+		return skills.Skill{}, err
+	}
+	defer prepared.Cleanup()
+
+	// commit 阶段只做本地文件 I/O + agents lock 写入，用 storeOpMu 串行化。
+	a.storeOpMu.Lock()
+	installed, err := appmarket.CommitSkillInstall(ss, prepared, branch, skill, agentIDs, reg)
+	a.storeOpMu.Unlock()
 	if err != nil {
 		return skills.Skill{}, err
 	}
 
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	a.emitAgentsChangedLocked()
 	a.emitLocked("skills:changed", ss.List())
-	// 安装成功后异步缓存 Commit SHA 作为更新检测基线
+	a.mu.Unlock()
+
+	// 安装成功后异步缓存 Commit SHA 作为更新检测基线。
+	// goroutine 在释放 a.mu 之后启动，避免持锁期间启动的长任务长时间占用锁。
+	// 必须用 prepare 返回的归一化 branch（如 master 兜底命中 main）：
+	// 若用原始 skill.RepoBranch，基线会固化在从未成功下载的分支上，
+	// 后续每次更新检测都先付一轮 404 再回退。
 	go func() {
-		_ = skills.CacheSkillCommitSHA(installed.ID, skill.RepoOwner, skill.RepoName, skill.RepoBranch)
+		_ = skills.CacheSkillCommitSHA(installed.ID, skill.RepoOwner, skill.RepoName, branch)
 	}()
 	return installed, nil
 }
@@ -2187,10 +2249,11 @@ func SetupTray(wailsApp *application.App, app *App, iconData []byte) *applicatio
 	})
 	trayLiteItem = menu.AddCheckbox(i18n.T(lang, "tray.lite"), false)
 	trayLiteItem.OnClick(func(ctx *application.Context) {
-		// v3 在触发回调前已翻转 checked，翻转后的值即用户期望的目标状态
-		app.SetLiteMode(trayLiteItem.Checked())
-		// 目标状态与实际状态不一致时（例如已处于该状态导致 SetLiteMode 空转）
-		// 把勾选态拉回真实状态，避免菜单显示与后端状态漂移
+		// 不读 trayLiteItem.Checked()：wails v3 的 checked 是无锁裸字段，
+		// OnClick 回调在非 UI 线程分发，裸读与 UI 线程写入构成数据竞争。
+		// 改为按后端权威状态取反得到目标值（SetLiteMode 幂等空操作），
+		// 再把勾选态回写为真实状态，保持"点击后与实际状态一致"的既有行为。
+		app.SetLiteMode(!app.IsLiteMode())
 		syncTrayLiteState(app.IsLiteMode())
 	})
 	menu.AddSeparator()

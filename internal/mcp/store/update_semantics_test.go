@@ -171,3 +171,59 @@ func TestStore_RollbackUpdateDoesNotDeletePreservedAgentConfig(t *testing.T) {
 		t.Errorf("claude config should be restored after rollback, got %v", claudeDisk)
 	}
 }
+
+// 回归测试：Update 对"绑定但配置文件缺失"的 agent（如已检测却从未生成配置
+// 文件的 Trae）必须按空配置写入并创建文件；否则 Update 记录了绑定却不落盘，
+// 重启 Load 会因文件缺失把该绑定静默删除。
+func TestStore_UpdateCreatesMissingAgentConfig(t *testing.T) {
+	t.Setenv("AGENTPACK_ALLOW_TEMP_DIR", "")
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("APPDATA", "")
+
+	claudePath := filepath.Join(home, ".claude.json")
+	traePath := filepath.Join(home, ".trae", "mcp.json")
+	writeFile(t, claudePath, `{}`)
+
+	reg := agents.NewRegistry()
+	reg.Register(agents.Agent{ID: "claude-code", Name: "Claude Code", Type: agents.TypeClaudeCode, Status: agents.StatusEnabled, ConfigPath: claudePath})
+	reg.Register(agents.Agent{ID: "trae", Name: "Trae", Type: agents.TypeTrae, Status: agents.StatusEnabled, ConfigPath: traePath})
+
+	store := NewStore()
+	if err := store.Load(reg); err != nil {
+		t.Fatal(err)
+	}
+	created, err := store.Add(types.Server{Name: "github", Command: "npx", Transport: types.TransportStdio}, []string{"claude-code", "trae"}, reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 模拟 trae 配置文件缺失（从未生成 / 被外部删除）
+	if err := os.Remove(traePath); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := store.Update(created.ID, types.Server{Name: "github", Command: "npx", Transport: types.TransportStdio}, []string{"claude-code", "trae"}, reg); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, statErr := os.Stat(traePath); statErr != nil {
+		t.Fatalf("Update 未为缺失配置文件的 agent 创建文件: %v", statErr)
+	}
+	traeDisk, rerr := NewBackend("trae").Read(traePath)
+	if rerr != nil {
+		t.Fatal(rerr)
+	}
+	if _, ok := traeDisk["github"]; !ok {
+		t.Fatalf("trae 配置未写入 github 条目: %v", traeDisk)
+	}
+
+	// 重启：绑定必须保留
+	store2 := NewStore()
+	if err := store2.Load(reg); err != nil {
+		t.Fatal(err)
+	}
+	if !store2.AgentBound(created.ID, "trae") {
+		t.Error("trae 绑定在重启后丢失")
+	}
+}

@@ -128,6 +128,22 @@ func isDisabledMcpValue(raw json.RawMessage) bool {
 	return false
 }
 
+// isScalarMcpValue 判断原始 JSON 是否为合法标量（字符串/数字/布尔/null）。
+// 写路径据此把"现有 mcp 是标量"的场景按空服务器集合处理并替换为对象结构，
+// 而不是当作无法解析的容器报错（对象/数组/畸形片段仍返回 false）。
+func isScalarMcpValue(raw json.RawMessage) bool {
+	s := strings.TrimSpace(string(raw))
+	if s == "" {
+		return false
+	}
+	switch s[0] {
+	case '{', '[':
+		return false
+	}
+	var v any
+	return json.Unmarshal(raw, &v) == nil
+}
+
 // jsonServer is the standard JSON format for Claude Code, Cursor, VS Code
 type jsonServer struct {
 	Command    string            `json:"command"`
@@ -503,7 +519,15 @@ func (b *JsonBackend) writeOpencode(path string, servers map[string]types.Server
 		var mcpObj map[string]json.RawMessage
 		if mcpRaw, ok := existing["mcp"]; ok {
 			if err := json.Unmarshal(mcpRaw, &mcpObj); err != nil {
-				return fmt.Errorf("parse existing mcp field: %w", err)
+				// 现有 mcp 为标量（opencode 官方支持 "off"/false/"" 等禁用全部
+				// MCP 的写法，Read 侧由 isDisabledMcpValue 视为空集）：按"空服务器
+				// 集合"处理并替换为对象结构，而不是报错——否则该 agent 的
+				// Add/Update/Toggle 全部失败，服务器永远写不进去。非标量（数组、
+				// 畸形 JSON）仍拒绝覆盖，避免破坏用户配置。
+				if !isScalarMcpValue(mcpRaw) {
+					return fmt.Errorf("parse existing mcp field: %w", err)
+				}
+				mcpObj = nil
 			}
 		}
 		if mcpObj == nil {

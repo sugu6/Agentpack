@@ -74,6 +74,12 @@ func (s *Store) Load(reg *agents.Registry) error {
 	// 为所有 SSOT 中缺少锁文件记录的 skill 写入存根记录，
 	// 确保锁文件存在且可后续通过市场安装更新为正确的 repo 信息。
 	if ssotDir != "" {
+		// 先剪除失效记录（SkillPath 指向的目录已不存在），再写存根。
+		// 否则技能目录被外部删除后，残留的旧仓库来源会在重导入同名技能时
+		// 被回填，导致后续更新用旧仓库内容覆盖新内容。
+		if err := PruneStaleLockEntries(ssotDir); err != nil {
+			log.Printf("warn: prune stale lock entries: %v", err)
+		}
 		if err := WriteDefaultLockEntries(ssotDir); err != nil {
 			log.Printf("warn: write default lock entries: %v", err)
 		}
@@ -224,10 +230,11 @@ func boundAgentsFromMap(bindings map[string]map[string]bool, skillID string) []s
 }
 
 func (s *Store) List() []Skill {
+	// 只读操作：在取锁前解析 lock 文件，避免持 RLock 做文件 IO 阻塞写操作。
+	lockData := ParseAgentsLock()
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	out := make([]Skill, 0, len(s.skills))
-	lockData := ParseAgentsLock()
 	for id, sk := range s.skills {
 		sk.BoundAgents = copySlice(boundAgentsFromMap(s.bindings, id))
 		// 从 lock file 注入仓库来源（兜底：处理 Import 时未传入 repoOwner/repoName 的情况）
@@ -465,6 +472,9 @@ func (s *Store) ImportWithDirName(path, dirName string, agentIDs []string, reg *
 		return Skill{}, fmt.Errorf("sync skill %s failed: %s", dirName, strings.Join(syncErrs, "; "))
 	}
 
+	// 只读操作：在取写锁前解析 lock 文件，避免持写锁做文件 IO 放大锁竞争。
+	lockData := ParseAgentsLock()
+
 	// Re-acquire the lock to update in-memory state.
 	// Re-check for duplicates: another Import may have added the same skill concurrently.
 	var sk Skill
@@ -503,7 +513,8 @@ func (s *Store) ImportWithDirName(path, dirName string, agentIDs []string, reg *
 		RepoName:    repoName,
 	}
 	// 从 ~/.agents/.skill-lock.json 注入仓库来源（若存在），覆盖空值
-	if repo, ok := ParseAgentsLock()[dirName]; ok {
+	// （lockData 已在取写锁前解析一次，避免持锁做文件 IO）
+	if repo, ok := lockData[dirName]; ok {
 		if sk.RepoOwner == "" {
 			sk.RepoOwner = repo.Owner
 		}
@@ -811,12 +822,19 @@ func (s *Store) ScanUnmanaged(reg *agents.Registry) []UnmanagedSkill {
 	}
 	s.mu.RUnlock()
 
-	// 扫描各 agent 的 skills 目录，按目录名聚合
-	type aggregated struct {
-		foundIn  []string
+	// 扫描各 agent 的 skills 目录，按目录名聚合。
+	// 每种发现位置（去重目录 × 其 agentIDs）单独记录，使每条结果的 Path
+	// 与该条目的 AgentID 对应：同一目录名的技能可能在多个 agent 目录中以
+	// 不同路径出现，统一填第一个路径会错位。
+	type occurrence struct {
+		path     string
 		agentIDs []string
 	}
+	type aggregated struct {
+		occurrences []occurrence
+	}
 	agg := make(map[string]*aggregated)
+	allPaths := make(map[string][]string)
 	for _, sd := range scanAgentSkillDirs(reg.SkillCapableAgentIDs(), reg.AgentSkillsDir) {
 		for _, dirName := range sd.entries {
 			skillPath := filepath.Join(sd.dir, dirName)
@@ -825,8 +843,11 @@ func (s *Store) ScanUnmanaged(reg *agents.Registry) []UnmanagedSkill {
 				a = &aggregated{}
 				agg[dirName] = a
 			}
-			a.foundIn = append(a.foundIn, skillPath)
-			a.agentIDs = append(a.agentIDs, sd.agentIDs...)
+			a.occurrences = append(a.occurrences, occurrence{
+				path:     skillPath,
+				agentIDs: append([]string(nil), sd.agentIDs...),
+			})
+			allPaths[dirName] = append(allPaths[dirName], skillPath)
 		}
 	}
 
@@ -836,20 +857,23 @@ func (s *Store) ScanUnmanaged(reg *agents.Registry) []UnmanagedSkill {
 		if ssotDirs[dirName] {
 			continue
 		}
+		paths := allPaths[dirName]
 		name := dirName
-		if len(a.foundIn) > 0 {
-			if meta, err := ReadSkillMetadata(a.foundIn[0]); err == nil && meta.Name != "" {
+		if len(paths) > 0 {
+			if meta, err := ReadSkillMetadata(paths[0]); err == nil && meta.Name != "" {
 				name = meta.Name
 			}
 		}
-		for _, agID := range a.agentIDs {
-			unmanaged = append(unmanaged, UnmanagedSkill{
-				AgentID:   agID,
-				Directory: dirName,
-				Path:      a.foundIn[0],
-				Name:      name,
-				FoundIn:   copySlice(a.foundIn),
-			})
+		for _, occ := range a.occurrences {
+			for _, agID := range occ.agentIDs {
+				unmanaged = append(unmanaged, UnmanagedSkill{
+					AgentID:   agID,
+					Directory: dirName,
+					Path:      occ.path,
+					Name:      name,
+					FoundIn:   copySlice(paths),
+				})
+			}
 		}
 	}
 	return unmanaged
@@ -1037,36 +1061,53 @@ func (s *Store) autoAdoptWith(capableIDs []string, dirResolver func(agentID stri
 		})
 	}
 
-	// 3. 加写锁更新 in-memory 状态
-	s.mu.Lock()
-	for _, ap := range appliedList {
-		skillID := "skill:" + ap.dirName
-		// 读取 SSOT 中的元数据
+	// 3. 只读准备：在锁外读取 SSOT 元数据与内容哈希（仍处于 importMu 临界区内，
+	//    与 Import/Uninstall 互斥，目录内容稳定），避免持写锁做文件 IO。
+	type adoptMeta struct {
+		meta        SkillMetadata
+		contentHash string
+		contentOK   bool
+		skillMdHash string
+		err         error
+	}
+	prepared := make([]adoptMeta, len(appliedList))
+	for i, ap := range appliedList {
 		skillPath := filepath.Join(ssotDir, ap.dirName)
-		meta, err := ReadSkillMetadata(skillPath)
-		if err != nil {
-			result.Errors = append(result.Errors, fmt.Sprintf("adopt %s: read metadata: %v", ap.dirName, err))
+		var m adoptMeta
+		m.meta, m.err = ReadSkillMetadata(skillPath)
+		if m.err == nil {
+			m.contentHash, m.contentOK = HashDir(skillPath)
+			if !m.contentOK {
+				log.Printf("warning: skill content hash may be incomplete for %s", skillPath)
+			}
+			m.skillMdHash, _ = HashSkillMarkdown(skillPath)
+		}
+		prepared[i] = m
+	}
+
+	// 4. 加写锁更新 in-memory 状态（仅使用上面预读的结果）
+	s.mu.Lock()
+	for i, ap := range appliedList {
+		skillID := "skill:" + ap.dirName
+		m := prepared[i]
+		if m.err != nil {
+			result.Errors = append(result.Errors, fmt.Sprintf("adopt %s: read metadata: %v", ap.dirName, m.err))
 			continue
 		}
-		name := meta.Name
+		name := m.meta.Name
 		if name == "" {
 			name = ap.dirName
 		}
-		contentHash, complete := HashDir(skillPath)
-		if !complete {
-			log.Printf("warning: skill content hash may be incomplete for %s", skillPath)
-		}
-		skillMdHash, _ := HashSkillMarkdown(skillPath)
 		now := shared.NowRFC3339()
 		sk, exists := s.skills[skillID]
 		if !exists {
 			sk = Skill{
 				ID:          skillID,
 				Name:        name,
-				Description: meta.Description,
+				Description: m.meta.Description,
 				Directory:   ap.dirName,
-				ContentHash: contentHash,
-				SkillMdHash: skillMdHash,
+				ContentHash: m.contentHash,
+				SkillMdHash: m.skillMdHash,
 				InstalledAt: now,
 			}
 			// 从 ~/.agents/.skill-lock.json 注入仓库来源（若存在）
@@ -1077,8 +1118,8 @@ func (s *Store) autoAdoptWith(capableIDs []string, dirResolver func(agentID stri
 			}
 		}
 		sk.UpdatedAt = now
-		sk.ContentHash = contentHash
-		sk.SkillMdHash = skillMdHash
+		sk.ContentHash = m.contentHash
+		sk.SkillMdHash = m.skillMdHash
 		sk.BoundAgents = copySlice(ap.agentIDs)
 		s.skills[skillID] = sk
 		for _, agID := range ap.agentIDs {

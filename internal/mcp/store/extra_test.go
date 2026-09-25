@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
+	"time"
 )
 
 // TestStore_UpdateCarriesOverExtraKeys 验证 Update 整表重写时被更新条目
@@ -180,6 +182,59 @@ func newTestStore(t *testing.T) *Store {
 	t.Setenv("USERPROFILE", home)
 	t.Setenv("APPDATA", "")
 	return NewStore()
+}
+
+// 回归测试（第 6 条并发重构）：配置文件 IO 已移出 s.mu 写锁，读操作不再被
+// 长事务阻塞。用有界超时断言读写并发不死锁：出现死锁时快速失败而非挂起。
+func TestStore_ConcurrentReadWriteNoDeadlock(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("APPDATA", "")
+
+	claudePath := filepath.Join(home, ".claude.json")
+	writeFile(t, claudePath, `{}`)
+	reg := agents.NewRegistry()
+	reg.Register(agents.Agent{ID: "claude-code", Name: "Claude Code", Type: agents.TypeClaudeCode, Status: agents.StatusEnabled, ConfigPath: claudePath})
+
+	store := NewStore()
+	if err := store.Load(reg); err != nil {
+		t.Fatal(err)
+	}
+	created, err := store.Add(types.Server{Name: "seed", Command: "echo", Transport: types.TransportStdio}, []string{"claude-code"}, reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		var wg sync.WaitGroup
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 200; i++ {
+				_ = store.List()
+				_, _ = store.Get(created.ID)
+				_ = store.Ready()
+				_ = store.AgentBound(created.ID, "claude-code")
+				_ = store.AgentMcpCounts()
+			}
+		}()
+		for i := 0; i < 30; i++ {
+			if err := store.ToggleAgent(created.ID, "claude-code", i%2 == 1, reg); err != nil {
+				t.Errorf("toggle: %v", err)
+				return
+			}
+		}
+		wg.Wait()
+	}()
+
+	select {
+	case <-finished:
+	case <-time.After(60 * time.Second):
+		t.Fatal("并发读写死锁")
+	}
 }
 
 // TestStore_MultiAgentUpdateKeepsPerFileExtra 验证绑定多个 agent 的服务器在

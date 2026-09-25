@@ -41,6 +41,9 @@ export const useSkillsStore = defineStore('skills', () => {
       ])
       skills.value = skillList
       skillCapableAgents.value = agents
+      // 成功加载后清除旧的失败信息（与 withApiError 语义一致），
+      // 避免 SkillsView 的旧错误横幅常驻
+      error.value = null
     } catch (e) {
       const apiError = ApiError.from(e)
       error.value = apiError.message

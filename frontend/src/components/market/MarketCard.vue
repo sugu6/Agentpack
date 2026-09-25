@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, ref, watch, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { PhDownloadSimple, PhTag, PhCheck, PhTrash, PhGlobe, PhBookOpen, PhLink, PhStar, PhCopy } from '@phosphor-icons/vue'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription, Badge, Button, Spinner, Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter, Separator } from '@/components/ui'
@@ -27,6 +27,19 @@ const detailOpen = ref(false)
 
 // 保存打开弹窗时的滚动位置，关闭后恢复，防止 reka-ui Dialog 焦点还原导致列表位置偏移
 let savedScrollTop = 0
+// 复制提示与滚动恢复的异步句柄：组件卸载时需取消，
+// 否则会向已销毁组件的 ref 写入（内存泄漏/无意义更新）
+const pendingCopyTimers = new Set<ReturnType<typeof setTimeout>>()
+let scrollRestoreRaf: number | null = null
+
+onUnmounted(() => {
+  for (const timer of pendingCopyTimers) clearTimeout(timer)
+  pendingCopyTimers.clear()
+  if (scrollRestoreRaf !== null) {
+    cancelAnimationFrame(scrollRestoreRaf)
+    scrollRestoreRaf = null
+  }
+})
 
 function findScrollContainer(): HTMLElement | null {
   return document.querySelector('.market-scroll-container')
@@ -44,8 +57,9 @@ watch(detailOpen, (open) => {
     const container = findScrollContainer()
     if (!container) return
     // 双重 RAF 确保在 reka-ui 的 watch + FocusScope unmount 之后执行
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
+    scrollRestoreRaf = requestAnimationFrame(() => {
+      scrollRestoreRaf = requestAnimationFrame(() => {
+        scrollRestoreRaf = null
         container.scrollTop = savedScrollTop
       })
     })
@@ -110,7 +124,13 @@ async function copyWithFeedback(text: string | undefined | null, copied: { value
   const ok = await copyToClipboard(text)
   if (ok) {
     copied.value = true
-    setTimeout(() => { copied.value = false }, 2000)
+    // 每次复制独立计时（命令/环境变量各自的提示可同时存在），
+    // 记录句柄以便卸载时清理
+    const timer = setTimeout(() => {
+      pendingCopyTimers.delete(timer)
+      copied.value = false
+    }, 2000)
+    pendingCopyTimers.add(timer)
   }
 }
 

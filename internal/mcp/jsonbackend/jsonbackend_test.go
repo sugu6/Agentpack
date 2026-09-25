@@ -1094,3 +1094,43 @@ func TestJsonBackend_OpenCodeCwdAndOAuth(t *testing.T) {
 		t.Errorf("cwd lost on second round-trip: %q", out2["local-srv"].Cwd)
 	}
 }
+
+// 回归测试：opencode 的 "mcp" 为标量（"off"/false 等禁用全部 MCP 写法）时，
+// Read 视为空集，Write 也必须按空服务器集合替换标量并写出正确结构，而不是
+// 报 "parse existing mcp field" 导致 Add/Update/Toggle 全部失败。
+func TestJsonBackend_OpenCodeScalarMcpWrite(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "opencode.json")
+	writeFile(t, path, `{"$schema":"https://opencode.ai/config.json","mcp":"off"}`)
+
+	backend := NewBackend("opencode")
+	got, err := backend.Read(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("标量 mcp 应解析为空集, got %d", len(got))
+	}
+
+	in := map[string]types.Server{
+		"fetch": {Name: "fetch", Command: "uvx", Args: []string{"mcp-server-fetch"}, Transport: types.TransportStdio},
+	}
+	if err := backend.Write(path, in); err != nil {
+		t.Fatalf("标量 mcp 不应导致写入失败: %v", err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsStr(string(data), `"$schema"`) {
+		t.Error("写入后应保留文件其他字段（$schema）")
+	}
+	// 标量已被替换为对象结构，可正常读回
+	out, err := backend.Read(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := out["fetch"]; !ok {
+		t.Fatalf("写入后应能读回 fetch: %v", out)
+	}
+}

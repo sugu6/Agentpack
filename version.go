@@ -43,11 +43,16 @@ func parseVersionFromYAML(data []byte) string {
 		if infoIndent >= 0 && indent > infoIndent && strings.HasPrefix(trimmed, "version:") {
 			val := strings.TrimPrefix(trimmed, "version:")
 			val = strings.TrimSpace(val)
-			val = strings.Trim(val, "\"'")
-			// 取第一个空白字符前的内容（处理注释等）
-			if idx := strings.IndexAny(val, " \t"); idx > 0 {
+			// 先按行内注释截断，再按空白截断，最后统一去引号：若先去引号再截断，
+			// 形如 `version: "0.3.0"  # x` 会得到带尾引号的 `0.3.0"`。
+			if idx := strings.Index(val, "#"); idx >= 0 {
 				val = val[:idx]
 			}
+			if idx := strings.IndexAny(val, " \t"); idx >= 0 {
+				val = val[:idx]
+			}
+			val = strings.TrimSpace(val)
+			val = strings.Trim(val, "\"'")
 			if strings.Count(val, ".") >= 2 {
 				return val
 			}

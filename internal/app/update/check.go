@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"agentpack/internal/appmeta"
@@ -43,33 +44,50 @@ func (s *Service) CheckUpdate() (res *UpdateCheckResult, err error) {
 	if s.checkCh != nil {
 		ch := s.checkCh
 		s.checkMu.Unlock()
-		res := <-ch
-		return res.result, res.err
+		// 广播语义：等待 leader close(checkCh) 后，按已存储字段重建结果。
+		// 不再从通道取值，故支持任意数量 waiter（旧实现单值通道会让
+		// 第 3 个及之后的并发调用永久阻塞）。
+		<-ch
+		s.checkMu.Lock()
+		out := s.checkResultFromStored(lang)
+		s.checkMu.Unlock()
+		return out.result, out.err
 	}
 	if cached := s.updateCheckCached(lang); cached != nil {
 		s.checkMu.Unlock()
 		return cached.result, cached.err
 	}
-	ch := make(chan checkRes, 1)
+	ch := make(chan struct{})
 	s.checkCh = ch
 	s.checkMu.Unlock()
 
 	// panic 兜底：checkUpdateInternal 意外 panic 时 waiter 会永久阻塞
 	// 宿主调用线程且 checkCh 不清零（后续检查全部排队等待）。
+	// sync.Once 保证 panic 分支与正常分支对同一通道只 close 一次。
+	var closeOnce sync.Once
+	closeCh := func() { closeOnce.Do(func() { close(ch) }) }
 	defer func() {
 		if r := recover(); r != nil {
 			err = fmt.Errorf("check update panic: %v", r)
 			s.checkMu.Lock()
+			// 记录错误供 waiter 重建；不更新 checkAt（panic 非成功检查）
+			s.checkResult = nil
+			s.checkErr = err
 			s.checkCh = nil
 			s.checkMu.Unlock()
-			ch <- checkRes{err: err}
+			closeCh()
 		}
 	}()
 
 	out := s.checkUpdateInternal()
 
 	s.checkMu.Lock()
-	s.checkAt = time.Now()
+	// 网络失败不盖章：TTL 语义是"距上次成功检查"，瞬时失败若更新 checkAt
+	// 会把失败缓存 10 分钟，用户点重试仍拿旧失败。仍写入 result/msg/err，
+	// 使本次调用与并发 waiter 都能拿到错误信息。
+	if !out.networkFailed {
+		s.checkAt = time.Now()
+	}
 	s.checkRateLtd = out.rateLimited
 	s.checkResult = out.result
 	s.checkMsgKey = out.msgKey
@@ -77,8 +95,22 @@ func (s *Service) CheckUpdate() (res *UpdateCheckResult, err error) {
 	s.checkErr = out.err
 	s.checkCh = nil
 	s.checkMu.Unlock()
-	ch <- checkRes{result: out.result, err: out.err}
+	// 先存储字段（上方临界区）再 close 广播，保证 waiter 唤醒时字段已可见
+	closeCh()
 	return out.result, out.err
+}
+
+// checkResultFromStored 按当前语言从已存储字段重建一次检查结果（不做 TTL 判定）。
+// 调用方须持有 checkMu。抽出以复用：缓存命中与 singleflight waiter 都需
+// "用当前语言重生成消息后再返回"，避免两处逻辑漂移。
+func (s *Service) checkResultFromStored(lang string) *checkRes {
+	out := &checkRes{err: s.checkErr}
+	if s.checkResult != nil {
+		cp := *s.checkResult
+		cp.Message = i18n.T(lang, s.checkMsgKey, s.checkMsgArgs)
+		out.result = &cp
+	}
+	return out
 }
 
 // updateCheckCached 返回缓存的上次检查结果（若仍在有效期内），否则返回 nil。
@@ -94,13 +126,7 @@ func (s *Service) updateCheckCached(lang string) *checkRes {
 	if time.Since(s.checkAt) >= ttl {
 		return nil
 	}
-	out := &checkRes{err: s.checkErr}
-	if s.checkResult != nil {
-		cp := *s.checkResult
-		cp.Message = i18n.T(lang, s.checkMsgKey, s.checkMsgArgs)
-		out.result = &cp
-	}
-	return out
+	return s.checkResultFromStored(lang)
 }
 
 type checkUpdateInternalOut struct {
@@ -108,7 +134,10 @@ type checkUpdateInternalOut struct {
 	msgKey      string
 	msgArgs     map[string]interface{}
 	rateLimited bool
-	err         error
+	// networkFailed 标记本次结果为网络失败（请求超时/连接错误等），
+	// 用于让 CheckUpdate 不更新 checkAt，避免把瞬时失败当作"刚成功检查过"。
+	networkFailed bool
+	err           error
 }
 
 func (s *Service) checkUpdateInternal() checkUpdateInternalOut {
@@ -254,7 +283,8 @@ func (s *Service) checkUpdateInternal() checkUpdateInternalOut {
 			LatestVersion:  current,
 			Message:        i18n.T(lang, "update.message.networkFailed", map[string]interface{}{"error": lastErr.Error()}),
 		},
-		msgKey:  "update.message.networkFailed",
-		msgArgs: map[string]interface{}{"error": lastErr.Error()},
+		msgKey:        "update.message.networkFailed",
+		msgArgs:       map[string]interface{}{"error": lastErr.Error()},
+		networkFailed: true,
 	}
 }

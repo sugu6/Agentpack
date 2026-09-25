@@ -58,3 +58,46 @@ other:
 		t.Fatalf("expected 0.0.0, got %s", got)
 	}
 }
+
+func TestParseAppVersion_TrailingCommentWithQuotes(t *testing.T) {
+	// 带尾引号的版本值 + 行内注释：截断必须先于去引号，
+	// 否则会得到带尾引号的 "0.3.0\""
+	data := []byte(`info:
+  version: "0.3.0"  # x
+`)
+	if got := parseVersionFromYAML(data); got != "0.3.0" {
+		t.Fatalf("expected 0.3.0, got %q", got)
+	}
+}
+
+func TestParseAppVersion_InlineCommentNoSpace(t *testing.T) {
+	// # 前无空白的行内注释也要截断
+	data := []byte(`info:
+  version: 0.3.0#build
+`)
+	if got := parseVersionFromYAML(data); got != "0.3.0" {
+		t.Fatalf("expected 0.3.0, got %q", got)
+	}
+}
+
+func TestParseAppVersion_MultipleSpacesAfterColon(t *testing.T) {
+	// 冒号后多个空格：TrimSpace 必须在按空白截断之前完成，
+	// 否则首个空白在索引 0，截断出空版本号
+	data := []byte(`info:
+  version:   0.3.0
+`)
+	if got := parseVersionFromYAML(data); got != "0.3.0" {
+		t.Fatalf("expected 0.3.0, got %q", got)
+	}
+}
+
+func TestParseAppVersion_QuotedVersionWithTrailingComment(t *testing.T) {
+	// 带引号值 + 行内注释：注释截断必须先于空白截断，
+	// 否则 `0.3.0" # x` 的尾引号会随注释残留
+	data := []byte(`info:
+  version: "0.3.0" # x
+`)
+	if got := parseVersionFromYAML(data); got != "0.3.0" {
+		t.Fatalf("expected 0.3.0, got %q", got)
+	}
+}
