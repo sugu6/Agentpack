@@ -10,12 +10,16 @@ versioned by [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Features
 
 - **Codex config writes aligned with the latest schema**: `tomlbackend` no longer writes keys unrecognized by current Codex (`type` / `headers` / `timeout`, which trigger the app's "unrecognized configuration settings" warnings) and instead emits `http_headers` / `tool_timeout_sec` / `enabled`; transport is inferred from the presence of command/url
+- **Skills copy reconciliation**: Scan and classify duplicate copies, diverged copies, and stale links in agent directories. Identical copies can be safely converted to managed links; diverged copies can be adopted, overwritten, or kept, with a backup made before overwriting.
+- **Skills source recovery and repository links**: Update checks try to recover GitHub sources from skills.sh candidates only after verifying local content. Skill cards link to known repositories, while unverified sources are clearly marked unchecked.
+- **Platform-specific app update packages**: The update service recognizes Windows installers, macOS DMGs, and Linux archives, and verifies the downloaded file digest before launching installation.
 
 ### Bug Fixes
 
 - **Unmodeled Codex keys lost on full-table rewrite**: app-managed keys such as `env_vars` / `startup_timeout_sec` / `oauth` were silently dropped on rewrites; they are now preserved via `Server.Extra` and written back verbatim
 - **Agent-specific JSON keys lost on rewrite**: Claude Code's `oauth` / `headersHelper` / `alwaysLoad`, Cursor's `envFile` / `auth`, Trae's `disabled`, and OpenCode's `oauth` are now preserved via `Server.Extra` (previously a single install/uninstall rewrite could re-enable a server the user had disabled in Trae)
 - **Null-value noise fields in JSON writes**: no longer emits unset fields such as `"command": ""` and `"args": null` into Claude / Cursor / Trae / OpenCode configs
+- **Incorrect Skill update status**: Skills with unknown sources or remote directories that cannot be located are no longer reported as up to date; source backfill preserves lockfile install paths and removes stale associations when they can be verified as obsolete.
 
 ### Changed
 

@@ -38,12 +38,13 @@ AgentPack 是一个基于 [Wails v3](https://v3.wails.io)（Go + Vue 3 + TypeScr
 
 - **Agent 管理**：自动检测已安装的 AI 编码工具，支持启用/禁用单个 Agent
 - **MCP 服务器管理**：增删改查 MCP 服务器，支持多 Agent 绑定与一键扫描
-- **Skills 管理**：安装、卸载、更新检查，支持从 GitHub 仓库扫描与 ZIP 导入
+- **Skills 管理**：安装、卸载和更新检查；已知来源显示 GitHub 仓库链接，未知来源会明确标记为未检查，并尝试通过内容校验恢复来源
+- **Skills 副本对账**：扫描 agent 目录中的重复、分叉和失效链接；相同副本可转为托管链接，分叉副本可选择收编、覆盖或保留，覆盖前自动备份
 - **市场浏览**：集成 Official Registry、skills.sh、GitHub 多个技能市场，支持无限滚动加载
 - **配置导入/导出**：支持配置备份与在多设备间迁移
 - **系统托盘**：Wails v3 原生托盘，支持语言切换时更新托盘文案
 - **轻量模式**：托盘一键隐藏窗口并释放内存，支持空闲自动进入（可配置 1–120 分钟）
-- **自动更新检查**：内置版本检查，对接 GitHub Releases，支持暂停/续传下载
+- **自动更新检查**：对接 GitHub Releases，支持暂停/续传和摘要校验；按平台打开 Windows 安装器、macOS DMG 或 Linux 更新包
 - **中英双语**：内置中英文切换，默认跟随系统语言
 - **跨平台**：支持 Windows、macOS（Intel / Apple Silicon）、Linux
 

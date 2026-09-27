@@ -10,12 +10,16 @@
 ### 特性
 
 - **Codex 配置写入对齐最新 schema**：`tomlbackend` 不再写出新版 Codex 不认识的 `type` / `headers` / `timeout` 键（触发应用 "unrecognized configuration settings" 警告），改写为最新 schema 的 `http_headers` / `tool_timeout_sec` / `enabled`；传输方式由 command/url 有无隐式确定
+- **Skills 副本对账**：扫描并分类 agent 目录中的重复副本、分叉副本和失效链接；相同副本可安全转换为托管链接，内容分叉时可选择收编、覆盖或保留，覆盖前自动备份
+- **Skills 来源恢复与仓库跳转**：更新检查前尝试通过 skills.sh 候选和本地内容校验恢复 GitHub 来源；技能卡片显示仓库链接，无法确认来源的技能明确标记为未检查
+- **按平台选择应用更新包**：更新服务识别 Windows 安装器、macOS DMG 和 Linux 压缩包，并在启动安装前校验下载文件摘要
 
 ### 修复
 
 - **Codex 配置未建模键整表重写丢失**：Codex 应用自管理的 `env_vars` / `startup_timeout_sec` / `oauth` 等键在整表重写时被静默丢弃，现经 `Server.Extra` 原样保留写回
 - **JSON 配置 agent 专属键整表重写丢失**：Claude Code 的 `oauth` / `headersHelper` / `alwaysLoad`、Cursor 的 `envFile` / `auth`、Trae 的 `disabled`、OpenCode 的 `oauth` 等均经 `Server.Extra` 保留（此前一次 install/uninstall 重写会把用户在 Trae 手动禁用的服务器重新启用）
 - **JSON 写入空值噪声字段**：不再向 Claude / Cursor / Trae / OpenCode 配置写出 `"command": ""`、`"args": null` 等未设置字段
+- **Skill 更新状态误报**：来源未知或远端无法定位技能目录时不再显示为最新；回填时保留锁文件中的安装路径，并清理可确认失效的旧来源关联
 
 ### 变更
 

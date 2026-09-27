@@ -39,12 +39,13 @@ Supported agents:
 
 - **Agent Management**: Auto-detect installed AI coding tools; enable/disable individual agents
 - **MCP Server Management**: Full CRUD for MCP servers with multi-agent binding and one-click scan
-- **Skills Management**: Install, uninstall, check updates; scan from GitHub repos and import from ZIP
+- **Skills Management**: Install, uninstall, and check updates; known sources link to GitHub, unknown sources are marked unchecked, and source recovery verifies local content
+- **Skills Reconciliation**: Scan duplicate copies, diverged copies, and stale links in agent directories; convert identical copies to managed links, or adopt, overwrite, or keep a fork. Overwrites are backed up first.
 - **Marketplace**: Integrated Official Registry, skills.sh, GitHub skill marketplaces with infinite scroll
 - **Config Import/Export**: Backup configurations and migrate across devices
 - **System Tray**: Wails v3 native tray with language change menu updates
 - **Lite Mode**: One-click tray toggle to hide window and free memory; supports auto-entry on idle (configurable 1–120 min)
-- **Auto Update Check**: Built-in version check via GitHub Releases with pause/resume download
+- **Auto Update Check**: GitHub Releases integration with pause/resume and digest verification; opens the Windows installer, macOS DMG, or Linux update archive for the detected platform
 - **i18n**: Built-in Chinese/English toggle, defaults to system language
 - **Cross-Platform**: Windows, macOS (Intel / Apple Silicon), Linux
 
