@@ -14,6 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      actions: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -63,6 +64,20 @@ jobs:
           git push origin "HEAD:${{ github.event.repository.default_branch }}"
           git push origin "v${VERSION}"
 
+      - name: Trigger release build
+        uses: actions/github-script@v7
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        with:
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'build.yml',
+              ref: `v${process.env.RELEASE_VERSION}`,
+              inputs: { release: 'true' },
+            })
+
       - name: Summary
         shell: bash
         run: |
@@ -73,4 +88,4 @@ jobs:
           echo "- Created tag v${VERSION}" >> $GITHUB_STEP_SUMMARY
           echo "- Pushed to ${{ github.event.repository.default_branch }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Build workflow will be triggered automatically by the tag push." >> $GITHUB_STEP_SUMMARY
+          echo "Build workflow dispatched for v${VERSION}." >> $GITHUB_STEP_SUMMARY
