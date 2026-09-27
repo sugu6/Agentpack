@@ -40,26 +40,26 @@ jobs:
           fi
           echo "VERSION=$INPUT_VERSION" >> $GITHUB_ENV
 
+      - name: Configure git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
       - name: Update version numbers and changelog
         run: node scripts/release.mjs "$VERSION"
 
       - name: Show changes
         run: |
-          git diff
+          git show --format=fuller --no-ext-diff HEAD
           echo "---"
           echo "build/config.yml version:"
           grep -E '^[[:space:]]+version:[[:space:]]*"[0-9]+\.[0-9]+\.[0-9]+"' build/config.yml
           echo "frontend/package.json version:"
           grep -o '"version"[[:space:]]*:[[:space:]]*"[^"]*"' frontend/package.json | head -1
 
-      - name: Commit and tag
+      - name: Push release commit and tag
         shell: bash
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add build/config.yml frontend/package.json CHANGELOG.md CHANGELOG_EN.md build/darwin/Info.plist build/darwin/Info.dev.plist build/windows/info.json build/windows/wails.exe.manifest build/windows/msix/template.xml build/windows/msix/app_manifest.xml build/linux/nfpm/nfpm.yaml
-          git commit -m "chore: release v${VERSION}"
-          git tag -a "v${VERSION}" -m "Release v${VERSION}"
           git push origin "HEAD:${{ github.event.repository.default_branch }}"
           git push origin "v${VERSION}"
 
