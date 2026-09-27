@@ -200,9 +200,11 @@ func resolveSkillFullPath(sk *Skill) string {
 // 且按技能目录精确判断，避免仓库级误报）。
 // fallback：jsDelivr 不可达时回退到 git ls-remote + commit 缓存基线（旧机制）。
 func (s *Store) CheckUpdates(reg *agents.Registry) []UpdateStatus {
+	lockData := ParseAgentsLock()
 	s.mu.RLock()
 	skillsList := make([]Skill, 0, len(s.skills))
 	for _, sk := range s.skills {
+		applyLockRepoInfo(&sk, lockData)
 		if sk.RepoOwner != "" && sk.RepoName != "" {
 			skillsList = append(skillsList, sk)
 		}
@@ -335,6 +337,11 @@ func (s *Store) CheckUpdates(reg *agents.Registry) []UpdateStatus {
 						//（truncated 场景下更无法确认）。
 						log.Printf("CheckUpdates: %s: cannot locate skill dir in %s/%s (truncated=%v), keeping source association",
 							sk.Directory, sk.RepoOwner, sk.RepoName, truncated)
+						status.Skipped = true
+						status.SkipReason = fmt.Sprintf("skill directory not found in %s/%s", sk.RepoOwner, sk.RepoName)
+						if truncated {
+							status.SkipReason += " (remote tree truncated)"
+						}
 						results[i] = status
 						continue
 					}
@@ -427,6 +434,9 @@ func (s *Store) CheckUpdates(reg *agents.Registry) []UpdateStatus {
 			}
 			modified[sk.ID] = true
 			wroteCache = true
+		default:
+			status.Skipped = true
+			status.SkipReason = fmt.Sprintf("repository %s/%s returned no files or commit", sk.RepoOwner, sk.RepoName)
 		}
 
 		results[i] = status

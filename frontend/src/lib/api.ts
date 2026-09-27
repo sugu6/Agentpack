@@ -306,6 +306,11 @@ export interface UpdateStatus {
   /** 与远端有差异的文件（相对技能目录），jsDelivr 内容级检测填充 */
   changedFiles?: string[]
   error?: string
+  /** 来源未知，本次未执行更新检查 */
+  sourceMissing?: boolean
+  /** 来源有效，但本次未能定位远端技能内容 */
+  skipped?: boolean
+  skipReason?: string
 }
 
 export interface UpdateError {

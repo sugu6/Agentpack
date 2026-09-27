@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -63,18 +64,22 @@ func ParseAgentsLock() map[string]LockRepoInfo {
 
 	result := make(map[string]LockRepoInfo, len(lock.Skills))
 	for name, skill := range lock.Skills {
-		if skill.SourceType == "github" && skill.Source != "" {
-			owner, repo, ok := splitOwnerRepo(skill.Source)
-			if !ok {
-				log.Printf("ParseAgentsLock: skip entry %q, cannot split source %q", name, skill.Source)
-				continue
-			}
+		owner, repo, ok := "", "", false
+		if skill.SourceType == "github" {
+			owner, repo, ok = splitOwnerRepo(skill.Source)
+		}
+		if !ok {
+			owner, repo, ok = splitGitHubRepoURL(skill.SourceURL)
+		}
+		if ok {
 			branch := normalizeBranch(skill.Branch)
 			if branch == "" {
 				branch = normalizeBranch(skill.SourceBranch)
 			}
 			if branch == "" {
-				branch = parseBranchFromURL(skill.SourceURL)
+				if sourceURLMatchesRepo(skill.SourceURL, owner, repo) {
+					branch = parseBranchFromURL(skill.SourceURL)
+				}
 			}
 			result[name] = LockRepoInfo{
 				Owner:    owner,
@@ -84,7 +89,10 @@ func ParseAgentsLock() map[string]LockRepoInfo {
 			}
 			logger.Debug("ParseAgentsLock: entry", "name", name, "owner", owner, "repo", repo, "branch", branch)
 		} else {
-			// 存根记录或非 github 源：返回空字段，表示来源未知
+			if skill.Source != "" || skill.SourceURL != "" {
+				log.Printf("ParseAgentsLock: entry %q has no valid GitHub source", name)
+			}
+			// 存根记录或非 GitHub 源：返回空字段，表示来源未知
 			result[name] = LockRepoInfo{FullPath: skill.FullPath}
 			logger.Debug("ParseAgentsLock: stub entry", "name", name, "sourceType", skill.SourceType)
 		}
@@ -95,10 +103,57 @@ func ParseAgentsLock() map[string]LockRepoInfo {
 
 func splitOwnerRepo(source string) (owner, repo string, ok bool) {
 	parts := strings.SplitN(strings.TrimSpace(source), "/", 2)
-	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+	if len(parts) != 2 || !validGitHubOwner(parts[0]) || !validGitHubRepo(parts[1]) {
 		return "", "", false
 	}
 	return parts[0], parts[1], true
+}
+
+func splitGitHubRepoURL(sourceURL string) (owner, repo string, ok bool) {
+	u, err := url.Parse(strings.TrimSpace(sourceURL))
+	if err != nil || u.Scheme != "https" || u.Host != "github.com" || u.User != nil || u.Opaque != "" {
+		return "", "", false
+	}
+	// Reject encoded path separators and other escaped owner/repo coordinates.
+	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
+	escapedParts := strings.Split(strings.Trim(u.EscapedPath(), "/"), "/")
+	if len(parts) < 2 || len(escapedParts) < 2 || escapedParts[0] != parts[0] || escapedParts[1] != parts[1] || !validGitHubOwner(parts[0]) {
+		return "", "", false
+	}
+	repo = strings.TrimSuffix(parts[1], ".git")
+	if !validGitHubRepo(repo) {
+		return "", "", false
+	}
+	return parts[0], repo, true
+}
+
+func sourceURLMatchesRepo(sourceURL, owner, repo string) bool {
+	urlOwner, urlRepo, ok := splitGitHubRepoURL(sourceURL)
+	return ok && strings.EqualFold(urlOwner, owner) && strings.EqualFold(urlRepo, repo)
+}
+
+func validGitHubOwner(owner string) bool {
+	if owner == "" || len(owner) > 39 || strings.HasPrefix(owner, "-") || strings.HasSuffix(owner, "-") {
+		return false
+	}
+	for _, r := range owner {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-') {
+			return false
+		}
+	}
+	return true
+}
+
+func validGitHubRepo(repo string) bool {
+	if repo == "" || len(repo) > 100 || repo == "." || repo == ".." {
+		return false
+	}
+	for _, r := range repo {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' || r == '.') {
+			return false
+		}
+	}
+	return true
 }
 
 func normalizeBranch(branch string) string {
@@ -282,6 +337,10 @@ func WriteAgentsLock(entry AgentsLockEntry) error {
 	branch := entry.Branch
 	if branch == "" {
 		branch = "main"
+	}
+	// 回填和其他部分更新不能清空已有归属路径，否则陈旧条目将无法安全剪除。
+	if entry.SkillPath == "" {
+		entry.SkillPath = lock.Skills[entry.Directory].SkillPath
 	}
 	lock.Skills[entry.Directory] = AgentsLockSkill{
 		Source:       entry.Source,

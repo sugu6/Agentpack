@@ -350,6 +350,10 @@ async function onSkillSearch() {
                   :server="server"
                 />
               </div>
+
+              <p v-if="market.errorServers" class="text-xs text-destructive">
+                {{ market.errorServers }}
+              </p>
             </template>
           </TabsContent>
 
@@ -439,6 +443,10 @@ async function onSkillSearch() {
                   :skill="skill"
                 />
               </div>
+
+              <p v-if="market.errorSkills" class="text-xs text-destructive">
+                {{ market.errorSkills }}
+              </p>
             </template>
           </TabsContent>
         </Tabs>
@@ -465,10 +473,6 @@ async function onSkillSearch() {
           :scroll-root="scrollContainer"
           :load-more-fn="() => market.loadMoreSkills()"
         />
-
-        <p v-if="market.error" class="mt-4 text-xs text-destructive">
-          {{ market.error }}
-        </p>
       </div>
     </div>
   </div>

@@ -43,8 +43,9 @@ export const useSettingsStore = defineStore('settings', () => {
   // 用户刚输入的值，且排队的保存重放的也是被覆盖的旧值——输入静默丢失。
   let pendingWrite = 0
   // 写版本号：update 成功提交后自增。fetch 在发起时快照版本号，响应返回时
-  // 若版本已变（请求期间有 update 提交）则丢弃陈旧响应——pendingWrite 只
-  // 拦截"发起时"的请求，拦不住"请求在途期间"提交的保存。
+  // 若版本已变（请求期间有 update 提交）则丢弃陈旧响应。与出口处的
+  // pendingWrite 复检共同覆盖"请求在途期间才发起 update"的窗口（此时
+  // 写版本号尚未递增，仅靠版本号拦不住）。
   let writeVersion = 0
   // 在途的 fetch promise：ensureLoaded 命中 loading 时等待同一请求完成，
   // 而非立即返回导致调用方基于默认配置初始化。
@@ -123,6 +124,11 @@ export const useSettingsStore = defineStore('settings', () => {
       // 请求在途期间有 update 成功提交：响应携带的是旧快照，丢弃避免覆盖
       // 刚保存的值（finally 仍会清 loading）。
       if (requestVersion !== writeVersion) return
+      // 出口复检在途保存：pendingWrite 入口守卫拦不住"请求在途期间"才发起的
+      // update。若此把旧快照写回 config，update 完成后的字段级合并会把
+      // fetch 写入的旧值误判为"保存期间用户又改过"而保留（合并以
+      // current !== callTime 判定），用户刚做的修改被静默回滚。
+      if (pendingWrite > 0) return
       // Migrate legacy "auto" sync method to "symlink" before typed assignment.
       const rawSyncMethod = (s.skillSyncMethod as string | undefined) ?? 'symlink'
       const skillSyncMethod: AppSettings['skillSyncMethod'] = rawSyncMethod === 'copy' ? 'copy' : 'symlink'

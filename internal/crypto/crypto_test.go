@@ -146,6 +146,63 @@ func TestDecryptEnv_ForeignCiphertextReturnsError(t *testing.T) {
 	}
 }
 
+// TestLoadOrCreateMachineKey_EmptyFileIsNotReplaced 验证零字节文件不能被
+// 自动删除并换成新密钥：读取方无法判断它是崩溃残留还是仍有进程准备写入。
+func TestLoadOrCreateMachineKey_EmptyFileIsNotReplaced(t *testing.T) {
+	keyFile := filepath.Join(t.TempDir(), ".agentpack", ".machine_key")
+	if err := os.MkdirAll(filepath.Dir(keyFile), 0700); err != nil {
+		t.Fatal(err)
+	}
+	creator, err := os.OpenFile(keyFile, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := creator.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := loadOrCreateMachineKey(keyFile); err == nil {
+		t.Fatal("an incomplete key file must not be replaced without proving its creator has stopped")
+	}
+	if info, err := os.Stat(keyFile); err != nil || info.Size() != 0 {
+		t.Fatalf("incomplete key file must remain untouched, info=%v err=%v", info, err)
+	}
+
+	want := bytes.Repeat([]byte{0x5a}, 32)
+	if err := os.WriteFile(keyFile, want, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := loadOrCreateMachineKey(keyFile)
+	if err != nil {
+		t.Fatalf("second reader should load the creator's persisted key: %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatal("reader returned a different key than the original creator persisted")
+	}
+}
+
+// TestLoadOrCreateMachineKey_CorruptFileIsolated 验证真正的损坏密钥
+// （含部分密钥材料的非 32 字节内容）仍被隔离并报错，不得静默换钥。
+func TestLoadOrCreateMachineKey_CorruptFileIsolated(t *testing.T) {
+	keyFile := filepath.Join(t.TempDir(), ".agentpack", ".machine_key")
+	if err := os.MkdirAll(filepath.Dir(keyFile), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keyFile, []byte("partial"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := loadOrCreateMachineKey(keyFile)
+	if err == nil {
+		t.Fatal("corrupt (partial) key file must fail, not silently regenerate")
+	}
+	// 损坏文件被隔离，原路径不再存在
+	if _, sstatErr := os.Stat(keyFile); !os.IsNotExist(sstatErr) {
+		t.Errorf("corrupt key file should be isolated/removed, stat err=%v", sstatErr)
+	}
+}
+
 // TestLoadOrCreateMachineKey_ConcurrentFirstStart 验证首启并发：
 // 多个实例同时首启时不会各自覆盖密钥；全部采用同一密钥，且落盘密钥与之
 // 一致；再次调用复用既有密钥而不重新生成。

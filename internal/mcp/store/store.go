@@ -1061,6 +1061,35 @@ func (s *Store) Update(id string, server types.Server, agentIDs []string, reg *a
 		rollbackReplaceableIDs = append([]string{}, replaceableOldIDs...)
 		s.mu.Unlock()
 
+		// 透传字段兜底：前端编辑表单不提供 headers/enabled 输入，
+		// 请求体未携带时沿用旧值，避免一次普通编辑让远程服务器的
+		// 鉴权 headers 或 opencode 禁用状态被静默清空。
+		// 用 nil（字段未提供）而非 len==0 判定：JSON 反序列化时
+		// "headers": [] 是显式清空请求，非 nil 空切片必须生效，
+		// 否则用户清除鉴权头后重启仍被旧值兜底带回。
+		// Cwd/Timeout/ConfigType 同理：备份导入（export.go）构造的
+		// Server 不携带这些字段，若无兜底，对已有服务器 Update 后
+		// 其 cwd/timeout/config_type 被清空（"type" 被清后 opencode
+		// 远程服务器重启按 stdio 解析）。
+		// 必须在此处（阶段 2 落盘之前）完成：replaceServerInConfigsLocked
+		// 是整条替换（旧条目 delete + 新条目写入），兜底若晚于落盘，
+		// 磁盘会被写成未兜底的字段形态，重启 Load 后永久丢失。
+		if server.Headers == nil {
+			server.Headers = old.Headers
+		}
+		if server.Cwd == "" {
+			server.Cwd = old.Cwd
+		}
+		if server.Timeout == 0 {
+			server.Timeout = old.Timeout
+		}
+		if server.ConfigType == "" {
+			server.ConfigType = old.ConfigType
+		}
+		if server.Enabled == nil {
+			server.Enabled = old.Enabled
+		}
+
 		// 阶段 2：配置文件 IO（只持 opMu，不持 s.mu）
 		// 一次性原子替换：每个配置文件只读一次、写一次（删除旧条目+写入新
 		// 条目合并）。原实现 removeFromAgentsLocked → writeToAgentsLocked 两步
@@ -1087,34 +1116,8 @@ func (s *Store) Update(id string, server types.Server, agentIDs []string, reg *a
 		server.InstalledAt = old.InstalledAt
 		server.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
 
-		// 透传字段兜底：前端编辑表单不提供 headers/enabled 输入，
-		// 请求体未携带时沿用旧值，避免一次普通编辑让远程服务器的
-		// 鉴权 headers 或 opencode 禁用状态被静默清空。
-		// 用 nil（字段未提供）而非 len==0 判定：JSON 反序列化时
-		// "headers": [] 是显式清空请求，非 nil 空切片必须生效，
-		// 否则用户清除鉴权头后重启仍被旧值兜底带回。
-		if server.Headers == nil {
-			server.Headers = old.Headers
-		}
-		// Cwd/Timeout/ConfigType 同理：前端表单无对应输入，请求体未携带时
-		// 沿用旧值。备份恢复（export.go 导入）构造的 types.Server 不携带这三个
-		// 字段，若无兜底，对已有服务器 Update 后其 cwd/timeout/config_type
-		// 被清空（"type" 被清后 opencode 远程服务器重启按 stdio 解析）。
-		// 与 headers 一致的精神：string/int 无法区分"未提供"与"显式空"，
-		// 前端也无清空入口，保守沿用旧值。
-		if server.Cwd == "" {
-			server.Cwd = old.Cwd
-		}
-		if server.Timeout == 0 {
-			server.Timeout = old.Timeout
-		}
-		if server.ConfigType == "" {
-			server.ConfigType = old.ConfigType
-		}
-		if server.Enabled == nil {
-			server.Enabled = old.Enabled
-		}
-
+		// 透传字段兜底已前移到阶段 2 落盘之前（见 replaceServerInConfigsLocked
+		// 调用上方），此处不再重复：写盘与入库必须使用同一个 server。
 		s.servers[id] = server
 		for _, agID := range agentIDs {
 			s.recordBindingLocked(id, agID)

@@ -238,20 +238,45 @@ func (s *Store) List() []Skill {
 	for id, sk := range s.skills {
 		sk.BoundAgents = copySlice(boundAgentsFromMap(s.bindings, id))
 		// 从 lock file 注入仓库来源（兜底：处理 Import 时未传入 repoOwner/repoName 的情况）
-		if sk.RepoOwner == "" && lockData != nil {
-			if lk, ok := lockData[sk.Directory]; ok {
-				sk.RepoOwner = lk.Owner
-				sk.RepoName = lk.Repo
-				sk.RepoBranch = lk.Branch
-				if sk.FullPath == "" {
-					sk.FullPath = lk.FullPath
-				}
-			}
-		}
+		applyLockRepoInfo(&sk, lockData)
 		out = append(out, sk)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
+}
+
+func applyLockRepoInfo(sk *Skill, lockData map[string]LockRepoInfo) bool {
+	if sk == nil || (sk.RepoOwner != "" && sk.RepoName != "") || lockData == nil {
+		return false
+	}
+	lk, ok := lockData[sk.Directory]
+	if !ok || lk.Owner == "" || lk.Repo == "" {
+		return false
+	}
+	sk.RepoOwner, sk.RepoName = lk.Owner, lk.Repo
+	if lk.Branch != "" {
+		sk.RepoBranch = lk.Branch
+	}
+	if sk.FullPath == "" {
+		sk.FullPath = lk.FullPath
+	}
+	return true
+}
+
+// RefreshRepoSourcesFromLock synchronizes in-memory skill sources with the
+// shared lock file so update checks also see changes made by external tools.
+func (s *Store) RefreshRepoSourcesFromLock() bool {
+	lockData := ParseAgentsLock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	changed := false
+	for id, sk := range s.skills {
+		if applyLockRepoInfo(&sk, lockData) {
+			s.skills[id] = sk
+			changed = true
+		}
+	}
+	return changed
 }
 
 func (s *Store) Get(id string) (Skill, bool) {
@@ -291,7 +316,7 @@ func (s *Store) SetRepoSource(skillID, owner, repo, branch, fullPath string) boo
 	if !ok {
 		return false
 	}
-	if cur.RepoOwner == "" && cur.RepoName == "" {
+	if cur.RepoOwner == "" || cur.RepoName == "" {
 		cur.RepoOwner = owner
 		cur.RepoName = repo
 		cur.RepoBranch = branch
@@ -387,6 +412,32 @@ func (s *Store) ImportWithDirName(path, dirName string, agentIDs []string, reg *
 	// 或目标存在但未被 store 纳管（残留目录：此前解析失败被跳过、或安装中断残留，
 	// 内存重复检查已确认无同名托管技能）。残留目录不能沿用旧内容
 	//（可能是损坏状态），先移除再用源内容替换。
+	//
+	// 陈旧 lock 条目检测必须在此（SSOT 拷贝）之前完成：拷贝会让 dest 重新
+	// 存在，之后就无法区分"条目仍描述当前安装"与"条目是外部删除后的残留"。
+	// 若 dirName 的条目指向 SSOT 内已不存在的目录，则该条目陈旧——调用方
+	// 传空 owner/repo（本地/zip 导入）时会继承它，让 CheckUpdates/UpdateSkill
+	// 用旧仓库覆盖新内容；且目录重新存在后，下一次 Load 的
+	// PruneStaleLockEntries 会判定"目录仍在"而永久保留该陈旧关联。
+	// 直接删除条目（best effort）；后续 ParseAgentsLock 重新读取时条目已消失，
+	// 来源注入自然跳过。
+	if !destExists {
+		if lockFile, lerr := readAgentsLock(); lerr == nil {
+			if entry, ok := lockFile.Skills[dirName]; ok && entry.SkillPath != "" {
+				p, perr := filepath.Abs(entry.SkillPath)
+				ssotAbs, serr := filepath.Abs(ssotDir)
+				if perr == nil && serr == nil {
+					rel, rerr := filepath.Rel(ssotAbs, p)
+					insideSSOT := rerr == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+					if insideSSOT {
+						if _, statErr := os.Stat(p); os.IsNotExist(statErr) {
+							_ = RemoveAgentsLockEntry(dirName)
+						}
+					}
+				}
+			}
+		}
+	}
 	copiedDest := false
 	if destExists {
 		if err := RemovePath(dest); err != nil {

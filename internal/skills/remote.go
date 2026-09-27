@@ -75,6 +75,10 @@ var gitHubRawMirrors = []string{"https://raw.gitmirror.com"}
 // gitHubRawDirect 是 raw.githubusercontent.com 直连 URL（可覆盖，便于测试）。
 var gitHubRawDirect = "https://raw.githubusercontent.com"
 
+// gitHubCodeloadDirect 是 tarball 直连 base（tarballCandidateURLs 的末位
+// 兜底固定为 "https://codeload.github.com/{owner}/{repo}/tar.gz/..."）。
+const gitHubCodeloadDirect = "https://codeload.github.com"
+
 // jsDelivrTimeout 是单个 HTTP 请求的超时（多域名顺序尝试，每个都短超时）。
 const jsDelivrTimeout = 8 * time.Second
 
@@ -937,13 +941,32 @@ func remoteRawURLs(owner, repo, branch, relPath string) []string {
 	return out
 }
 
+// isAuthoritativeBase 判定 URL 是否指向"权威源"（GitHub 直连 raw / API /
+// codeload）。权威域的 4xx（404/410 等）表示资源确实不存在，可终止候选
+// 循环；代理（gh-proxy/ghfast/ghproxy.net 及 API 代理）与镜像（gitmirror
+// 等）的 4xx 只说明该代理/镜像无法提供资源（路径格式不被支持、缓存缺失
+// 等），不代表资源不存在，必须继续尝试后续候选（含末位直连兜底），否则
+// 安装/更新会从"可回退"退化为硬失败。
+func isAuthoritativeBase(u string) bool {
+	for _, b := range []string{gitHubRawDirect, "https://api.github.com", gitHubCodeloadDirect} {
+		if strings.HasPrefix(u, b+"/") || u == b {
+			return true
+		}
+	}
+	return false
+}
+
 // httpGetBody 顺序尝试多个 URL，首个成功返回响应体与获胜 URL
 // （供"上次成功优先"排序记录，失败时获胜 URL 为空串）。
+//
+// 失败语义按候选域区分（见 isAuthoritativeBase）：权威域（GitHub 直连
+// raw / API / codeload）的 4xx（除 429 限流、403 权限外）是确定性
+// "资源不存在"信号，立即终止候选循环（update.go 的 is404 判断依赖该
+// 信号识别 jsDelivr 树过时并切换 GitHub 树）；代理/镜像候选的 4xx 只
+// 说明该代理无法提供资源，继续尝试后续候选（含末位直连兜底），避免
+// 安装/更新从"可回退"退化为硬失败。全部失败后汇总打印一次日志。
 func httpGetBody(ctx context.Context, urls []string) ([]byte, string, error) {
 	var lastErr error
-	// 403/429/网络错误非确定性失败：逐个尝试。全部失败后汇总打印一次，
-	// 避免 jsDelivr→GitHub 多候选 URL 各自打一条（如 jsDelivr/CDN/代理
-	// 全被网络拦截时启动即产生几十行 403 噪音日志）。
 	var failures []string
 	for _, u := range urls {
 		body, err := httpGetBodyOne(ctx, u)
@@ -951,12 +974,12 @@ func httpGetBody(ctx context.Context, urls []string) ([]byte, string, error) {
 			return body, u, nil
 		}
 		lastErr = err
-		// 4xx（除 429 限流、403 权限外）是确定性问题：资源不存在/已删除/大小受限，
-		// 换域名结果相同，立即失败避免逐个域名空等。
 		var se *httpStatusError
 		if errors.As(err, &se) && se.status >= 400 && se.status < 500 &&
 			se.status != http.StatusTooManyRequests && se.status != http.StatusForbidden {
-			return nil, "", err
+			if isAuthoritativeBase(u) {
+				return nil, "", err
+			}
 		}
 		failures = append(failures, fmt.Sprintf("%s: %v", u, err))
 	}

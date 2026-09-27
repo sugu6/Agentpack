@@ -45,20 +45,6 @@ func InstallServer(mcps *mcp.Store, reg *agents.Registry, server market.MarketSe
 	}, agentIDs, reg)
 }
 
-// InstallSkill 从远程仓库 tarball 安装 skill 到指定 agents。
-// 等价于 PrepareSkillInstall + CommitSkillInstall 的组合（自建 5 分钟总预算），
-// 保留签名供不关心锁编排的调用方使用。
-func InstallSkill(ss *skills.Store, reg *agents.Registry, skill market.MarketSkill, agentIDs []string) (skills.Skill, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer cancel()
-	prepared, branch, err := PrepareSkillInstall(ctx, skill)
-	if err != nil {
-		return skills.Skill{}, err
-	}
-	defer prepared.Cleanup()
-	return CommitSkillInstall(ss, prepared, branch, skill, agentIDs, reg)
-}
-
 // PrepareSkillInstall 执行远程 tarball 安装的"下载 + 解压 + 定位"阶段，
 // 不触碰本地 store，故调用方无需持有 store 锁（这是把分钟级网络 IO 移出
 // storeOpMu 的关键）。

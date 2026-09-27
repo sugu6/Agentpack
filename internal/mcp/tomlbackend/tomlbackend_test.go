@@ -606,6 +606,56 @@ name = "r2"
 	}
 }
 
+// 回归测试：TOML 本地 datetime（无 offset）由 BurntSushi 以
+// "datetime-local" Location 解码；整表重写必须按无 offset 形态回写，
+// 否则在任何非"恰好本地时区"场景下都会被漂移成带 offset 的
+// datetime（类型改变，如 Codex oauth 过期时间键）。
+func TestTomlBackend_DatetimeLocalNoOffsetRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	writeFile(t, path, `
+[mcp_servers.app]
+command = "uvx"
+expires_at = 2024-01-02T03:04:05
+`)
+
+	backend := NewBackend()
+	out, err := backend.Read(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, ok := out["app"].Extra["expires_at"].(time.Time)
+	if !ok {
+		t.Fatalf("expires_at 应解码为 time.Time, got %T", out["app"].Extra["expires_at"])
+	}
+	if v.Location().String() != "datetime-local" {
+		t.Fatalf("无 offset datetime 的 Location 应为 datetime-local, got %q", v.Location())
+	}
+
+	if err := backend.Write(path, out); err != nil {
+		t.Fatal(err)
+	}
+
+	data, rerr := os.ReadFile(path)
+	if rerr != nil {
+		t.Fatal(rerr)
+	}
+
+	out2, err := backend.Read(path)
+	if err != nil {
+		t.Fatalf("重写后的 TOML 无法解析: %v\n%s", err, data)
+	}
+	v2, ok := out2["app"].Extra["expires_at"].(time.Time)
+	if !ok {
+		t.Fatalf("round-trip 后 expires_at 类型变化: %T", out2["app"].Extra["expires_at"])
+	}
+	if v2.Location().String() != "datetime-local" {
+		t.Errorf("round-trip 后本地 datetime 被漂移为带 offset 的 datetime (Location=%q)", v2.Location())
+	}
+	if !v2.Equal(v) {
+		t.Errorf("round-trip 后时间值变化: %s -> %s", v, v2)
+	}
+}
+
 // 回归测试：带非本地 UTC offset（+08:00）的 datetime 经 BurntSushi 解码后
 // 保留原 offset 的 Location，RFC3339Nano 回写不得被改写为本机时区。
 func TestTomlBackend_DatetimeNonLocalOffsetRoundTrip(t *testing.T) {

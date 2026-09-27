@@ -55,15 +55,13 @@ func deriveMachineKey() ([]byte, error) {
 	return loadOrCreateMachineKey(keyFile)
 }
 
-// loadOrCreateMachineKey 读取持久化密钥；不存在时生成新密钥并用
-// O_CREATE|O_EXCL 独占创建。两个实例同时首启时只有一个能创建成功并写入
-// 新密钥，落败方（err 为 IsExist）读取现有密钥使用，绝不覆盖——避免各自
-// WriteAtomic 互相覆盖导致落败方加密的数据重启后无法解密。
+// loadOrCreateMachineKey 读取持久化密钥；不存在时先将完整密钥写入临时文件，
+// 再用硬链接原子发布且不覆盖已有目标。并发首启时只有一个实例能发布成功，
+// 其余实例读取获胜方的密钥。
 func loadOrCreateMachineKey(keyFile string) ([]byte, error) {
 	// 1. 优先读取已持久化的密钥。
-	// 长度不对时短暂重试：并发首启的另一实例可能刚用 O_EXCL 建好文件、
-	// 尚未写完（此刻读到 0/短文件），立即判定"损坏"会把对方正在写入的
-	// 密钥误隔离。重试后仍不完整才按损坏处理。
+	// 长度不对时短暂重试，兼容仍在运行的旧版本直接创建后写入密钥文件。
+	// 重试耗尽后，零字节文件只报错、不删除；非零损坏文件仍按下方逻辑隔离。
 	for attempt := 0; ; attempt++ {
 		data, err := os.ReadFile(keyFile)
 		if err == nil {
@@ -74,7 +72,11 @@ func loadOrCreateMachineKey(keyFile string) ([]byte, error) {
 				time.Sleep(2 * time.Millisecond)
 				continue
 			}
-			// 密钥文件存在但损坏：隔离损坏文件并返回错误，避免静默换新密钥导致旧数据永久无法解密。
+			if len(data) == 0 {
+				return nil, fmt.Errorf("derive machine key: key file is empty after retries; refusing to replace a possibly active creator's file")
+			}
+			// 密钥文件存在但损坏（含部分密钥材料）：隔离损坏文件并返回错误，
+			// 避免静默换新密钥导致旧数据永久无法解密。
 			// 隔离名带纳秒时间戳：Windows 上 os.Rename 不覆盖已存在文件，若上次事故已留下
 			// .corrupt 文件，无时间戳的固定名会导致本次隔离永远失败。
 			corrupt := fmt.Sprintf("%s.corrupt.%d", keyFile, time.Now().UnixNano())
@@ -96,33 +98,33 @@ func loadOrCreateMachineKey(keyFile string) ([]byte, error) {
 		panic(fmt.Sprintf("crypto/rand unavailable: %v (encryption key cannot be safely generated)", err))
 	}
 
-	// 3. 独占创建：只有创建成功的实例写入新密钥；已存在（err 为 IsExist）时
-	//    读取现有密钥使用，绝不覆盖。
+	// 3. 先完整写入同目录临时文件，再通过硬链接原子发布。这样竞争中的
+	//    读取方不会观察到零字节/部分写入的目标文件，且 Link 不覆盖已发布密钥。
 	if err := os.MkdirAll(filepath.Dir(keyFile), 0700); err != nil {
 		return nil, fmt.Errorf("persist machine key: mkdir: %w", err)
 	}
-	f, err := os.OpenFile(keyFile, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	f, err := os.CreateTemp(filepath.Dir(keyFile), ".machine_key.tmp.*")
 	if err != nil {
-		if os.IsExist(err) {
-			// 竞态：另一实例已创建密钥文件并正在写入，读取方可能读到尚未写完的
-			// 文件，做有限次重试直到拿到完整 32 字节。
-			return readPersistedKey(keyFile)
-		}
-		return nil, fmt.Errorf("persist machine key: open: %w", err)
+		return nil, fmt.Errorf("persist machine key: create temp: %w", err)
 	}
+	tmpPath := f.Name()
+	defer os.Remove(tmpPath)
 	if _, werr := f.Write(key); werr != nil {
 		f.Close()
-		_ = os.Remove(keyFile)
 		return nil, fmt.Errorf("persist machine key: write: %w", werr)
 	}
 	if serr := f.Sync(); serr != nil {
 		f.Close()
-		_ = os.Remove(keyFile)
 		return nil, fmt.Errorf("persist machine key: fsync: %w", serr)
 	}
 	if cerr := f.Close(); cerr != nil {
-		_ = os.Remove(keyFile)
 		return nil, fmt.Errorf("persist machine key: close: %w", cerr)
+	}
+	if err := os.Link(tmpPath, keyFile); err != nil {
+		if os.IsExist(err) {
+			return readPersistedKey(keyFile)
+		}
+		return nil, fmt.Errorf("persist machine key: publish: %w", err)
 	}
 	return key, nil
 }

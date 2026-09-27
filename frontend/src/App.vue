@@ -39,6 +39,7 @@ function handleBackfillResult(res: unknown) {
   const matched = r?.matched?.length ?? 0
   if (matched === 0) return
   backfillNotified = true
+  void skills.reload().catch(() => {})
   const skipped = (r?.mismatched?.length ?? 0) + (r?.unmatched?.length ?? 0)
   const failed = r?.failed?.length ?? 0
   toast.info(t('settings.toast.backfillSuccess', { count: matched, skipped, failed }), { duration: 5000 })

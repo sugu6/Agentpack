@@ -401,6 +401,46 @@ func TestLoad_PrunesStaleLockEntriesAndPreventsSourceInheritance(t *testing.T) {
 	}
 }
 
+// 回归测试：同一进程内"手动删目录 → 重导入同名"且中间没有 Load/prune 时，
+// 导入路径自身必须判定 lock 条目失效：条目指向 SSOT 内已不存在的目录（被
+// 外部删除、绕过 Uninstall 残留）时，继承其来源会让 CheckUpdates/UpdateSkill
+// 用旧仓库覆盖新内容；且 SSOT 拷贝完成后目录重新存在，下一次 Load 的
+// PruneStaleLockEntries 会因"目录存在"永久保留该陈旧关联。
+func TestImport_PrunesStaleLockEntryBeforeSourceInheritance(t *testing.T) {
+	setupSkillCapableAgentHome(t)
+	tmp := t.TempDir()
+	ssotDir := filepath.Join(tmp, "ssot")
+
+	if err := WriteAgentsLock(AgentsLockEntry{
+		Directory:  "foo",
+		Source:     "old/repo",
+		SourceType: "github",
+		SourceURL:  "https://github.com/old/repo",
+		SkillPath:  filepath.Join(ssotDir, "foo"), // 指向的目录不存在（已被外部删除）
+		Branch:     "main",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// 不经过 Load（prune 的唯一调用点），直接导入
+	store := NewStore(ssotDir, SyncMethodCopy)
+	reg := newSkillTestRegistry()
+
+	src := filepath.Join(tmp, "src")
+	makeSkillDir(t, src, "foo", "---\nname: foo\n---\n# new content")
+	sk, err := store.Import(filepath.Join(src, "foo"), []string{"claude-code"}, reg, "", "")
+	if err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	if sk.RepoOwner != "" || sk.RepoName != "" {
+		t.Fatalf("import inherited stale lock source without Load: owner=%q repo=%q", sk.RepoOwner, sk.RepoName)
+	}
+	// 陈旧条目应已被清除，避免下一次 Load 永久保留该错误关联
+	if repo, ok := ParseAgentsLock()["foo"]; ok && repo.Owner == "old" {
+		t.Fatal("stale lock entry survived import; next Load would keep it forever")
+	}
+}
+
 func TestMigrateStorage_ResyncErrorsAreReturned(t *testing.T) {
 	setupSkillCapableAgentHome(t)
 	tmp := t.TempDir()

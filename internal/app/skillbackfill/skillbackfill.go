@@ -33,7 +33,7 @@ type Verifier func(dir string, candidates []market.BackfillCandidate) (match mar
 // applyMemory 在写 lock 后同步内存来源（storeOpMu 下用当前 store 重新校验）：
 // 返回 false 时回滚 lock 条目并静默跳过，防止"写 lock 后、落内存前"卸载
 // 的窗口残留条目，同时保证 CheckUpdates/UpdateSkill 入口立即可用。
-func ApplyWithVerification(matches map[string][]market.BackfillCandidate, directories []string, verify Verifier, stillExists func(dir string) bool, applyMemory func(dir string, entry skills.AgentsLockEntry) bool) Result {
+func ApplyWithVerification(matches map[string][]market.BackfillCandidate, directories []string, verify Verifier, stillExists func(dir string) bool, applyMemory func(dir string, entry skills.AgentsLockEntry) bool, ssotDirs ...string) Result {
 	type verified struct {
 		dir        string
 		match      market.BackfillCandidate
@@ -88,6 +88,9 @@ func ApplyWithVerification(matches map[string][]market.BackfillCandidate, direct
 			SourceURL:  "https://github.com/" + v.match.Owner + "/" + v.match.Repo,
 			Branch:     v.branch,
 			FullPath:   v.fullPath,
+		}
+		if len(ssotDirs) > 0 && ssotDirs[0] != "" {
+			entry.SkillPath = filepath.Join(ssotDirs[0], dir)
 		}
 		if err := skills.WriteAgentsLock(entry); err != nil {
 			log.Printf("backfill source for %s: %v", dir, err)

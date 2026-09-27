@@ -1009,31 +1009,74 @@ func TestCheckUpdates_CacheSkipsDownloadVerification(t *testing.T) {
 	}
 }
 
-// TestDownloadRemoteFile_404StopsImmediately 验证 4xx（资源不存在）时
-// 不再轮询其余 CDN 域名，避免每个域名空等。
-func TestDownloadRemoteFile_404StopsImmediately(t *testing.T) {
+// TestDownloadRemoteFile_404SkipSemantics 验证 4xx 的候选跳过语义：
+// jsDelivr CDN 主机与代理（非权威域）的 4xx 只说明该候选无法提供资源，
+// 继续尝试后续候选；权威域（raw 直连）的 4xx 才是确定性"资源不存在"，
+// 立即终止（update.go 的 is404 信号依赖它）。候选链：
+// [js404(CDN 1), js404(CDN 2), raw404(权威直连), proxy200(代理候选)]，
+// 期望：jsDelivr 404 继续下一 CDN → raw 直连 404 早退 → 代理不被尝试。
+func TestDownloadRemoteFile_404SkipSemantics(t *testing.T) {
 	s404 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 	}))
 	defer s404.Close()
 
-	var hits atomic.Int32
-	s200 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		hits.Add(1)
+	var secondHostHits atomic.Int32
+	s404b := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		secondHostHits.Add(1)
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer s404b.Close()
+
+	// raw 直连（权威域）：记录被请求次数，返回 404
+	var rawHits atomic.Int32
+	rawSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rawHits.Add(1)
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer rawSrv.Close()
+
+	// 代理候选（raw 直连 404 早退后不应到达）
+	var proxyHits atomic.Int32
+	proxySrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		proxyHits.Add(1)
 		_, _ = w.Write([]byte("ok"))
 	}))
-	defer s200.Close()
+	defer proxySrv.Close()
 
 	origHosts := jsDelivrFileHosts
-	jsDelivrFileHosts = []string{s404.URL, s200.URL}
-	defer func() { jsDelivrFileHosts = origHosts }()
+	origRaw := gitHubRawDirect
+	origProxies := gitHubRawProxies
+	origMirrors := gitHubRawMirrors
+	jsDelivrFileHosts = []string{s404.URL, s404b.URL}
+	gitHubRawDirect = rawSrv.URL
+	gitHubRawProxies = []string{proxySrv.URL}
+	gitHubRawMirrors = nil
+	defer func() {
+		jsDelivrFileHosts = origHosts
+		gitHubRawDirect = origRaw
+		gitHubRawProxies = origProxies
+		gitHubRawMirrors = origMirrors
+	}()
 
 	_, err := downloadRemoteFile(context.Background(), "owner", "repo", "main", "missing.txt", true)
 	if err == nil {
 		t.Fatal("expected download failure for 404")
 	}
-	if hits.Load() != 0 {
-		t.Fatalf("expected no fallback attempts after 404, got %d", hits.Load())
+	var se *httpStatusError
+	if !errors.As(err, &se) || se.status != http.StatusNotFound {
+		t.Fatalf("expected 404 error, got %v", err)
+	}
+	// jsDelivr 404 非权威域：继续到下一个 jsDelivr CDN 主机
+	if secondHostHits.Load() != 1 {
+		t.Fatalf("jsDelivr 404（非权威域）应继续尝试下一 CDN 主机，got %d hits", secondHostHits.Load())
+	}
+	// 权威域（raw 直连）404 早退，代理候选不被尝试
+	if proxyHits.Load() != 0 {
+		t.Fatalf("authoritative 404 must abort before proxy candidates, got %d proxy hits", proxyHits.Load())
+	}
+	if rawHits.Load() < 1 {
+		t.Fatal("raw direct candidate was not reached")
 	}
 }
 
@@ -1202,6 +1245,62 @@ func TestHttpGetBodyOne_CrossHostRedirectNotFollowed(t *testing.T) {
 	// 跟随重定向会挂到 8s 超时；拒绝应秒级返回
 	if elapsed > 3*time.Second {
 		t.Fatalf("expected fast failure, took %v", elapsed)
+	}
+}
+
+// TestHttpGetBody_Proxy404DoesNotBlockLaterCandidates 回归测试：候选列表跨
+// 多个域名（代理/镜像/直连），前置候选（通常是代理）返回 4xx（如代理侧 404）
+// 只说明该代理无法提供资源，不代表资源不存在；不得因此终止整个候选循环，
+// 否则末位直连兜底永远得不到尝试（tarball 安装从"可回退"退化为硬失败）。
+func TestHttpGetBody_Proxy404DoesNotBlockLaterCandidates(t *testing.T) {
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "not found", http.StatusNotFound)
+	}))
+	defer proxy.Close()
+
+	direct := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer direct.Close()
+
+	body, winner, err := httpGetBody(context.Background(), []string{proxy.URL + "/x.tar.gz", direct.URL + "/x.tar.gz"})
+	if err != nil {
+		t.Fatalf("4xx from a preceding candidate must not block later candidates: %v", err)
+	}
+	want := direct.URL + "/x.tar.gz"
+	if string(body) != "ok" || winner != want {
+		t.Fatalf("expected winner %q with body ok, got %q (%q)", want, winner, body)
+	}
+}
+
+// TestHttpGetBody_Authoritative404StillAbortsEarly 验证权威域（raw 直连）
+// 的 4xx 仍是确定性"资源不存在"信号：立即终止候选循环，不浪费后续
+// 代理/镜像请求（update.go 的 is404 判断依赖该 404 快速切换 GitHub 树）。
+func TestHttpGetBody_Authoritative404StillAbortsEarly(t *testing.T) {
+	orig := gitHubRawDirect
+	proxyCalls := 0
+	auth := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "not found", http.StatusNotFound)
+	}))
+	defer auth.Close()
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		proxyCalls++
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer proxy.Close()
+	gitHubRawDirect = auth.URL
+	defer func() { gitHubRawDirect = orig }()
+
+	_, _, err := httpGetBody(context.Background(), []string{auth.URL + "/x", proxy.URL + "/x"})
+	if err == nil {
+		t.Fatal("expected 404 error")
+	}
+	var se *httpStatusError
+	if !errors.As(err, &se) || se.status != http.StatusNotFound {
+		t.Fatalf("expected authoritative 404 error, got %v", err)
+	}
+	if proxyCalls != 0 {
+		t.Fatalf("authoritative 404 must abort early, proxy was tried %d time(s)", proxyCalls)
 	}
 }
 

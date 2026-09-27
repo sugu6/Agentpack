@@ -58,12 +58,13 @@ var (
 // 向前端暴露绑定方法。业务模块各自成包（开发代码与测试同目录），App 在此
 // 做锁编排与事件触发的薄壳。
 type App struct {
-	ctx       context.Context
-	wailsApp  *application.App
-	mainWin   *application.WebviewWindow // 主窗口引用（main.go 创建后注入）
-	mu        sync.RWMutex               // 保护 App 内部状态（registry, stores, cfg）
-	rescanMu  sync.Mutex                 // 序列化 RescanAgents（先于 storeOpMu 获取）
-	storeOpMu sync.Mutex                 // 序列化 MCP/Skills 存储操作（后于 rescanMu）
+	ctx             context.Context
+	wailsApp        *application.App
+	mainWin         *application.WebviewWindow // 主窗口引用（main.go 创建后注入）
+	mu              sync.RWMutex               // 保护 App 内部状态（registry, stores, cfg）
+	rescanMu        sync.Mutex                 // 序列化 RescanAgents（先于 storeOpMu 获取）
+	storeOpMu       sync.Mutex                 // 序列化 MCP/Skills 存储操作（后于 rescanMu）
+	skillBackfillMu sync.Mutex                 // 防止启动回填与手动更新检查重复扫描同一批 Skills
 	// ⚠️ 锁定顺序约定（违反将导致死锁）：
 	//   1. rescanMu (仅在 RescanAgents 中获取)
 	//   2. storeOpMu
@@ -1297,10 +1298,8 @@ func (a *App) InstallMarketSkill(skill market.MarketSkill, agentIDs []string) (s
 	}
 	defer a.endInFlight()
 
-	// 单次 snapshot 取 skills store 与 registry 引用（getSkills/getRegistry
-	// 是两次独立 RLock，中间 RescanAgents 可整代替换）。
-	reg, _, _, ss, _, _ := a.snapshot()
-	if ss == nil {
+	// 快速失败：skills store 未初始化时不进入分钟级网络准备。
+	if a.getSkills() == nil {
 		return skills.Skill{}, fmt.Errorf("skills store not initialized")
 	}
 
@@ -1315,16 +1314,38 @@ func (a *App) InstallMarketSkill(skill market.MarketSkill, agentIDs []string) (s
 	defer prepared.Cleanup()
 
 	// commit 阶段只做本地文件 I/O + agents lock 写入，用 storeOpMu 串行化。
-	a.storeOpMu.Lock()
-	installed, err := appmarket.CommitSkillInstall(ss, prepared, branch, skill, agentIDs, reg)
-	a.storeOpMu.Unlock()
-	if err != nil {
-		return skills.Skill{}, err
+	//
+	// commit 前必须重新 snapshot（reg/ss）：RescanAgents 只取
+	// rescanMu+storeOpMu，可在无锁的 prepare 分钟级窗口内完成并整代替换
+	// a.skillsStore（见 RescanAgents）。若复用 prepare 前取到的旧引用，
+	// 新技能会写进被废弃的旧 store、emit 也报旧 store 的列表，前端收到
+	// skills:changed 重新拉取时看不到刚装技能（市场卡片仍显示"未安装"，
+	// 诱使用户重复安装）。
+	// 同时复检 closed：退出的 storeOpMu 排空是 10s 有界等待，超时后流程
+	// 继续，本路径不得在退出期间写 SSOT/agent 目录。
+	var installed skills.Skill
+	commitErr := func() error {
+		a.storeOpMu.Lock()
+		defer a.storeOpMu.Unlock()
+		if a.isClosed() {
+			return fmt.Errorf("app is shutting down")
+		}
+		reg, _, _, ss, _, _ := a.snapshot()
+		if ss == nil {
+			return fmt.Errorf("skills store not initialized")
+		}
+		var cerr error
+		installed, cerr = appmarket.CommitSkillInstall(ss, prepared, branch, skill, agentIDs, reg)
+		return cerr
+	}()
+	if commitErr != nil {
+		return skills.Skill{}, commitErr
 	}
 
 	a.mu.Lock()
 	a.emitAgentsChangedLocked()
-	a.emitLocked("skills:changed", ss.List())
+	// emit 用当前 store（可能已被 RescanAgents 换代），而非闭包里的旧引用。
+	a.emitLocked("skills:changed", a.skillsStore.List())
 	a.mu.Unlock()
 
 	// 安装成功后异步缓存 Commit SHA 作为更新检测基线。
@@ -1534,10 +1555,16 @@ func (a *App) CheckSkillUpdates() ([]skills.UpdateStatus, error) {
 		return nil, err
 	}
 	defer a.endInFlight()
+	backfillResult, backfillErr := a.BackfillSkillSources()
+	if backfillErr != nil {
+		// 来源回填只是尽力恢复元数据；服务不可用时仍要检查已有可信来源的 Skills。
+		log.Printf("check skill updates: source backfill failed: %v", backfillErr)
+	}
 	// 与 UpdateSkill/UpdateSkills 互斥：CheckUpdates 会读 SSOT 目录
 	// (localDirFileHashes/readUpdateCache) 并可能 RemoveAgentsLockEntry，
 	// 与 UpdateSkill 的 tarball fallback（RemovePath + 重建 SSOT）并发时
 	// 会读到半写入目录、误报"有更新"，且 lock 条目的写删互相竞争。
+	// 来源回填在此锁之前完成，因为 applyBackfillEntry 也需要 storeOpMu。
 	a.storeOpMu.Lock()
 	defer a.storeOpMu.Unlock()
 
@@ -1545,7 +1572,37 @@ func (a *App) CheckSkillUpdates() ([]skills.UpdateStatus, error) {
 	if ss == nil {
 		return nil, fmt.Errorf("skills store not initialized")
 	}
-	return ss.CheckUpdates(a.registry), nil
+	refreshed := ss.RefreshRepoSourcesFromLock()
+	if len(backfillResult.Matched) > 0 || refreshed {
+		a.mu.Lock()
+		a.emitLocked("skills:changed", ss.List())
+		a.mu.Unlock()
+	}
+	statuses := ss.CheckUpdates(a.registry)
+	checkedAt := time.Now().UTC().Format(time.RFC3339)
+	statusIDs := make(map[string]bool, len(statuses))
+	for _, status := range statuses {
+		statusIDs[status.SkillID] = true
+	}
+	for _, sk := range ss.List() {
+		if statusIDs[sk.ID] {
+			continue
+		}
+		if sk.RepoOwner == "" || sk.RepoName == "" {
+			statuses = append(statuses, skills.UpdateStatus{
+				SkillID:       sk.ID,
+				Directory:     sk.Directory,
+				CheckedAt:     checkedAt,
+				SourceMissing: true,
+			})
+		} else {
+			statuses = append(statuses, skills.UpdateStatus{
+				SkillID: sk.ID, Directory: sk.Directory, CheckedAt: checkedAt,
+				Skipped: true, SkipReason: "source changed while checking; retry",
+			})
+		}
+	}
+	return statuses, nil
 }
 
 // UpdateSkill updates a single skill to the latest remote version
@@ -1656,10 +1713,13 @@ func (a *App) UpdateSkillRepo(original, updated config.SkillRepo) error {
 // ---------- 技能来源回填（internal/app/skillbackfill 纯逻辑） ----------
 
 // BackfillSkillSources 从 skills.sh 回填缺少仓库来源的技能，使其支持后续更新。
-// 仅处理 RepoOwner/RepoName 均为空的技能，已有来源的不覆盖。
+// 仅处理 RepoOwner/RepoName 不完整的技能，已有完整来源的不覆盖。
 // 写入前验证仓库中确实存在同名技能且远程 SKILL.md 与本地一致，
 // 防止把不同来源/版本的技能错误关联到仓库。
 func (a *App) BackfillSkillSources() (skillbackfill.Result, error) {
+	a.skillBackfillMu.Lock()
+	defer a.skillBackfillMu.Unlock()
+
 	if err := a.assertInit(); err != nil {
 		return skillbackfill.Result{}, err
 	}
@@ -1671,7 +1731,7 @@ func (a *App) BackfillSkillSources() (skillbackfill.Result, error) {
 		// 捕获 store 指针到局部变量，避免释放 RLock 后 RescanAgents 替换 a.skillsStore 导致悬空访问
 		ss = a.skillsStore
 		for _, sk := range ss.List() {
-			if sk.RepoOwner == "" && sk.RepoName == "" {
+			if sk.RepoOwner == "" || sk.RepoName == "" {
 				directories = append(directories, sk.Directory)
 			}
 		}
@@ -1714,7 +1774,7 @@ func (a *App) BackfillSkillSources() (skillbackfill.Result, error) {
 		}
 		return market.BackfillCandidate{}, "", "", false, hadNetworkErr
 	}
-	return skillbackfill.ApplyWithVerification(matches, directories, verify, ss.HasDirectory, a.applyBackfillEntry), nil
+	return skillbackfill.ApplyWithVerification(matches, directories, verify, ss.HasDirectory, a.applyBackfillEntry, ssotDir), nil
 }
 
 // applyBackfillEntry 在 storeOpMu 下用"当前" store 重新校验技能仍被纳管

@@ -4,7 +4,7 @@ import { useI18n } from 'vue-i18n'
 import { useSkillsStore } from '@/stores/skills'
 import { useAgentsStore } from '@/stores/agents'
 import { Card, CardContent, Button, Badge, Spinner, Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui'
-import { PhTrash, PhSparkle, PhMagnifyingGlass, PhFileArchive, PhFolderOpen, PhArrowClockwise, PhArrowUp } from '@phosphor-icons/vue'
+import { PhTrash, PhSparkle, PhMagnifyingGlass, PhFileArchive, PhFolderOpen, PhArrowClockwise, PhArrowUp, PhGithubLogo } from '@phosphor-icons/vue'
 import { api, events, ApiError, type ReconcileItem } from '@/lib/api'
 import { isFilePickCancelled } from '@/lib/utils'
 import { toggleGroupMembers } from '@/lib/selection'
@@ -45,6 +45,13 @@ const skillCapableGroups = computed(() => {
 const updatesCount = computed(() =>
   skills.updateStatuses.filter(s => s.hasUpdate).length,
 )
+
+function openSkillRepo(skill: { repoOwner?: string; repoName?: string }) {
+  if (!skill.repoOwner || !skill.repoName) return
+  const owner = encodeURIComponent(skill.repoOwner)
+  const repo = encodeURIComponent(skill.repoName)
+  api.system.openUrl(`https://github.com/${owner}/${repo}`)
+}
 
 // 可绑定目标：合并组可能包含 disabled 变体成员，仅取后端返回的 capable
 // （skillCapableAgents 只含 enabled/detected）成员，避免提交后被拒绝。
@@ -369,14 +376,25 @@ async function onCheckUpdates() {
     // 局部变量改名避免遮蔽组件级 computed updatesCount（非响应式局部值）
     const newUpdatesCount = skills.updateStatuses.filter(s => s.hasUpdate).length
     const errorCount = skills.updateStatuses.filter(s => s.error).length
+    const sourceMissingCount = skills.updateStatuses.filter(s => s.sourceMissing).length
+    const skippedCount = skills.updateStatuses.filter(s => s.skipped).length
+    const checkableCount = skills.updateStatuses.length - sourceMissingCount - skippedCount
     if (newUpdatesCount > 0) {
       toast.info(t('skills.toast.updatesFound', { count: newUpdatesCount }))
-    } else if (errorCount > 0 && errorCount === skills.updateStatuses.length) {
+    }
+    if (errorCount > 0 && errorCount === checkableCount) {
       // 所有 skill 都检测失败，可能是 rate limit
       toast.warning(t('update.message.rateLimited'))
     } else if (errorCount > 0) {
       toast.info(t('skills.toast.partialCheckFailed', { count: errorCount }))
-    } else {
+    }
+    if (sourceMissingCount > 0) {
+      toast.warning(t('skills.toast.sourceUnknown', { count: sourceMissingCount }))
+    }
+    if (skippedCount > 0) {
+      toast.warning(t('skills.toast.checkSkipped', { count: skippedCount }))
+    }
+    if (newUpdatesCount === 0 && errorCount === 0 && sourceMissingCount === 0 && skippedCount === 0) {
       toast.success(t('skills.toast.allUpToDate'))
     }
   } catch (e: unknown) {
@@ -569,7 +587,7 @@ async function scanSkills() {
             <PhArrowUp :size="14" :class="{ 'animate-spin': skills.updatingAll }" />
             <span>{{ skills.updatingAll ? t('skills.updatingAll') : t('skills.updateAll') }}</span>
           </Button>
-          <Button v-else variant="outline" size="sm" :disabled="skills.checkingUpdates" @click="onCheckUpdates">
+          <Button v-else-if="skills.skills.length > 0" variant="outline" size="sm" :disabled="skills.checkingUpdates" @click="onCheckUpdates">
             <PhArrowClockwise :size="14" :class="{ 'animate-spin': skills.checkingUpdates }" />
             <span>{{ skills.checkingUpdates ? t('skills.checkingUpdates') : t('skills.checkUpdates') }}</span>
           </Button>
@@ -624,10 +642,23 @@ async function scanSkills() {
                 <div class="flex items-center gap-2">
                   <h3 class="text-sm font-semibold">{{ skill.name }}</h3>
                   <Badge variant="outline">{{ skill.directory }}</Badge>
+                  <button
+                    v-if="skill.repoOwner && skill.repoName"
+                    type="button"
+                    class="inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground"
+                    :aria-label="t('skills.viewRepo', { repo: `${skill.repoOwner}/${skill.repoName}` })"
+                    :title="t('skills.viewRepo', { repo: `${skill.repoOwner}/${skill.repoName}` })"
+                    @click.stop="openSkillRepo(skill)"
+                  >
+                    <PhGithubLogo :size="13" />
+                    <span>{{ skill.repoOwner }}/{{ skill.repoName }}</span>
+                  </button>
                   <Badge v-if="skillConflicts(skill.id).length > 0" variant="outline" class="border-destructive/40 text-destructive">{{ t('skills.conflicts.badge', { count: skillConflicts(skill.id).length }) }}</Badge>
                   <Badge v-if="skills.updatingSkillIds.has(skill.id)" variant="outline">{{ t('skills.updating') }}</Badge>
                   <Badge v-else-if="skills.updateStatusOf(skill.id)?.hasUpdate" variant="warning">{{ t('skills.hasUpdate') }}</Badge>
                   <Badge v-else-if="skills.updateStatusOf(skill.id)?.error" variant="destructive" :title="skills.updateStatusOf(skill.id)!.error">{{ t('skills.checkFailed') }}</Badge>
+                  <Badge v-else-if="skills.updateStatusOf(skill.id)?.sourceMissing" variant="outline">{{ t('skills.sourceUnknown') }}</Badge>
+                  <Badge v-else-if="skills.updateStatusOf(skill.id)?.skipped" variant="outline" :title="skills.updateStatusOf(skill.id)?.skipReason">{{ t('skills.checkSkipped') }}</Badge>
                   <span v-if="skill.boundAgents && skill.boundAgents.length > 0" class="text-[11px] text-muted-foreground">{{ t('skills.boundAgentCount', { count: skill.boundAgents.length }) }}</span>
                 </div>
 

@@ -590,14 +590,17 @@ func writeTomlValue(buf *bytes.Buffer, val any) {
 }
 
 // formatTomlTime 把 BurntSushi 解码出的 time.Time 还原为 TOML datetime 字面量。
-// v1.6 对本地日期/时间用特殊 Location 标记（"date-local"/"time-local"），
-// 需按对应精度输出，否则纯日期会被写成带时间的 offset datetime（类型改变）。
+// v1.6 对本地日期/时间用特殊 Location 标记（"date-local"/"time-local"/
+// "datetime-local"），需按对应精度输出，否则纯日期/本地日期时间会被写成
+// 带 offset 的 datetime（类型改变）。
 func formatTomlTime(t time.Time) string {
 	switch t.Location().String() {
 	case "date-local":
 		return t.Format("2006-01-02")
 	case "time-local":
 		return t.Format("15:04:05.999999999")
+	case "datetime-local":
+		return t.Format("2006-01-02T15:04:05.999999999")
 	default:
 		return t.Format(time.RFC3339Nano)
 	}

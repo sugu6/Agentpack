@@ -172,6 +172,82 @@ func TestStore_RollbackUpdateDoesNotDeletePreservedAgentConfig(t *testing.T) {
 	}
 }
 
+// 回归测试：Update 的 Headers/Cwd/Timeout/ConfigType 透传兜底必须先于
+// 配置文件落盘完成。调用方（备份导入"覆盖已有"路径 backup/export.go、
+// 市场安装）可能构造不带这些字段的 Server，若兜底晚于落盘，整条替换写
+// 盘会把旧值抹掉，重启 Load 后永久丢失。
+func TestStore_UpdatePreservesPassthroughFieldsOnDisk(t *testing.T) {
+	t.Setenv("AGENTPACK_ALLOW_TEMP_DIR", "")
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("APPDATA", "")
+
+	claudePath := filepath.Join(home, ".claude.json")
+	writeFile(t, claudePath, `{}`)
+
+	reg := agents.NewRegistry()
+	reg.Register(agents.Agent{ID: "claude-code", Name: "Claude Code", Type: agents.TypeClaudeCode, Status: agents.StatusEnabled, ConfigPath: claudePath, ConfigFormat: agents.FormatJSON})
+
+	store := NewStore()
+	if err := store.Load(reg); err != nil {
+		t.Fatal(err)
+	}
+
+	created, err := store.Add(types.Server{
+		Name:       "remote",
+		Transport:  types.TransportHTTP,
+		URL:        "https://x.example/mcp",
+		Headers:    map[string]string{"Authorization": "Bearer secret"},
+		Cwd:        "/tmp/work",
+		Timeout:    42,
+		ConfigType: "http",
+	}, []string{"claude-code"}, reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 模拟备份导入覆盖路径：更新请求不携带任何透传字段
+	if err := store.Update(created.ID, types.Server{
+		Name:      "remote",
+		Transport: types.TransportHTTP,
+		URL:       "https://x.example/mcp",
+	}, []string{"claude-code"}, reg); err != nil {
+		t.Fatal(err)
+	}
+
+	disk, rerr := NewBackend("claude-code").Read(claudePath)
+	if rerr != nil {
+		t.Fatal(rerr)
+	}
+	srv := disk["remote"]
+	if got := srv.Headers["Authorization"]; got != "Bearer secret" {
+		t.Errorf("Update 后磁盘丢失 headers: %v", srv.Headers)
+	}
+	if srv.Cwd != "/tmp/work" {
+		t.Errorf("Update 后磁盘丢失 cwd: %q", srv.Cwd)
+	}
+	if srv.Timeout != 42 {
+		t.Errorf("Update 后磁盘丢失 timeout: %d", srv.Timeout)
+	}
+	if srv.ConfigType != "http" {
+		t.Errorf("Update 后磁盘丢失 config_type: %q", srv.ConfigType)
+	}
+
+	// 重启后从磁盘 Load，字段必须仍完整
+	store2 := NewStore()
+	if err := store2.Load(reg); err != nil {
+		t.Fatal(err)
+	}
+	rel, ok := store2.Get(created.ID)
+	if !ok {
+		t.Fatal("reload 后找不到服务器")
+	}
+	if rel.Headers["Authorization"] != "Bearer secret" || rel.Cwd != "/tmp/work" || rel.Timeout != 42 || rel.ConfigType != "http" {
+		t.Errorf("重启后透传字段丢失: %+v", rel)
+	}
+}
+
 // 回归测试：Update 对"绑定但配置文件缺失"的 agent（如已检测却从未生成配置
 // 文件的 Trae）必须按空配置写入并创建文件；否则 Update 记录了绑定却不落盘，
 // 重启 Load 会因文件缺失把该绑定静默删除。

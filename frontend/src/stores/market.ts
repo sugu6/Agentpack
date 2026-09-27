@@ -16,7 +16,11 @@ export const useMarketStore = defineStore('market', () => {
   // 避免一个 tab 的搜索进行时另一个 tab 误显示 Spinner 或禁用搜索按钮
   const loadingServers = ref(false)
   const loadingSkills = ref(false)
-  const error = ref<string | null>(null)
+  // 与 loading 对称：错误横幅也按 tab 拆分，避免一个 tab 的搜索/安装失败
+  // 后，另一个 tab 的任意操作（入口清空/成功清除）把对方的错误文案误删，
+  // 或跨 tab 显示过期错误
+  const errorServers = ref<string | null>(null)
+  const errorSkills = ref<string | null>(null)
   // loadMore 分页续传时使用最近一次搜索的来源，避免翻页时来源漂移
   const currentSource = ref<string>('official')
   const currentQuery = ref<string>('')
@@ -39,7 +43,7 @@ export const useMarketStore = defineStore('market', () => {
   async function search(source: string, query: string, cursor = '', pageSize = DEFAULT_PAGE_SIZE) {
     const requestId = ++serverRequestId
     loadingServers.value = true
-    error.value = null
+    errorServers.value = null
     currentSource.value = source
     currentQuery.value = query
     try {
@@ -54,7 +58,7 @@ export const useMarketStore = defineStore('market', () => {
     } catch (e) {
       if (requestId !== serverRequestId) return
       const apiError = ApiError.from(e)
-      error.value = apiError.message
+      errorServers.value = apiError.message
       servers.value = { ...EMPTY_SERVERS }
     } finally {
       if (requestId === serverRequestId) {
@@ -91,7 +95,7 @@ export const useMarketStore = defineStore('market', () => {
     } catch (e) {
       if (requestId !== serverRequestId) return
       const apiError = ApiError.from(e)
-      error.value = apiError.message
+      errorServers.value = apiError.message
       // 抛出让 LoadMore 感知失败并进入退避冷却：
       // 否则 loading 复位后 observer 立即重连、sentinel 仍可见 → 立刻再触发
       // → 再失败，形成无退避的紧循环打爆后端。
@@ -107,11 +111,11 @@ export const useMarketStore = defineStore('market', () => {
     try {
       const result = await api.market.installServer(server, agents)
       // 成功后清除上次失败信息，避免 MarketView 显示过期错误
-      error.value = null
+      errorServers.value = null
       return result
     } catch (e) {
       const apiError = ApiError.from(e)
-      error.value = apiError.message
+      errorServers.value = apiError.message
       throw apiError
     }
   }
@@ -123,7 +127,7 @@ export const useMarketStore = defineStore('market', () => {
   async function searchSkills(query: string, pageSize = DEFAULT_PAGE_SIZE, source = '') {
     const requestId = ++skillRequestId
     loadingSkills.value = true
-    error.value = null
+    errorSkills.value = null
     currentSkillSource.value = source
     currentSkillQuery.value = query
     currentSkillPageSize.value = pageSize
@@ -137,7 +141,7 @@ export const useMarketStore = defineStore('market', () => {
     } catch (e) {
       if (requestId !== skillRequestId) return
       const apiError = ApiError.from(e)
-      error.value = apiError.message
+      errorSkills.value = apiError.message
       skills.value = { ...EMPTY_SKILLS }
     } finally {
       if (requestId === skillRequestId) {
@@ -171,7 +175,7 @@ export const useMarketStore = defineStore('market', () => {
     } catch (e) {
       if (requestId !== skillRequestId) return
       const apiError = ApiError.from(e)
-      error.value = apiError.message
+      errorSkills.value = apiError.message
       // 与 loadMore 一致：抛出以触发 LoadMore 退避冷却，避免失败紧循环
       throw apiError
     } finally {
@@ -185,11 +189,11 @@ export const useMarketStore = defineStore('market', () => {
     try {
       const result = await api.market.installSkill(skill, agents)
       // 成功后清除上次失败信息，避免 MarketView 显示过期错误
-      error.value = null
+      errorSkills.value = null
       return result
     } catch (e) {
       const apiError = ApiError.from(e)
-      error.value = apiError.message
+      errorSkills.value = apiError.message
       throw apiError
     }
   }
@@ -200,6 +204,7 @@ export const useMarketStore = defineStore('market', () => {
     // 否则清空后旧来源的响应会重新填充列表，显示错误来源的结果。
     skillRequestId++
     skills.value = { ...EMPTY_SKILLS }
+    errorSkills.value = null
     // 在途请求的 finally 因 requestId 不匹配而不会复位 loading（条件复位），
     // 必须在此显式复位，否则 loadingSkills 永久为 true，搜索按钮/滚动永久禁用。
     loadingSkills.value = false
@@ -223,7 +228,7 @@ export const useMarketStore = defineStore('market', () => {
     // 浅拷贝避免与 baseServers 共享引用,防止后续操作互相影响
     servers.value = { ...baseServers.value, items: [...baseServers.value.items] }
     currentQuery.value = ''
-    error.value = null
+    errorServers.value = null
     return true
   }
 
@@ -233,7 +238,8 @@ export const useMarketStore = defineStore('market', () => {
     baseServers,
     loadingServers,
     loadingSkills,
-    error,
+    errorServers,
+    errorSkills,
     currentQuery,
     hasResults,
     hasSkillResults,
