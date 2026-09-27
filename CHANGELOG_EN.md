@@ -7,6 +7,8 @@ versioned by [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-27
+
 ### Features
 
 - **Codex config writes aligned with the latest schema**: `tomlbackend` no longer writes keys unrecognized by current Codex (`type` / `headers` / `timeout`, which trigger the app's "unrecognized configuration settings" warnings) and instead emits `http_headers` / `tool_timeout_sec` / `enabled`; transport is inferred from the presence of command/url
@@ -320,7 +322,8 @@ Initial release of AgentPack — a unified MCP / Skills / Agent management deskt
 [0.1.2]: https://github.com/sugu6/Agentpack/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/sugu6/Agentpack/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/sugu6/Agentpack/releases/tag/v0.1.0
-[Unreleased]: https://github.com/sugu6/Agentpack/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/sugu6/Agentpack/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/sugu6/Agentpack/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/sugu6/Agentpack/compare/v0.2.4...v0.3.0
 [0.2.4]: https://github.com/sugu6/Agentpack/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/sugu6/Agentpack/compare/v0.2.2...v0.2.3

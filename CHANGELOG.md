@@ -7,6 +7,8 @@
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-27
+
 ### 特性
 
 - **Codex 配置写入对齐最新 schema**：`tomlbackend` 不再写出新版 Codex 不认识的 `type` / `headers` / `timeout` 键（触发应用 "unrecognized configuration settings" 警告），改写为最新 schema 的 `http_headers` / `tool_timeout_sec` / `enabled`；传输方式由 command/url 有无隐式确定
@@ -473,4 +475,5 @@ AgentPack 的初始版本，一款面向 AI 编码工具的统一 MCP / Skills /
 
 - 用 macos-latest 上的 darwin/universal 构建替代 macos-13 intel 构建
 
-[Unreleased]: https://github.com/sugu6/Agentpack/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/sugu6/Agentpack/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/sugu6/Agentpack/compare/v0.3.0...v0.4.0
