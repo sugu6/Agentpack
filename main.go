@@ -2,11 +2,14 @@ package main
 
 import (
 	"embed"
-	"log"
 	"os"
+	"path/filepath"
+	"runtime/debug"
 
 	"agentpack/internal/app/winbridge"
+	"agentpack/internal/appmeta"
 	"agentpack/internal/config"
+	"agentpack/internal/logging"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/wailsapp/wails/v3/pkg/events"
@@ -25,6 +28,37 @@ var trayIconData []byte
 
 func main() {
 	cfg := config.Load()
+
+	// 日志必须最先初始化：DB / 配置 / WebView2 的任何启动失败都要有落盘记录。
+	// 生产构建（windowsgui）stderr 被丢弃，因此文件日志是唯一可排查的通道。
+	// 已知局限：closeLog() 之后仍在运行的后台 goroutine 触发的 log.Printf 会被
+	// 静默丢弃（rotator 已关闭）；影响仅限进程退出瞬间的极短窗口，可接受。
+	logDir := config.AgentPackDir()
+	if logDir != "" {
+		logDir = filepath.Join(logDir, "logs")
+	}
+	closeLog := logging.Init(logging.Options{
+		Dir:        logDir,
+		Level:      cfg.Settings.LogLevel,
+		AlsoStderr: true,
+	})
+	defer closeLog()
+
+	// panic 捕获：写 crash-*.log（诊断包会收集），非零退出码保留崩溃语义。
+	defer func() {
+		if r := recover(); r != nil {
+			logging.WriteCrash(r, debug.Stack())
+			closeLog()
+			os.Exit(2)
+		}
+	}()
+
+	logging.L().Info("AgentPack starting",
+		"version", appmeta.Version,
+		"logLevel", logging.LevelName(),
+		"logDir", logging.Dir(),
+		"dev", isDevMode(),
+	)
 
 	app := NewApp(cfg)
 
@@ -52,6 +86,10 @@ func main() {
 	wailsApp := application.New(application.Options{
 		Name:        "AgentPack",
 		Description: "Unified MCP / Skills / Agent management for AI coding tools",
+		// 注入统一 logger：Wails 内部日志（Platform Info / WebView2 报错 / AssetServer）
+		// 进入 webview 通道，与应用日志统一落盘，排障时无需再开控制台拼接两路输出。
+		Logger:   logging.Cat("webview"),
+		LogLevel: logging.Level(),
 		Services: []application.Service{
 			application.NewService(app),
 		},
@@ -109,7 +147,8 @@ func main() {
 
 	err := wailsApp.Run()
 	if err != nil {
-		log.Printf("AgentPack: %v", err)
+		logging.L().Error("wails run failed", "error", err)
+		closeLog()
 		os.Exit(1)
 	}
 }

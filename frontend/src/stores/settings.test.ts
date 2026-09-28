@@ -54,6 +54,7 @@ const baseSettings = {
   language: '',
   liteAutoEnabled: false,
   liteAutoDelay: 5,
+  logLevel: 'info',
 }
 
 function delayedResolved<T>(ms: number, value: T) {

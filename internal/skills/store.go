@@ -2,7 +2,7 @@ package skills
 
 import (
 	"agentpack/internal/agents"
-	"agentpack/internal/logger"
+	"agentpack/internal/logging"
 	"agentpack/internal/shared"
 	"fmt"
 	"log"
@@ -176,7 +176,7 @@ func (s *Store) scanFilesystem(reg *agents.Registry) (map[string]Skill, map[stri
 		skillMdHash, _ := HashSkillMarkdown(skillPath)
 		// 从 ~/.agents/.skill-lock.json 读取仓库来源信息（lockData 已在循环外解析一次）
 		lockSkill := lockData[dirName]
-		logger.Debug("scanFilesystem: skill dir", "dir", dirName, "owner", lockSkill.Owner, "repo", lockSkill.Repo, "branch", lockSkill.Branch)
+		logging.Cat("skills").Debug("scanFilesystem: skill dir", "dir", dirName, "owner", lockSkill.Owner, "repo", lockSkill.Repo, "branch", lockSkill.Branch)
 		sk := Skill{
 			ID:          skillID,
 			Name:        name,

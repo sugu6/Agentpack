@@ -102,6 +102,25 @@
       "importing": "导入中...",
       "importFromFile": "从文件导入"
     },
+    "diagnostics": {
+      "title": "日志与诊断",
+      "desc": "运行时日志按通道写入 ~/.agentpack/logs，可打包导出用于排查问题（默认不上传任何数据）。",
+      "logLevel": "日志级别",
+      "logLevelDesc": "info 为默认；debug 含请求/响应详情与 SSE 流；trace 最详细。",
+      "levels": {
+        "error": "错误",
+        "warn": "警告",
+        "info": "信息（默认）",
+        "debug": "调试",
+        "trace": "追踪"
+      },
+      "exportNow": "导出zip",
+      "exporting": "导出中...",
+      "exported": "已导出zip：{path}",
+      "exportFailed": "导出zip失败",
+      "openLogsFolder": "打开日志文件夹",
+      "openLogsFolderFailed": "打开日志文件夹失败"
+    },
     "skills": {
       "title": "Skills 管理",
       "desc": "Skills 存储位置与同步方式配置。",

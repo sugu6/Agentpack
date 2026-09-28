@@ -4,7 +4,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useSettingsStore } from '@/stores/settings'
-import { Card, CardContent, CardHeader, CardTitle, CardDescription, Switch, Button, Separator, Input, Label, Tabs, TabsList, TabsTrigger, Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter, Checkbox, RadioGroup, RadioGroupItem } from '@/components/ui'
+import { Card, CardContent, CardHeader, CardTitle, CardDescription, Switch, Button, Separator, Input, Label, Tabs, TabsList, TabsTrigger, Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter, Checkbox, RadioGroup, RadioGroupItem, Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui'
 
 import { PhFolderOpen, PhArrowsClockwise, PhDownload, PhUpload, PhPlus, PhTrash, PhPencilSimple } from '@phosphor-icons/vue'
 import { api, ApiError, events, type SkillRepo, type UpdateCheckResult } from '@/lib/api'
@@ -368,6 +368,37 @@ async function openConfigFolder() {
     await api.system.openConfigFolder()
   } catch (e: unknown) {
     toast.error(toast.fromError(e, t('settings.toast.openDataFolderFailed')))
+  }
+}
+
+// ---- 日志与诊断 ----
+const diagnosticsBusy = ref(false)
+const LOG_LEVELS = ['error', 'warn', 'info', 'debug', 'trace'] as const
+
+function setLogLevel(v?: unknown) {
+  const level = String(v)
+  if (!(LOG_LEVELS as readonly string[]).includes(level)) return
+  withAutoSave(cfg => { cfg.logLevel = level })
+}
+
+async function exportDiagnostics() {
+  if (diagnosticsBusy.value) return
+  diagnosticsBusy.value = true
+  try {
+    const zipPath = await api.diagnostics.export()
+    toast.success(t('settings.diagnostics.exported', { path: zipPath }))
+  } catch (e: unknown) {
+    toast.error(toast.fromError(e, t('settings.diagnostics.exportFailed')))
+  } finally {
+    diagnosticsBusy.value = false
+  }
+}
+
+async function openLogsFolder() {
+  try {
+    await api.diagnostics.openLogsFolder()
+  } catch (e: unknown) {
+    toast.error(toast.fromError(e, t('settings.diagnostics.openLogsFolderFailed')))
   }
 }
 
@@ -916,6 +947,45 @@ const marketSourceList = computed(() => {
           <Button variant="outline" size="sm" @click="openConfigFolder">
             <PhFolderOpen :size="14" />
             <span>{{ t('settings.backup.openDataFolder') }}</span>
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
+
+    <Card>
+      <CardHeader>
+        <CardTitle>{{ t('settings.diagnostics.title') }}</CardTitle>
+        <CardDescription>{{ t('settings.diagnostics.desc') }}</CardDescription>
+      </CardHeader>
+      <CardContent class="space-y-3">
+        <div class="flex items-center justify-between">
+          <div>
+            <Label>{{ t('settings.diagnostics.logLevel') }}</Label>
+            <p class="text-xs text-muted-foreground">{{ t('settings.diagnostics.logLevelDesc') }}</p>
+          </div>
+          <Select
+            :model-value="settings.config.logLevel || 'info'"
+            @update:model-value="setLogLevel"
+          >
+            <SelectTrigger class="w-36">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem v-for="lv in LOG_LEVELS" :key="lv" :value="lv">
+                {{ t(`settings.diagnostics.levels.${lv}`) }}
+              </SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        <Separator />
+        <div class="flex gap-2">
+          <Button variant="outline" size="sm" :disabled="diagnosticsBusy" @click="exportDiagnostics">
+            <component :is="diagnosticsBusy ? PhArrowsClockwise : PhUpload" :size="14" :class="{ 'animate-spin': diagnosticsBusy }" />
+            <span>{{ diagnosticsBusy ? t('settings.diagnostics.exporting') : t('settings.diagnostics.exportNow') }}</span>
+          </Button>
+          <Button variant="outline" size="sm" @click="openLogsFolder">
+            <PhFolderOpen :size="14" />
+            <span>{{ t('settings.diagnostics.openLogsFolder') }}</span>
           </Button>
         </div>
       </CardContent>

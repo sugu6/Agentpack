@@ -2,7 +2,7 @@ package skills
 
 import (
 	"agentpack/internal/iowriter"
-	"agentpack/internal/logger"
+	"agentpack/internal/logging"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -87,14 +87,14 @@ func ParseAgentsLock() map[string]LockRepoInfo {
 				Branch:   branch,
 				FullPath: skill.FullPath,
 			}
-			logger.Debug("ParseAgentsLock: entry", "name", name, "owner", owner, "repo", repo, "branch", branch)
+			logging.Cat("skills").Debug("ParseAgentsLock: entry", "name", name, "owner", owner, "repo", repo, "branch", branch)
 		} else {
 			if skill.Source != "" || skill.SourceURL != "" {
 				log.Printf("ParseAgentsLock: entry %q has no valid GitHub source", name)
 			}
 			// 存根记录或非 GitHub 源：返回空字段，表示来源未知
 			result[name] = LockRepoInfo{FullPath: skill.FullPath}
-			logger.Debug("ParseAgentsLock: stub entry", "name", name, "sourceType", skill.SourceType)
+			logging.Cat("skills").Debug("ParseAgentsLock: stub entry", "name", name, "sourceType", skill.SourceType)
 		}
 	}
 

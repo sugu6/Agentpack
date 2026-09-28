@@ -23,6 +23,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   language: '',
   liteAutoEnabled: false,
   liteAutoDelay: 5,
+  logLevel: 'info',
 }
 
 export const useSettingsStore = defineStore('settings', () => {

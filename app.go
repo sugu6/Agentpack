@@ -29,7 +29,9 @@ import (
 	"agentpack/internal/config"
 	"agentpack/internal/crypto"
 	"agentpack/internal/database"
+	"agentpack/internal/diagnostics"
 	"agentpack/internal/i18n"
+	"agentpack/internal/logging"
 	"agentpack/internal/market"
 	"agentpack/internal/mcp"
 	"agentpack/internal/skills"
@@ -171,6 +173,24 @@ func (a *App) ServiceStartup(ctx context.Context, options application.ServiceOpt
 		addErr("create agentpack dir", err)
 	}
 
+	// 日志级别以配置为准（AGENTPACK_LOG_LEVEL 环境变量优先，见 logging.Init）。
+	logging.SetLevel(a.cfg.Settings.LogLevel)
+
+	// 每次启动写环境快照（env.json）：版本/系统/WebView2/目录可写性自检/日志通道，
+	// 随诊断包导出，跨机器排障时无需再让用户手动复述环境。
+	// 失败仅告警不加入 startupErrors：快照属于辅助信息，不阻断启动。
+	if _, werr := diagnostics.WriteEnv(apDir, diagnostics.Collect(diagnostics.Options{
+		AppVersion:  appmeta.Version,
+		Locale:      a.cfg.Settings.Language,
+		DataDir:     apDir,
+		LogDir:      logging.Dir(),
+		LogLevel:    logging.LevelName(),
+		LogChannels: logChannelsForEnv(),
+		DevMode:     isDevMode(),
+	})); werr != nil {
+		logging.L().Warn("write env snapshot failed", "error", werr)
+	}
+
 	if cfgErr := config.LastLoadError(); cfgErr != nil {
 		addErr("config load", cfgErr)
 	}
@@ -259,11 +279,12 @@ func (a *App) ServiceStartup(ctx context.Context, options application.ServiceOpt
 	update.CleanStaleDownloads()
 
 	a.startupErrors = errs
-	// ServiceStartup 持有 a.mu，restartLiteTimer 内部需要 a.mu.RLock，
-	// 因此异步启动首个计时器以避免自死锁
-	go a.restartLiteTimer()
+	// ServiceStartup 持有 a.mu，restartLiteTimer 在其内部短暂取 a.mu.RLock 读
+	// 配置（liteConfig），随后立即释放，故不产生自死锁。GoGuarded 兜底常驻
+	// goroutine 的 panic（否则其 panic 无法被 main recover，会终止进程且不留 crash-*.log）。
+	logging.GoGuarded("lite-timer", a.restartLiteTimer)
 	// 启动后后台自动回填缺少仓库来源的技能（网络操作，不阻塞启动）
-	go a.autoBackfillSources()
+	logging.GoGuarded("auto-backfill", a.autoBackfillSources)
 	return nil
 }
 
@@ -698,6 +719,94 @@ func (a *App) OpenConfigFolder() error {
 		return err
 	}
 	return openSystem(dir)
+}
+
+// ExportDiagnostics 打包诊断包（最近日志 + 崩溃记录 + env.json 快照 + 脱敏配置）
+// 到 <apDir>/exports，返回 zip 完整路径；用户确认后手动附到 Issue，默认不上传。
+func (a *App) ExportDiagnostics() (string, error) {
+	apDir := config.AgentPackDir()
+	if apDir == "" {
+		return "", fmt.Errorf("agentpack dir unavailable")
+	}
+	a.mu.RLock()
+	lang := ""
+	if a.cfg != nil {
+		lang = a.cfg.Settings.Language
+	}
+	a.mu.RUnlock()
+
+	env := diagnostics.Collect(diagnostics.Options{
+		AppVersion:  appmeta.Version,
+		Locale:      lang,
+		DataDir:     apDir,
+		LogDir:      logging.Dir(),
+		LogLevel:    logging.LevelName(),
+		LogChannels: logChannelsForEnv(),
+		DevMode:     isDevMode(),
+	})
+	path, err := diagnostics.BuildZip(diagnostics.ZipOptions{
+		ExportsDir: filepath.Join(apDir, "exports"),
+		LogDir:     logging.Dir(),
+		DataDir:    apDir,
+		Env:        env,
+	})
+	if err != nil {
+		logging.L().Error("export diagnostics failed", "error", err)
+		return "", err
+	}
+	logging.L().Info("diagnostics exported", "path", path)
+	return path, nil
+}
+
+// OpenLogsFolder 打开日志目录（~/.agentpack/logs，分类日志与崩溃记录所在处），
+// 便于排障时直接查看/收集日志。
+func (a *App) OpenLogsFolder() error {
+	dir := logging.Dir()
+	if dir == "" {
+		return fmt.Errorf("log dir unavailable")
+	}
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return err
+	}
+	return openSystem(dir)
+}
+
+// LogFrontend 接收前端错误/告警并写入 frontend 通道（logs/frontend.log），
+// 由前端桥（src/lib/logBridge.ts）调用。输入按字符截断，避免异常循环撑爆日志。
+func (a *App) LogFrontend(level string, message string, stack string) {
+	message = truncateRunes(message, 2000)
+	stack = truncateRunes(stack, 8000)
+	l := logging.Cat("frontend")
+	switch strings.ToLower(strings.TrimSpace(level)) {
+	case "error":
+		l.Error(message, "stack", stack)
+	case "warn", "warning":
+		l.Warn(message, "stack", stack)
+	default:
+		l.Info(message)
+	}
+}
+
+// logChannelsForEnv 把日志通道策略映射为 env.json 的结构（诊断包 README 同源）。
+func logChannelsForEnv() []diagnostics.LogChannel {
+	cats := logging.Categories()
+	out := make([]diagnostics.LogChannel, 0, len(cats))
+	for _, c := range cats {
+		out = append(out, diagnostics.LogChannel{Name: c.Name, File: c.File, Level: c.Level})
+	}
+	return out
+}
+
+// truncateRunes 按字符（rune）截断超长字符串，保留可读前缀。
+func truncateRunes(s string, max int) string {
+	if max <= 0 || len(s) <= max {
+		return s
+	}
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	return string(r[:max]) + "…"
 }
 
 func (a *App) GetStartupErrors() []string {
@@ -2126,6 +2235,8 @@ func (a *App) UpdateSettings(s config.Settings) error {
 	if err != nil {
 		return err
 	}
+	// 调试日志级别立即生效（不重启）：失败回滚路径不会走到这里，级别与磁盘配置保持一致。
+	logging.SetLevel(res.newSettings.LogLevel)
 	newLang := i18n.ResolveLanguage(s.Language)
 	a.rebuildTrayIfNeeded(res.oldLang, newLang)
 	a.syncLiteModeIfNeeded(res.oldLiteEnabled, s.LiteAutoEnabled)

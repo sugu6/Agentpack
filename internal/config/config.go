@@ -105,6 +105,10 @@ type Settings struct {
 
 	LiteAutoEnabled bool `json:"liteAutoEnabled"` // 空闲后自动进入轻量模式
 	LiteAutoDelay   int  `json:"liteAutoDelay"`   // 空闲时长（分钟）
+
+	// 日志级别：""（等同 info）| error | warn | info | debug | trace
+	// debug 含请求/响应详情与 SSE 流；trace 最详细。写入 ~/.agentpack/logs/<通道>.log
+	LogLevel string `json:"logLevel"`
 }
 
 // SkillRepo 表示一个可扫描的 GitHub 仓库
@@ -237,7 +241,7 @@ func Load() *AppConfig {
 	cfg.settingsExtra = extractUnknownKeysOf(data, "settings",
 		"theme", "marketSources", "autoBackup", "backupCount", "backupRetention",
 		"skillStorage", "skillSyncMethod", "skillRepos", "windowAction",
-		"windowNoRemind", "language", "liteAutoEnabled", "liteAutoDelay")
+		"windowNoRemind", "language", "liteAutoEnabled", "liteAutoDelay", "logLevel")
 	wasOldConfig := cfg.Version == 0
 	if wasOldConfig {
 		cfg.Version = currentVersion
@@ -319,6 +323,25 @@ func Load() *AppConfig {
 			mutated = true
 		}
 	}
+	// LogLevel 值域校验：非空且非白名单值回落空串并写回，避免非法值在运行期被
+	// ParseLevel 静默忽略（用户以为已生效，实际回退到 info）。warning 归一为 warn。
+	if lvl := strings.ToLower(strings.TrimSpace(cfg.Settings.LogLevel)); lvl != "" {
+		if lvl == "warning" {
+			lvl = "warn"
+		}
+		switch lvl {
+		case "error", "warn", "info", "debug", "trace":
+			if cfg.Settings.LogLevel != lvl {
+				cfg.Settings.LogLevel = lvl
+				mutated = true
+			}
+		default:
+			log.Printf("config: invalid logLevel %q, resetting to default (info)", cfg.Settings.LogLevel)
+			cfg.Settings.LogLevel = ""
+			mutated = true
+		}
+	}
+
 	// AutoBackup default: older configs (version 0) predate this field, and bool's
 	// zero value cannot distinguish "unset" from "explicit false" — enable on migration.
 	if wasOldConfig && !cfg.Settings.AutoBackup {

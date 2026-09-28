@@ -102,6 +102,25 @@
       "importing": "Importing...",
       "importFromFile": "Import from file"
     },
+    "diagnostics": {
+      "title": "Logs & Diagnostics",
+      "desc": "Runtime logs are written per channel to ~/.agentpack/logs and can be exported for troubleshooting (nothing is uploaded by default).",
+      "logLevel": "Log level",
+      "logLevelDesc": "info is the default; debug adds request/response details and SSE streams; trace is the most verbose.",
+      "levels": {
+        "error": "Error",
+        "warn": "Warning",
+        "info": "Info (default)",
+        "debug": "Debug",
+        "trace": "Trace"
+      },
+      "exportNow": "Export zip",
+      "exporting": "Exporting...",
+      "exported": "Zip exported: {path}",
+      "exportFailed": "Failed to export zip",
+      "openLogsFolder": "Open log folder",
+      "openLogsFolderFailed": "Failed to open log folder"
+    },
     "skills": {
       "title": "Skills management",
       "desc": "Skills storage location and sync method configuration.",

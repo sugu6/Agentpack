@@ -2,6 +2,7 @@ import {
   CreateBackupNow,
   DeleteBackup,
   ExportBackupToFile,
+  ExportDiagnostics,
   GetAgent,
   GetAgentMcpServers,
   GetAppVersion,
@@ -20,8 +21,10 @@ import {
   ListMcpServers,
   ListSkillCapableAgents,
   ListSkills,
+  LogFrontend,
   MigrateSkillStorage,
   OpenConfigFolder,
+  OpenLogsFolder,
   PickDirectory,
   PickFile,
   RescanAgents,
@@ -86,6 +89,7 @@ export interface Settings {
   language: string
   liteAutoEnabled: boolean
   liteAutoDelay: number
+  logLevel: string
 }
 
 export interface SkillRepo {
@@ -462,6 +466,19 @@ export const api = {
         ApplyAgentStatus: opts.applyAgentStatus ?? false,
         ApplySettings: opts.applySettings ?? false,
       })),
+  },
+  diagnostics: {
+    // 导出诊断包（日志 + 环境快照 + 脱敏配置），返回 zip 完整路径；默认不上传任何数据
+    export: () => safeCall(() => ExportDiagnostics()),
+    openLogsFolder: () => safeCall(() => OpenLogsFolder()),
+    // 日志桥（logBridge.ts）专用：在异常路径调用，必须永不抛错
+    logFrontend: (level: string, message: string, stack: string) => {
+      try {
+        void LogFrontend(level, message, stack).catch(() => {})
+      } catch {
+        /* 日志记录失败绝不能反过来影响业务路径 */
+      }
+    },
   },
   system: {
     openConfigFolder: () => safeCall(() => OpenConfigFolder()),
