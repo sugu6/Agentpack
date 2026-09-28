@@ -50,9 +50,28 @@ jobs:
           # `## [0.3.0](url)` style headers (inline URL) are clickable.
           # This keeps CHANGELOG.md clean (no inline URLs) while ensuring the
           # release body has clickable version titles for the user.
-          for VERSION in $(grep -oE '^## \[[0-9]+\.[0-9]+\.[0-9]+\]' "${{ runner.temp }}/CHANGELOG.txt" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | sort -u); do
-            echo "[${VERSION}]: ${REPO_URL}/releases/tag/v${VERSION}" >> "${{ runner.temp }}/CHANGELOG.txt"
-          done
+          #
+          # URL format: `compare/vPREV...vCURR` — GitHub's two-dot compare
+          # shows the commits/changes between the previous release and the
+          # current one, which is what users want on the GitHub Release page.
+          # The current release is in `github.ref_name` (tag push) or
+          # `github.event.inputs.version` (workflow_dispatch); the previous
+          # release is the first other version listed in CHANGELOG.md.
+          CURR_VERSION="${GITHUB_REF_NAME#v}"
+          if [ -z "$CURR_VERSION" ] || [ "$CURR_VERSION" = "$GITHUB_REF_NAME" ]; then
+            CURR_VERSION="${{ github.event.inputs.version }}"
+          fi
+          # Previous version = the next version in CHANGELOG.md (after CURR),
+          # since the file lists versions in descending order.
+          PREV_VERSION="$(grep -oE '^## \[[0-9]+\.[0-9]+\.[0-9]+\]' CHANGELOG.md | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | awk -v curr="$CURR_VERSION" 'BEGIN{found=0} {if(found){print; exit} if($0==curr){found=1}}')"
+          if [ -z "$PREV_VERSION" ]; then
+            # No previous version (first release): fall back to the release page
+            # so the link is still valid; the app's update dialog will normalize
+            # this to a release URL regardless.
+            echo "[${CURR_VERSION}]: ${REPO_URL}/releases/tag/v${CURR_VERSION}" >> "${{ runner.temp }}/CHANGELOG.txt"
+          else
+            echo "[${CURR_VERSION}]: ${REPO_URL}/compare/v${PREV_VERSION}...v${CURR_VERSION}" >> "${{ runner.temp }}/CHANGELOG.txt"
+          fi
 
           echo "=== Extracted release notes ==="
           cat "${{ runner.temp }}/CHANGELOG.txt"

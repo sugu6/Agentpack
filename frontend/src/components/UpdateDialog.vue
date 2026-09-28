@@ -49,8 +49,16 @@ watch(() => result.value?.changelog, async (md) => {
   try {
     const [{ marked }, dompurify] = await Promise.all([import('marked'), import('dompurify')])
     if (seq !== renderSeq) return
-    // 将相对路径链接（如 ./CHANGELOG.md）转为 GitHub 绝对 URL
-    const fixed = md.replace(/\]\(\.\/(CHANGELOG[^\)]*)\)/g, `](${GITHUB_REPO}/blob/master/$1)`)
+    // 1) 将相对路径链接（如 ./CHANGELOG.md）转为 GitHub 绝对 URL
+    // 2) 将 CHANGELOG 引用定义中的 compare URL（GitHub Release 页面用，
+    //    显示两版之间的 diff）改为 release tag URL（软件弹窗用，跳转到
+    //    对应 release 页面下载）。compare/vPREV...vCURR 中最后一个 vXXX 是 CURR。
+    const fixed = md
+      .replace(/\]\(\.\/(CHANGELOG[^\)]*)\)/g, `](${GITHUB_REPO}/blob/master/$1)`)
+      .replace(
+        /(^[ \t]*\[[^\]]+\]:\s*)https:\/\/github\.com\/[^\/\s]+\/[^\/\s]+\/compare\/v[0-9.]+\.{3}v([0-9.]+)/gm,
+        (_m, prefix, curr) => `${prefix}${GITHUB_REPO}/releases/tag/v${curr}`
+      )
     changelogHtml.value = dompurify.default.sanitize(marked.parse(fixed, { async: false }) as string)
   } catch {
     // 动态加载失败（理论上不应发生，资源为本地打包产物）：转义后按纯文本展示
