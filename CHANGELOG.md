@@ -62,7 +62,7 @@
 
 - **OpenCode 最新 schema 字段**：local server 支持写 `cwd`（工作目录）；remote server 的 `oauth` 配置无损保留
 
-## [0.3.0](https://github.com/sugu6/Agentpack/compare/v0.2.4...v0.3.0) - 2026-09-04
+## [0.3.0] - 2026-09-04
 
 ### 特性
 
@@ -94,7 +94,7 @@
 
 - 更新测试覆盖：新增 `cleanup_test.go`（直接调用可注入 dir 的内部函数）、`version_test.go`（5 个边界用例），替换原有复制实现逻辑的测试
 
-## [0.2.4](https://github.com/sugu6/Agentpack/compare/v0.2.3...v0.2.4) - 2026-08-17
+## [0.2.4] - 2026-08-17
 
 ### 特性
 
@@ -144,7 +144,7 @@
 
 - `.gitignore` 忽略路径错误（`build/bin` → 根目录 `bin/`）
 
-## [0.2.3](https://github.com/sugu6/Agentpack/compare/v0.2.2...v0.2.3) - 2026-08-13
+## [0.2.3] - 2026-08-13
 
 ### 特性
 
@@ -206,7 +206,7 @@
 
 - Agent 页面 MCP 计数改为反映各 Agent 配置文件实际检测到的服务器数量（含未纳入管理的条目，与扫描对话框去重口径一致），修复 IDE（TraeCode）已配置但未纳管的 MCP 计数偏少/检测不到的问题
 
-## [0.2.2](https://github.com/sugu6/Agentpack/compare/v0.2.1...v0.2.2) - 2026-07-30
+## [0.2.2] - 2026-07-30
 
 ### 特性
 
@@ -242,7 +242,7 @@
 
 - Skills 错误信息细化：同一仓库多个 skill 共享错误信息，保留失败原因映射
 
-## [0.2.1](https://github.com/sugu6/Agentpack/compare/v0.2.0...v0.2.1) - 2026-07-29
+## [0.2.1] - 2026-07-29
 
 ### 特性
 
@@ -274,7 +274,7 @@
 
 - npm 检测子进程在 Windows 上弹出命令行窗口：为 `npm list` 调用设置 `SysProcAttr.HideWindow`
 
-## \[0.2.0] - 2026-07-29
+## [0.2.0] - 2026-07-29
 
 ### 特性
 
@@ -370,7 +370,7 @@
 
 - Release 脚本支持同步更新 `build/config.yml` 版本号
 
-## [0.1.2](https://github.com/sugu6/Agentpack/compare/v0.1.1...v0.1.2) - 2026-07-15
+## [0.1.2] - 2026-07-15
 
 ### 特性
 
@@ -420,9 +420,9 @@
 
 - CHANGELOG 底部 compare 链接的 repo URL 错误指向 `JetBrains/AgentPack`，由 release 脚本自动修正为 `sugu6/Agentpack`
 
-- 中文 CHANGELOG 的 [0.1.0](https://github.com/sugu6/Agentpack/releases/tag/v0.1.0) 节存在未翻译的英文条目，已全部翻译为中文
+- 中文 CHANGELOG 的 `0.1.0` 节存在未翻译的英文条目，已全部翻译为中文
 
-## [0.1.1](https://github.com/sugu6/Agentpack/compare/v0.1.0...v0.1.1) - 2026-07-15
+## [0.1.1] - 2026-07-15
 
 ### 特性
 
@@ -486,7 +486,7 @@
 
 - CI 不再用 git-cliff 自动生成 CHANGELOG.md，改为从手动维护的 CHANGELOG.md 提取 release notes
 
-## [0.1.0](https://github.com/sugu6/Agentpack/releases/tag/v0.1.0) - 2026-07-14
+## [0.1.0] - 2026-07-14
 
 AgentPack 的初始版本，一款面向 AI 编码工具的统一 MCP / Skills / Agent 管理桌面应用。
 
@@ -514,3 +514,12 @@ AgentPack 的初始版本，一款面向 AI 编码工具的统一 MCP / Skills /
 [0.5.1]: https://github.com/sugu6/Agentpack/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/sugu6/Agentpack/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/sugu6/Agentpack/compare/v0.3.0...v0.4.0
+[0.3.0]: https://github.com/sugu6/Agentpack/compare/v0.2.4...v0.3.0
+[0.2.4]: https://github.com/sugu6/Agentpack/compare/v0.2.3...v0.2.4
+[0.2.3]: https://github.com/sugu6/Agentpack/compare/v0.2.2...v0.2.3
+[0.2.2]: https://github.com/sugu6/Agentpack/compare/v0.2.1...v0.2.2
+[0.2.1]: https://github.com/sugu6/Agentpack/compare/v0.2.0...v0.2.1
+[0.2.0]: https://github.com/sugu6/Agentpack/releases/tag/v0.2.0
+[0.1.2]: https://github.com/sugu6/Agentpack/compare/v0.1.1...v0.1.2
+[0.1.1]: https://github.com/sugu6/Agentpack/compare/v0.1.0...v0.1.1
+[0.1.0]: https://github.com/sugu6/Agentpack/releases/tag/v0.1.0
