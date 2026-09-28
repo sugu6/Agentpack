@@ -166,18 +166,24 @@ tasks:
       - wails3 tool package -name "{{.APP_NAME}}" -format archlinux -config ./build/linux/nfpm/nfpm.yaml -out {{.ROOT_DIR}}/bin
 
   generate:dotdesktop:
-    summary: Generates a `.desktop` file (with zh_CN localized fields appended)
+    summary: Generates a `.desktop` file (with localized fields appended)
     dir: build
     cmds:
       - mkdir -p {{.ROOT_DIR}}/build/linux/appimage
       - wails3 generate .desktop -name "{{.APP_NAME}}" -exec "{{.EXEC}}" -icon "{{.ICON}}" -outputfile "{{.ROOT_DIR}}/build/linux/{{.APP_NAME}}.desktop" -categories "{{.CATEGORIES}}"
-      # Append Chinese localized fields. Kept in sync with build/linux/desktop
-      # (the source-of-truth file checked into VCS). This is a safety net for
-      # the regenerated file at build/linux/AgentPack.desktop which wails3
-      # does not know how to localize. Locale tags follow BCP-47 (`zh_CN`).
+      # Append localized fields per the freedesktop Desktop Entry Spec
+      # (https://specifications.freedesktop.org/desktop-entry-spec/latest/index.html#localized-keys):
+      # a localized key like `Comment[zh_CN]` must have a corresponding
+      # non-localized `Comment` as fallback, or appimagetool rejects the file.
+      # `wails3 generate .desktop` does not emit `Comment`, so add both.
+      # `Name[zh_CN]` is omitted because the brand name stays "AgentPack" in
+      # all locales. Each grep/printf guard is idempotent — re-running the
+      # task after a future `wails3 generate .desktop` will not duplicate
+      # or overwrite any manual field.
       - |
         OUT="{{.ROOT_DIR}}/build/linux/{{.APP_NAME}}.desktop"
         grep -q '^Name\[zh_CN\]=' "$OUT" || printf 'Name[zh_CN]={{.APP_NAME}}\n' >> "$OUT"
+        grep -q '^Comment=' "$OUT" || printf 'Comment=Unified management of MCP / Skills / Agent configurations\n' >> "$OUT"
         grep -q '^Comment\[zh_CN\]=' "$OUT" || printf 'Comment[zh_CN]=统一管理 MCP、Skills 和 Agent 配置\n' >> "$OUT"
     vars:
       APP_NAME: '{{.APP_NAME}}'
