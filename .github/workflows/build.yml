@@ -44,6 +44,16 @@ jobs:
             cat "${{ runner.temp }}/CHANGELOG_EN.txt"
           } > "${{ runner.temp }}/CHANGELOG.txt"
 
+          # Append GitHub Release definition links for every version mentioned
+          # in the extracted body. Without these, markdown renders the
+          # `## [0.5.1]` style headings as plain text instead of links; only
+          # `## [0.3.0](url)` style headers (inline URL) are clickable.
+          # This keeps CHANGELOG.md clean (no inline URLs) while ensuring the
+          # release body has clickable version titles for the user.
+          for VERSION in $(grep -oE '^## \[[0-9]+\.[0-9]+\.[0-9]+\]' "${{ runner.temp }}/CHANGELOG.txt" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | sort -u); do
+            echo "[${VERSION}]: ${REPO_URL}/releases/tag/v${VERSION}" >> "${{ runner.temp }}/CHANGELOG.txt"
+          done
+
           echo "=== Extracted release notes ==="
           cat "${{ runner.temp }}/CHANGELOG.txt"
 
