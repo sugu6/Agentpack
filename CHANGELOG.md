@@ -7,6 +7,8 @@
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-09-28
+
 ### 特性
 
 - **安装包多语言支持**：Windows NSIS 安装程序启动时弹出语言选择对话框，支持简体中文 / English，选择后写入注册表，重装或卸载时自动恢复；macOS 应用 bundle 新增 `zh_CN.lproj` / `en.lproj`，Finder 与 Dock 显示语言随系统语言切换；Linux `.desktop` 文件新增 `Name[zh_CN]` / `Comment[zh_CN]` 本地化字段，应用菜单与 GNOME 应用搜索在中文系统下显示中文
@@ -508,6 +510,7 @@ AgentPack 的初始版本，一款面向 AI 编码工具的统一 MCP / Skills /
 
 - 用 macos-latest 上的 darwin/universal 构建替代 macos-13 intel 构建
 
-[Unreleased]: https://github.com/sugu6/Agentpack/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/sugu6/Agentpack/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/sugu6/Agentpack/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/sugu6/Agentpack/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/sugu6/Agentpack/compare/v0.3.0...v0.4.0

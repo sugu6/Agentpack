@@ -7,6 +7,8 @@ versioned by [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-09-28
+
 ### Features
 
 - **Installer localization**: The Windows NSIS installer now shows a language picker on first launch, supporting Simplified Chinese / English, with the choice persisted in the registry and restored on reinstall or uninstall; the macOS app bundle now ships `zh_CN.lproj` / `en.lproj` so Finder and the Dock display the localized name following the system language; the Linux `.desktop` file gains `Name[zh_CN]` / `Comment[zh_CN]` fields so the app menu and GNOME app search show Chinese on zh systems
@@ -355,7 +357,8 @@ Initial release of AgentPack — a unified MCP / Skills / Agent management deskt
 [0.1.2]: https://github.com/sugu6/Agentpack/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/sugu6/Agentpack/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/sugu6/Agentpack/releases/tag/v0.1.0
-[Unreleased]: https://github.com/sugu6/Agentpack/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/sugu6/Agentpack/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/sugu6/Agentpack/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/sugu6/Agentpack/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/sugu6/Agentpack/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/sugu6/Agentpack/compare/v0.2.4...v0.3.0
