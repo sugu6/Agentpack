@@ -7,6 +7,28 @@
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-28
+
+### 特性
+
+- **运行时日志采集系统**：新增 7 个独立日志通道（app / webview / frontend / update / market / mcp / skills），各自独立轮转（5 MB × 3 份压缩归档 + 14 天保留），历史 `log.Printf` 调用点按调用方包路径零改动自动归类；5 级日志（error / warn / info / debug / trace）可在设置页或环境变量切换
+- **一键诊断包导出**：设置页新增"日志与诊断"卡片，支持导出脱敏的 zip 诊断包（环境快照 + 最近日志 + 崩溃记录 + 脱敏配置），单包 ~5 MB 单文件 / 8 MB 总量上限、保留最新 5 个；配置导出前对 token / secret / password / apiKey / auth / cookie 等敏感键做子串匹配脱敏
+- **异常捕获与环境自检**：主 goroutine 与常驻后台 goroutine（计时器、自动回填）的 panic 均写入 `crash-*.log`；每次启动生成 `env.json` 环境快照（应用版本 / OS / WebView2 版本 / 关键目录可写性 / 代理环境）
+- **前端错误桥**：`console.error/warn`、未捕获异常、未处理的 Promise 拒绝自动路由到后端 `frontend` 通道，带 60 条/分钟 + 同类 3 次限速与防回环保护
+- **日志级别用户可控**：`Settings.LogLevel` 新字段，非法值在加载时回退默认并记日志
+
+### 修复
+
+- **诊断包 zip 文件名秒级冲突**：改为毫秒级时间戳，避免用户短时间内连续导出被静默覆盖
+- **配置新字段白名单漏项**：`logLevel` 加入 `settingsExtra` 白名单，避免 Save 后磁盘 JSON 出现重复键
+- **孤儿 logger 包清理**：删除 `internal/logger`（旧 slog wrapper），skills 包 3 处调用迁移到统一的 `logging.Cat("skills")`
+
+### 变更
+
+- **Wails v3 升级**：`beta.16` → `beta.26`，同步更新 WebView2 相关初始化与运行时接口
+- **主题标题栏适配修复**：调整主窗口 HWND 捕获时机，确保暗色模式切换能作用于 WebView2 环境下的正确窗口
+- **应用版本注入**：`version.go` 从 `build/config.yml` 的 `info.version` 字段提取，供网络层 User-Agent 使用
+
 ## [0.4.0] - 2026-09-27
 
 ### 特性
@@ -475,5 +497,6 @@ AgentPack 的初始版本，一款面向 AI 编码工具的统一 MCP / Skills /
 
 - 用 macos-latest 上的 darwin/universal 构建替代 macos-13 intel 构建
 
-[Unreleased]: https://github.com/sugu6/Agentpack/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/sugu6/Agentpack/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/sugu6/Agentpack/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/sugu6/Agentpack/compare/v0.3.0...v0.4.0

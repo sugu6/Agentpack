@@ -7,6 +7,28 @@ versioned by [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-28
+
+### Features
+
+- **Runtime logging system**: 7 independent log channels (app / webview / frontend / update / market / mcp / skills), each with independent rotation (5 MB × 3 compressed archives + 14-day retention). Historical `log.Printf` call sites are automatically categorized by caller package path with zero migration; 5 log levels (error / warn / info / debug / trace) switchable from Settings or via environment variable
+- **One-click diagnostic package export**: New "Logs & Diagnostics" card in Settings exports a redacted zip (environment snapshot + recent logs + crash records + redacted config), capped at ~5 MB per file / 8 MB total, keeping the 5 newest. Config is redacted by substring-matching sensitive keys (token / secret / password / apiKey / auth / cookie) before export
+- **Exception capture and environment self-check**: Panics in the main goroutine and long-running background goroutines (timers, auto-backfill) are written to `crash-*.log`; each startup generates an `env.json` snapshot (app version / OS / WebView2 version / writable-directory probes / proxy environment)
+- **Frontend error bridge**: `console.error/warn`, uncaught exceptions, and unhandled Promise rejections are routed to the backend `frontend` channel with 60/min rate-limit, 3 same-message cap, and loop protection
+- **User-configurable log level**: New `Settings.LogLevel` field; invalid values fall back to default on load with a log entry
+
+### Bug Fixes
+
+- **Diagnostic zip filename second-level collision**: Switched to millisecond timestamps to prevent silent overwrite on rapid consecutive exports
+- **Missing config field in whitelist**: `logLevel` added to the `settingsExtra` whitelist so `Save` no longer produces duplicate JSON keys
+- **Orphan logger package cleanup**: Deleted `internal/logger` (legacy slog wrapper); 3 call sites in the skills package migrated to `logging.Cat("skills")`
+
+### Changed
+
+- **Wails v3 upgrade**: `beta.16` → `beta.26`, with corresponding WebView2 initialization and runtime API updates
+- **Theme title bar fix**: Adjusted the main-window HWND capture timing so dark-mode switching applies to the correct window in the WebView2 environment
+- **App version injection**: `version.go` extracts the version from `info.version` in `build/config.yml`, used by the network layer's User-Agent
+
 ## [0.4.0] - 2026-09-27
 
 ### Features
@@ -322,7 +344,8 @@ Initial release of AgentPack — a unified MCP / Skills / Agent management deskt
 [0.1.2]: https://github.com/sugu6/Agentpack/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/sugu6/Agentpack/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/sugu6/Agentpack/releases/tag/v0.1.0
-[Unreleased]: https://github.com/sugu6/Agentpack/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/sugu6/Agentpack/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/sugu6/Agentpack/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/sugu6/Agentpack/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/sugu6/Agentpack/compare/v0.2.4...v0.3.0
 [0.2.4]: https://github.com/sugu6/Agentpack/compare/v0.2.3...v0.2.4
