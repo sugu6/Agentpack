@@ -236,11 +236,13 @@ function updateChangelog(file) {
       }
     }
 
-    const compareUrl = prevVersion
-      ? `${repoUrl}/compare/v${prevVersion}...v${version}`
-      : `${repoUrl}/releases/tag/v${version}`
-
-    const versionLink = `[${version}]: ${compareUrl}\n`
+    // Always link to the GitHub Release page for a version, so the URL is
+    // stable regardless of which version follows. Historically this was
+    // `compare/vA...vB` for the diff between two versions, but mixing the
+    // two formats in the same changelog (compare for most, releases/tag for
+    // the earliest) was inconsistent and confusing. Users who want the diff
+    // between two releases can always click "Releases" in the GitHub sidebar.
+    const versionLink = `[${version}]: ${repoUrl}/releases/tag/v${version}\n`
     const insertPoint = newUnreleasedLink + '\n'
     if (content.includes(insertPoint)) {
       content = content.replace(insertPoint, insertPoint + versionLink)
