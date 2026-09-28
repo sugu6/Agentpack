@@ -61,8 +61,8 @@ importers:
         specifier: ^6.0.7
         version: 6.0.7(vite@7.3.6(jiti@2.7.0)(lightningcss@1.32.0)(yaml@2.9.0))(vue@3.5.39(typescript@6.0.3))
       '@wailsio/runtime':
-        specifier: 3.0.0-beta.5
-        version: 3.0.0-beta.5
+        specifier: 3.0.0-beta.26
+        version: 3.0.0-beta.26
       esbuild:
         specifier: ^0.28.1
         version: 0.28.1
@@ -726,8 +726,8 @@ packages:
     peerDependencies:
       vue: ^3.5.0
 
-  '@wailsio/runtime@3.0.0-beta.5':
-    resolution: {integrity: sha512-WPJcKfD/iN5EbzLAE0B2AjwRVVSSnhpGQSjgFORtIA3h1bkiw/k7rTd06emNsI1ZFGFgMiUEEmXgEcVfeWoRVQ==}
+  '@wailsio/runtime@3.0.0-beta.26':
+    resolution: {integrity: sha512-sYEngKg3N7rWuK1CEJGuSJz/SfyIX1vcPfJiRX7UCSb1+6Re4CPMbMme/5FiZvqqUHNbD5NBbJcTTkmHDYNHWg==}
 
   acorn@8.17.0:
     resolution: {integrity: sha512-xRQbDb9BnwDafYNn6Vwl839DYVjqXYb1XVGtWAZ1kcDc6iwAL4hg3B1dZlRiuENFeO2H53gFG3in621AdERVAg==}
@@ -1818,7 +1818,7 @@ snapshots:
     dependencies:
       vue: 3.5.39(typescript@6.0.3)
 
-  '@wailsio/runtime@3.0.0-beta.5': {}
+  '@wailsio/runtime@3.0.0-beta.26': {}
 
   acorn@8.17.0: {}
 
