@@ -2,6 +2,8 @@
 Version=1.0
 Name=AgentPack
 Comment=Unified management of MCP / Skills / Agent configurations
+Name[zh_CN]=AgentPack
+Comment[zh_CN]=统一管理 MCP、Skills 和 Agent 配置
 Exec=AgentPack %u
 Terminal=false
 Type=Application

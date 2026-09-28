@@ -138,6 +138,15 @@ tasks:
         if [ -f build/darwin/Assets.car ]; then
           cp build/darwin/Assets.car "{{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/Resources"
         fi
+      # Copy every .lproj directory so macOS finds InfoPlist.strings per
+      # supported language (en, zh_CN, ...) and shows the localized name in
+      # Finder / Dock / app switcher when the user's system language matches.
+      - |
+        for lproj in build/darwin/*.lproj; do
+          if [ -d "$lproj" ]; then
+            cp -R "$lproj" "{{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/Resources/"
+          fi
+        done
       - cp "{{.BIN_DIR}}/{{.APP_NAME}}" "{{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/MacOS"
       - cp build/darwin/Info.plist "{{.BIN_DIR}}/{{.APP_NAME}}.app/Contents"
       - task: '{{if eq OS "darwin"}}codesign:adhoc{{else}}codesign:skip{{end}}'
@@ -163,6 +172,14 @@ tasks:
         if [ -f build/darwin/Assets.car ]; then
           cp build/darwin/Assets.car "{{.BIN_DIR}}/{{.APP_NAME}}.dev.app/Contents/Resources"
         fi
+      # Keep dev bundle in sync with the production bundle so the user sees the
+      # same localized name in Finder/Dock during local testing.
+      - |
+        for lproj in build/darwin/*.lproj; do
+          if [ -d "$lproj" ]; then
+            cp -R "$lproj" "{{.BIN_DIR}}/{{.APP_NAME}}.dev.app/Contents/Resources/"
+          fi
+        done
       - cp "{{.BIN_DIR}}/{{.APP_NAME}}" "{{.BIN_DIR}}/{{.APP_NAME}}.dev.app/Contents/MacOS"
       - cp "build/darwin/Info.dev.plist" "{{.BIN_DIR}}/{{.APP_NAME}}.dev.app/Contents/Info.plist"
       - codesign --force --sign - "{{.BIN_DIR}}/{{.APP_NAME}}.dev.app"

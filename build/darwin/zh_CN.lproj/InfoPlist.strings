@@ -1,0 +1,6 @@
+/* Simplified Chinese localization for AgentPack
+   Used by macOS to show the localized name in Finder, Dock and the application
+   switcher when the user's system language is zh_CN. */
+CFBundleDisplayName = "AgentPack";
+CFBundleName = "AgentPack";
+CFBundleGetInfoString = "AgentPack";

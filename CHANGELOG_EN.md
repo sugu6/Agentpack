@@ -7,6 +7,17 @@ versioned by [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Features
+
+- **Installer localization**: The Windows NSIS installer now shows a language picker on first launch, supporting Simplified Chinese / English, with the choice persisted in the registry and restored on reinstall or uninstall; the macOS app bundle now ships `zh_CN.lproj` / `en.lproj` so Finder and the Dock display the localized name following the system language; the Linux `.desktop` file gains `Name[zh_CN]` / `Comment[zh_CN]` fields so the app menu and GNOME app search show Chinese on zh systems
+- **Launch app after install**: The Windows finish page includes a built-in "Launch AgentPack" checkbox - checked by default, finishing with the checkbox on launches the app directly, unchecking skips the launch. The checkbox label also follows the selected installer language
+
+### Changed
+
+- **Windows NSIS upgraded to MUI2**: Migrated from `MUI.nsh` to `MUI2.nsh` to use MUI2's built-in `MUI_FINISHPAGE_RUN` + `MUI_FINISHPAGE_RUN_TEXT` for the launch-on-finish checkbox (MUI1 does not provide this; the upgrade is required). Also added `MUI_RESERVEFILE_LANGDLL` and `MUI_LANGDLL_DISPLAY` for the installer-language picker, plus an `un.onInit` calling `MUI_UNGETLANGUAGE` so the uninstaller inherits the language chosen at install time
+- **Hardened Linux `.desktop` generation**: The `generate:dotdesktop` Taskfile task now runs a `grep -q ... || printf ... >>` guard after `wails3 generate .desktop`, preventing manual `Name[zh_CN]` / `Comment[zh_CN]` localized fields from being overwritten on every rebuild (`wails3 generate .desktop` has no built-in localization flags)
+- **Automatic macOS `.lproj` bundling**: The `create:app:bundle` and `run` Taskfile tasks now copy every `*.lproj` directory under `build/darwin/` into `.app/Contents/Resources/` via a `for lproj in *.lproj; do cp -R ...` loop, so macOS finds the localized strings whenever the system language matches
+
 ## [0.5.0] - 2026-09-28
 
 ### Features

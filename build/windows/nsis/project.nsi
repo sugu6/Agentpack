@@ -48,13 +48,18 @@ VIAddVersionKey "ProductName"     "${INFO_PRODUCTNAME}"
 # Enable HiDPI support. https://nsis.sourceforge.io/Reference/ManifestDPIAware
 ManifestDPIAware true
 
-!include "MUI.nsh"
+!include "MUI2.nsh"
 
 !define MUI_ICON "..\icon.ico"
 !define MUI_UNICON "..\icon.ico"
 # !define MUI_WELCOMEFINISHPAGE_BITMAP "resources\leftimage.bmp" #Include this to add a bitmap on the left side of the Welcome Page. Must be a size of 164x314
 !define MUI_FINISHPAGE_NOAUTOCLOSE # Wait on the INSTFILES page so the user can take a look into the details of the installation steps
 !define MUI_ABORTWARNING # This will warn the user if they exit from the installer.
+
+# Built-in "Run AgentPack" checkbox+button on the finish page. User checks it
+# and the installer launches the app right after the wizard closes.
+!define MUI_FINISHPAGE_RUN "$INSTDIR\${PRODUCT_EXECUTABLE}"
+!define MUI_FINISHPAGE_RUN_TEXT "Launch AgentPack"
 
 # The 0.2.3 in-app updater starts this installer via CreateProcess with
 # HideWindow=true, which passes wShowWindow=SW_HIDE in STARTUPINFO. NSIS honors
@@ -67,16 +72,31 @@ ManifestDPIAware true
 # !insertmacro MUI_PAGE_LICENSE "resources\eula.txt" # Adds a EULA page to the installer
 !insertmacro MUI_PAGE_DIRECTORY # In which folder install page.
 !insertmacro MUI_PAGE_INSTFILES # Installing page.
-!insertmacro MUI_PAGE_FINISH # Finished installation page.
+!insertmacro MUI_PAGE_FINISH # Finished page (MUI2 auto-renders a "Run app" checkbox because MUI_FINISHPAGE_RUN is defined)
 
 !insertmacro MUI_UNPAGE_INSTFILES # Uninstalling page
 
-!insertmacro MUI_LANGUAGE "English" # Set the Language of the installer
+# Embed the language-selection plugin (LangDLL) so the user can pick the
+# installer UI language on first launch. Without this the dialog cannot pop.
+!insertmacro MUI_RESERVEFILE_LANGDLL
+
+# Installer languages. The first one is the default if the user cancels the
+# language picker (or runs silently). Order matches the picker's display order.
+!insertmacro MUI_LANGUAGE "SimpChinese" # Simplified Chinese
+!insertmacro MUI_LANGUAGE "English"     # English
 
 # Remember the last install directory in the registry so upgrades/reinstalls
 # restore it and the user does not have to re-pick a location every time.
 !define AGENTPACK_INSTALL_DIR_KEY "Software\${INFO_COMPANYNAME}\${INFO_PRODUCTNAME}"
 !define AGENTPACK_INSTALL_DIR_VALUE "InstallDir"
+
+# Where LangDLL stores the user's installer-language choice, so the language
+# picker only shows on the very first run. Reused for the installer AND the
+# uninstaller (which calls MUI_UNGETLANGUAGE) - the uninstall wizard picks up
+# the language the user picked during the original install.
+!define MUI_LANGDLL_REGISTRY_ROOT HKLM
+!define MUI_LANGDLL_REGISTRY_KEY "${AGENTPACK_INSTALL_DIR_KEY}"
+!define MUI_LANGDLL_REGISTRY_VALUENAME "InstallerLanguage"
 
 ## The following two statements can be used to sign the installer and the uninstaller. The path to the binaries are provided in %1
 ## They are inactive by default; define WAILS_SIGN_INSTALLER (e.g. `makensis -DWAILS_SIGN_INSTALLER`)
@@ -97,6 +117,12 @@ ShowInstDetails show # This will always show the installation details.
 
 Function .onInit
    !insertmacro wails.checkArchitecture
+
+   # Show the language picker (Simplified Chinese / English) on first launch
+   # and remember the user's choice under AGENTPACK_INSTALL_DIR_KEY so future
+   # installs/uninstalls skip the dialog and use the same language. The picker
+   # is auto-skipped in silent mode (/S). Cancelling aborts the installer.
+   !insertmacro MUI_LANGDLL_DISPLAY
 
    # Use the 64-bit registry view to match the write side: wails.writeUninstaller
    # calls SetRegView 64 before this installer writes AGENTPACK_INSTALL_DIR_KEY.
@@ -146,6 +172,12 @@ FunctionEnd
 Function ForceVisibleGuiInit
     ShowWindow $HWNDPARENT 5 # 5 = SW_SHOW
     BringToFront
+FunctionEnd
+
+# Uninstaller must read the language the user picked during install, otherwise
+# the uninstall wizard falls back to the first MUI_LANGUAGE defined.
+Function un.onInit
+    !insertmacro MUI_UNGETLANGUAGE
 FunctionEnd
 
 Section

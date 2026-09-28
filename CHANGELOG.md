@@ -7,6 +7,17 @@
 
 ## [Unreleased]
 
+### 特性
+
+- **安装包多语言支持**：Windows NSIS 安装程序启动时弹出语言选择对话框，支持简体中文 / English，选择后写入注册表，重装或卸载时自动恢复；macOS 应用 bundle 新增 `zh_CN.lproj` / `en.lproj`，Finder 与 Dock 显示语言随系统语言切换；Linux `.desktop` 文件新增 `Name[zh_CN]` / `Comment[zh_CN]` 本地化字段，应用菜单与 GNOME 应用搜索在中文系统下显示中文
+- **安装完成后启动应用**：Windows 安装完成页内置复选框「Launch AgentPack」，用户勾选后点 Finish 直接启动应用，不勾选则不启动；该复选框文本同样跟随语言切换显示
+
+### 变更
+
+- **Windows NSIS 升级到 MUI2**：从 `MUI.nsh` 升级到 `MUI2.nsh`，采用 MUI2 内置的 `MUI_FINISHPAGE_RUN` + `MUI_FINISHPAGE_RUN_TEXT` 提供"安装完启动"复选框（原 MUI1 无此功能，必须升级）；同时新增 `MUI_RESERVEFILE_LANGDLL` 与 `MUI_LANGDLL_DISPLAY` 支持安装界面语言选择，并添加 `un.onInit` 调用 `MUI_UNGETLANGUAGE` 让卸载器继承安装时选择的语言
+- **Linux `.desktop` 生成加固**：`generate:dotdesktop` Taskfile 任务在 `wails3 generate .desktop` 之后追加 `grep -q ... || printf ... >>` 保护步骤，防止每次构建重新生成 `.desktop` 文件时覆盖手动维护的 `Name[zh_CN]` / `Comment[zh_CN]` 本地化字段（`wails3 generate .desktop` 本身不支持多语言参数）
+- **macOS `.lproj` 自动打包**：`create:app:bundle` 与 `run` Taskfile 任务新增 `for lproj in *.lproj; do cp -R ...` 循环，把 `build/darwin/` 下的 `.lproj` 目录自动复制进 `.app/Contents/Resources/`，保证 macOS 在系统语言匹配时能找到本地化字符串
+
 ## [0.5.0] - 2026-09-28
 
 ### 特性

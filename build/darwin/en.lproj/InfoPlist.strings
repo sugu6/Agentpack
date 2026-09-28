@@ -1,0 +1,6 @@
+/* English localization for AgentPack. Kept in sync with the default strings
+   in Info.plist so macOS treats "en" as an explicit supported language and
+   does not silently fall back to the developer language. */
+CFBundleDisplayName = "AgentPack";
+CFBundleName = "AgentPack";
+CFBundleGetInfoString = "AgentPack";
