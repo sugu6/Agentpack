@@ -15,13 +15,20 @@ let renderSeq = 0
 const escapeHtml = (s: string) =>
   s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c] ?? c)
 
-// 拦截 changelog 内的链接点击，在系统浏览器打开而非 WebView 内
+// 拦截 changelog 内的链接点击，在系统浏览器打开而非 WebView 内。
+// GitHub Release body 中的版本号链接在 release 页是 compare/vPREV...vCURR
+// （diff 视图），但在软件弹窗里用户更希望直接跳到 releases/tag/vCURR
+// 下载页，所以把 compare URL 转换为 release URL。
 function onChangelogLinkClick(e: MouseEvent) {
   const target = e.target as HTMLElement
   const link = target.closest('a')
   if (!link?.href) return
   e.preventDefault()
-  api.system.openUrl(link.href)
+  let url = link.href
+  // https://github.com/{owner}/{repo}/compare/vA...vB → .../releases/tag/vB
+  const m = url.match(/^https:\/\/github\.com\/[^/]+\/[^/]+\/compare\/v[\d.]+\.{3}v([\d.]+)\/?$/)
+  if (m) url = `${GITHUB_REPO}/releases/tag/v${m[1]}`
+  api.system.openUrl(url)
 }
 
 const { t } = useI18n()
@@ -49,16 +56,12 @@ watch(() => result.value?.changelog, async (md) => {
   try {
     const [{ marked }, dompurify] = await Promise.all([import('marked'), import('dompurify')])
     if (seq !== renderSeq) return
-    // 1) 将相对路径链接（如 ./CHANGELOG.md）转为 GitHub 绝对 URL
-    // 2) 将 CHANGELOG 引用定义中的 compare URL（GitHub Release 页面用，
-    //    显示两版之间的 diff）改为 release tag URL（软件弹窗用，跳转到
-    //    对应 release 页面下载）。compare/vPREV...vCURR 中最后一个 vXXX 是 CURR。
-    const fixed = md
-      .replace(/\]\(\.\/(CHANGELOG[^\)]*)\)/g, `](${GITHUB_REPO}/blob/master/$1)`)
-      .replace(
-        /(^[ \t]*\[[^\]]+\]:\s*)https:\/\/github\.com\/[^\/\s]+\/[^\/\s]+\/compare\/v[0-9.]+\.{3}v([0-9.]+)/gm,
-        (_m, prefix, curr) => `${prefix}${GITHUB_REPO}/releases/tag/v${curr}`
-      )
+    // 将相对路径链接（如 ./CHANGELOG.md）转为 GitHub 绝对 URL。
+    // 版本号链接在 GitHub Release body 里是 compare/vPREV...vCURR 形式
+    // （diff 视图），到达这里时已经被 GitHub 渲染成 <a href=...>HTML，
+    // 所以不在 markdown 层做转换——改在点击处理器里把 compare URL 转为
+    // releases/tag/vCURR，跳转到对应 release 下载页。
+    const fixed = md.replace(/\]\(\.\/(CHANGELOG[^\)]*)\)/g, `](${GITHUB_REPO}/blob/master/$1)`)
     changelogHtml.value = dompurify.default.sanitize(marked.parse(fixed, { async: false }) as string)
   } catch {
     // 动态加载失败（理论上不应发生，资源为本地打包产物）：转义后按纯文本展示
