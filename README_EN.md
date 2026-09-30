@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <strong>Unified management of MCP / Skills / Agent configurations for AI coding tools</strong>
+  <strong>Cross-platform desktop app · Unified MCP & Skills management for local Agents</strong>
 </p>
 
 <p align="center">
@@ -51,10 +51,13 @@ Supported agents:
 
 ## Tech Stack
 
-- **Backend**: Go 1.25+, Wails v3
-- **Frontend**: Vue 3, TypeScript, Vite, Tailwind CSS, shadcn/vue
+- **Backend**: Go 1.25+, Wails v3 (native WebView rendering)
+- **Frontend**: Vue 3, TypeScript, Vite, Tailwind CSS v4, reka-ui
+- **State Management**: Pinia
+- **Routing**: Vue Router
+- **i18n**: Vue I18n (Chinese / English)
 - **Database**: SQLite (modernc.org/sqlite, pure Go)
-- **Icons**: Phosphor Icons
+- **Icons**: Phosphor Icons, Lucide Icons
 
 ## Requirements
 
@@ -153,6 +156,7 @@ AgentPack/
 │   ├── crypto/            # Environment variable encryption
 │   ├── database/          # SQLite database
 │   ├── dbutil/            # Database utility functions
+│   ├── diagnostics/       # Diagnostics (env snapshot / log collection / sanitized config export)
 │   ├── i18n/              # Internationalization (zh-CN / en, with language detection)
 │   ├── iowriter/          # Atomic file writer
 │   ├── logger/            # Logging utility

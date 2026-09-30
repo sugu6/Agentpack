@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <strong>统一管理 AI 编码工具的 MCP / Skills / Agent 配置</strong>
+  <strong>跨平台桌面应用 · 本地 Agent 的 MCP 与 Skills 统一管理</strong>
 </p>
 
 <p align="center">
@@ -50,10 +50,13 @@ AgentPack 是一个基于 [Wails v3](https://v3.wails.io)（Go + Vue 3 + TypeScr
 
 ## 技术栈
 
-- **后端**：Go 1.25+、Wails v3
-- **前端**：Vue 3、TypeScript、Vite、Tailwind CSS、shadcn/vue
+- **后端**：Go 1.25+、Wails v3（原生 WebView 渲染）
+- **前端**：Vue 3、TypeScript、Vite、Tailwind CSS v4、reka-ui
+- **状态管理**：Pinia
+- **路由**：Vue Router
+- **国际化**：Vue I18n（中 / 英双语）
 - **数据库**：SQLite（modernc.org/sqlite 纯 Go 实现）
-- **图标**：Phosphor Icons
+- **图标**：Phosphor Icons、Lucide Icons
 
 ## 环境要求
 
@@ -152,6 +155,7 @@ AgentPack/
 │   ├── crypto/            # 环境变量加密
 │   ├── database/          # SQLite 数据库
 │   ├── dbutil/            # 数据库工具函数
+│   ├── diagnostics/       # 诊断包（环境快照 / 日志收集 / 脱敏配置导出）
 │   ├── i18n/              # 国际化（zh-CN / en，含系统语言检测）
 │   ├── iowriter/          # 原子写入
 │   ├── logger/            # 日志工具
