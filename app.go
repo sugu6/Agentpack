@@ -277,6 +277,9 @@ func (a *App) ServiceStartup(ctx context.Context, options application.ServiceOpt
 
 	// 启动时清理上一次运行残留的 .downloading 临时文件，防止异常退出后永远占位
 	update.CleanStaleDownloads()
+	// 启动时删除上次更新完成后遗留的安装包（安装器已退出、文件占用已释放），
+	// 失败则本次会话内按退避间隔重试，见 update.CleanupInstalledPackage
+	update.CleanupInstalledPackage()
 
 	a.startupErrors = errs
 	// ServiceStartup 持有 a.mu，restartLiteTimer 在其内部短暂取 a.mu.RLock 读

@@ -46,6 +46,7 @@ func TestInstallVerifyMismatchFailsClosed(t *testing.T) {
 
 // TestInstallVerifyMatchAllowsExec 摘要一致才放行第二道校验后的 exec。
 func TestInstallVerifyMatchAllowsExec(t *testing.T) {
+	isolateCleanupMarker(t)
 	var calls int32
 	orig := execInstaller
 	execInstaller = func(path string) error {

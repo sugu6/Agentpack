@@ -72,6 +72,11 @@ func (s *Service) Install() error {
 		return err
 	}
 
+	// 更新完成后删除安装包：安装器已启动、本进程即将退出，此时安装包文件
+	// 被安装器自身占用无法同步删除，故仅记录路径，由新版本启动时清理
+	// （见 CleanupInstalledPackage）。写入失败不阻断安装。
+	markInstallerForCleanup(dlPath)
+
 	go func() {
 		time.Sleep(1 * time.Second)
 		if s.installExit != nil {

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync/atomic"
 	"testing"
 )
@@ -34,8 +35,10 @@ func wrongInstallerExt() string {
 }
 
 // TestInstallExecutesDownloadedInstaller 已下载且摘要校验通过的安装包：
-// 调用 exec seam 且参数为最终文件路径（不真实启动进程）。
+// 调用 exec seam 且参数为最终文件路径（不真实启动进程）；同时写入清理标记
+// （新版本启动时据此删除安装包）。
 func TestInstallExecutesDownloadedInstaller(t *testing.T) {
+	marker := isolateCleanupMarker(t)
 	var gotPath string
 	var calls int32
 	orig := execInstaller
@@ -67,6 +70,13 @@ func TestInstallExecutesDownloadedInstaller(t *testing.T) {
 	}
 	if gotPath != p {
 		t.Errorf("exec seam path = %q, want %q", gotPath, p)
+	}
+	data, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatalf("cleanup marker should be written after successful exec: %v", err)
+	}
+	if got := strings.TrimSpace(string(data)); got != p {
+		t.Errorf("marker content = %q, want installer path %q", got, p)
 	}
 }
 

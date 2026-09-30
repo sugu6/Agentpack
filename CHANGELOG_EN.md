@@ -7,6 +7,10 @@ versioned by [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Features
+
+- **Auto-delete installer after update**: Installer files (`.exe` / `.dmg` / `.tar.gz`) are no longer left in the Downloads directory after an in-app update completes; the file is locked by the installer process at launch time so it cannot be removed synchronously, so Install records the path on success and the new version deletes it on first startup, retrying with backoff if the installer is still finalizing
+
 ## [0.5.1] - 2026-09-28
 
 ### Features
